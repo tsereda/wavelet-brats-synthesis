@@ -1,0 +1,158 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: 2-fast-cwdm-t1c
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: fast-cwdm
+    spec:
+      nodeSelector:
+        #topology.kubernetes.io/region: us-west
+        nautilus.io/linstor: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      containers:
+        - name: brats-processing
+          image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+          env:
+            - name: REPO_PATH
+              value: /app/brats-synthesis
+            - name: PYTHONPATH
+              value: /app/brats-synthesis
+            - name: CUDA_VISIBLE_DEVICES
+              value: "0"
+            - name: nnUNet_raw
+              value: /app/nnunet/raw
+            - name: nnUNet_preprocessed
+              value: /app/nnunet/preprocessed
+            - name: nnUNet_results
+              value: /app/nnunet/results
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONIOENCODING
+              value: "UTF-8"
+            - name: WANDB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wandb-credentials
+                  key: api-key
+            - name: WANDB_PROJECT
+              value: "fast-cwmd"
+            - name: WANDB_ENTITY
+              value: "timgsereda"
+            - name: WANDB_MODE
+              value: "online"
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              sudo rm -r /data/checkpoints/
+              sudo mkdir /data/checkpoints/
+              sudo chmod 777 /data/checkpoints/
+
+              git clone -b ssim-loss https://github.com/tsereda/brats-synthesis.git ${REPO_PATH}
+              cd ${REPO_PATH}
+              
+              sudo apt-get update && sudo apt-get install -y p7zip-full wget git
+              
+              # Create target directories
+              mkdir -p datasets/BRATS2023/training
+              mkdir -p datasets/BRATS2023/validation
+              
+              ls -la /data/
+
+              7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz
+              7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz
+
+              7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar
+              7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar
+
+              mv ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData/* datasets/BRATS2023/training/
+              mv ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/* datasets/BRATS2023/validation/
+
+              find datasets/BRATS2023/training -name ".*" -delete 2>/dev/null || true
+              find datasets/BRATS2023/validation -name ".*" -delete 2>/dev/null || true
+
+              echo "Training patients: $(ls datasets/BRATS2023/training/ | wc -l)"
+              echo "Validation patients: $(ls datasets/BRATS2023/validation/ | wc -l)"
+
+              pip install pyyaml torch tqdm numpy nibabel wandb matplotlib blobfile tensorboard monai
+              
+              python -c "import wandb; print(f'W&B version: {wandb.__version__}')"
+              python -c "import torch; print(f'GPUs available: {torch.cuda.device_count()}')"
+
+              conda init bash
+              source ~/.bashrc
+
+              mamba env create -f environment.yml
+
+              conda activate cwdm
+
+              conda info --envs
+              python --version
+
+              echo "Training patients: $(ls datasets/BRATS2023/training/ | wc -l)"
+              echo "Validation patients: $(ls datasets/BRATS2023/validation/ | wc -l)"
+              echo "Sample training patient files: $(ls datasets/BRATS2023/training/$(ls datasets/BRATS2023/training/ | head -1)/ | wc -l)"
+              
+              mv datasets/ fast_cwdm/
+              cd fast_cwdm
+              rm -rf datasets/BRATS2023/training/BraTS-MET-00232-000/
+              cp /data/400kCheckpoints.zip 400kCheckpoints.zip 
+              unzip 400kCheckpoints.zip 
+              ls BraTSCheckpoints/t1c
+              #python scripts/check_data_integrity.py --data_dir datasets/BRATS2023/training
+              cp -r BraTSCheckpoints/t1c ./t1c
+              
+              # Rename optimizer checkpoint to match expected resume step
+              echo "Renaming optimizer checkpoint..."
+              if ls ./t1c/opt*.pt 1> /dev/null 2>&1; then
+                OLD_OPT=$(ls ./t1c/opt*.pt | head -1)
+                mv "$OLD_OPT" "./t1c/opt400000.pt"
+                echo "Renamed $OLD_OPT to ./t1c/opt0400000.pt"
+              else
+                echo "No optimizer checkpoint found to rename"
+              fi
+              
+              #MODALITIES=("t1c" "t1n" "t2w" "t2f")
+              ls
+              bash run.sh --sampling-strategy sampled --timesteps 100 --mode train --train_modality t1c --resume_checkpoint t1c/brats_*.pt --resume_step 400000
+              ls -la /data/checkpoints/
+
+              echo "Job completed successfully"
+         
+          volumeMounts:
+            - name: workspace
+              mountPath: /app
+            - name: data
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+        
+          resources:
+            requests:
+              memory: 25Gi
+              cpu: "15"
+              nvidia.com/a100: "1"
+            limits:
+              memory: 30Gi
+              cpu: "18"
+              nvidia.com/a100: "1"
+     
+      volumes:
+        - name: workspace
+          emptyDir:
+            sizeLimit: 50Gi
+        - name: data
+          persistentVolumeClaim:
+            claimName: brats2025-1
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Gi
+     
+      restartPolicy: Never
