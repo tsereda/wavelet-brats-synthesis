@@ -1,3 +1,4 @@
+project: wavelet-brats-synthesis 
 program: app/scripts/train.py  # ← Changed path
 method: bayes
 metric:
