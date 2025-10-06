@@ -46,4 +46,4 @@ parameters:
   log_interval:
     value: 100
   wavelet:
-    values: ['haar', 'db1', 'db2', 'db4', 'bior1.3', 'bior2.2']
+    values: ['haar', 'db1', 'db2', 'db4', 'bior1.3']
