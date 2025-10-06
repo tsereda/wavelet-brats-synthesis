@@ -34,7 +34,7 @@ parameters:
   bottleneck_attention:
     value: false
   contr:
-    values: ['t1c', 'flair']
+    values: ['t1n', 't1c']
   num_channels:
     value: 32
   in_channels:
