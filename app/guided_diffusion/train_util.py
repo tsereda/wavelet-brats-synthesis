@@ -89,8 +89,8 @@ class TrainLoop:
             self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
             self.weight_decay = weight_decay
             self.lr_anneal_steps = lr_anneal_steps
-            self.dwt = DWT_3D('haar')
-            self.idwt = IDWT_3D('haar')
+            self.dwt = DWT_3D(self.wavelet)
+            self.idwt = IDWT_3D(self.wavelet)
             self.loss_level = loss_level
             self.step = 1
             self.resume_step = resume_step
