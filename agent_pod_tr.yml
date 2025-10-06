@@ -40,8 +40,6 @@ spec:
     command: ["/bin/bash", "-c"]
     args:
       - |
-        set -ex
-        
         sudo apt-get update && sudo apt-get install -y git wget p7zip-full
        
         git clone https://github.com/tsereda/wavelet-brats-synthesis.git
@@ -50,6 +48,8 @@ spec:
         chmod +x run.sh
        
         ./run.sh
+
+        tail -f /dev/null
    
     env:
     - name: WANDB_API_KEY
@@ -62,9 +62,9 @@ spec:
     - name: WANDB_PROJECT
       value: "wavelet-brats-synthesis"
     - name: SWEEP_ID
-      value: "timgsereda/wavelet-brats-synthesis/acyrvo7t"
+      value: "timgsereda/wavelet-brats-synthesis/hog9ujoz"
     - name: WANDB_SWEEP_ID
-      value: "timgsereda/wavelet-brats-synthesis/acyrvo7t"
+      value: "timgsereda/wavelet-brats-synthesis/hog9ujoz"
    
     resources:
       requests:

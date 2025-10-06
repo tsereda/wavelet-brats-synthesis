@@ -47,16 +47,16 @@ pip install --no-cache-dir \
 
 # Verify critical files exist
 echo "[3/7] Verifying repository structure..."
-if [ ! -f "scripts/train.py" ]; then
-    echo "ERROR: scripts/train.py not found!"
+if [ ! -f "app/scripts/train.py" ]; then
+    echo "ERROR: app/scripts/train.py not found!"
     echo "Current directory: $(pwd)"
     echo "Contents:"
     ls -la
     echo "Scripts directory:"
-    ls -la scripts/ 2>/dev/null || echo "scripts/ directory not found!"
+    ls -la app/scripts/ 2>/dev/null || echo "app/scripts/ directory not found!"
     exit 1
 fi
-echo "✓ scripts/train.py found"
+echo "✓ app/scripts/train.py found"
 
 # Setup directories
 echo "[4/7] Setting up directories..."
@@ -145,7 +145,7 @@ if [ -z "$SWEEP_ID" ]; then
     echo "   ./run.sh"
     echo ""
     echo "2. Run normal training:"
-    echo "   python scripts/train.py --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5"
+    echo "   python app/scripts/train.py --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5"
     echo ""
     exit 1
 fi
