@@ -1,4 +1,4 @@
-program: scripts/train.py
+program: app/scripts/train.py 
 method: bayes
 metric:
   name: test
@@ -26,11 +26,11 @@ parameters:
     value: sampled
     
   lr:
-    min: 0.000001  # 1e-6
-    max: 0.0001    # 1e-4
- 
+    min: 0.000001
+    max: 0.0001
+  
   contr:
-    values: ['t1c']  # ['t1n', 't1c', 't2w', 'flair']
+    values: ['t1c']
   
   num_channels:
     value: 64
