@@ -32,6 +32,9 @@ def setup_training(args):
     np.random.seed(args.seed)
     random.seed(args.seed)
     
+    # Initialize distributed training (REQUIRED - even for single GPU)
+    dist_util.setup_dist()  # ← ADD THIS LINE
+    
     # Configure logger
     logger.configure()
     

@@ -62,9 +62,9 @@ spec:
     - name: WANDB_PROJECT
       value: "wavelet-brats-synthesis"
     - name: SWEEP_ID
-      value: "timgsereda/wavelet-brats-synthesis-app_scripts/zpwcuq61"
+      value: "wandb agent timgsereda/wavelet-brats-synthesis/7c48f6nd"
     - name: WANDB_SWEEP_ID
-      value: "timgsereda/wavelet-brats-synthesis-app_scripts/zpwcuq61"
+      value: "wandb agent timgsereda/wavelet-brats-synthesis/7c48f6nd"
    
     resources:
       requests:
