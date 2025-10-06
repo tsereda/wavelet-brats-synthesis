@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: wandb-sweep-agent-2
+  name: wandb-sweep-agent-{POD_NUM}
   namespace: gai-lina-group
   labels:
     app: wandb-sweep
@@ -48,7 +48,6 @@ spec:
         chmod +x run.sh
        
         ./run.sh
-
         tail -f /dev/null
    
     env:
@@ -62,9 +61,9 @@ spec:
     - name: WANDB_PROJECT
       value: "wavelet-brats-synthesis"
     - name: SWEEP_ID
-      value: "wandb agent timgsereda/wavelet-brats-synthesis/2empcyx5"
+      value: "{SWEEP_ID}"
     - name: WANDB_SWEEP_ID
-      value: "wandb agent timgsereda/wavelet-brats-synthesis/2empcyx5"
+      value: "{SWEEP_ID}"
    
     resources:
       requests:
@@ -83,4 +82,4 @@ spec:
   volumes:
   - name: data-volume
     persistentVolumeClaim:
-      claimName: brats2025-2
+      claimName: brats2025-{POD_NUM}

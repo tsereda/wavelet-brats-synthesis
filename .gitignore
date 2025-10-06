@@ -5,3 +5,4 @@ test_output/
 reals3/
 real03/
 600kCheckpoints.zip
+k8s/training_pods/wandb-sweep-agent-*.yml

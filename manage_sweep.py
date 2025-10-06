@@ -1,23 +1,84 @@
 #!/usr/bin/env python3
 """
-Wandb Sweep Management Script
-Easily create and cancel sweeps
+BraTS Training Management - Unified Script
+Default: Creates wandb sweep + deploys 4 K8s training pods
+
+Usage:
+    python manage_training.py              # Create sweep + deploy 4 pods (DEFAULT)
+    python manage_training.py --sweep-only # Just create wandb sweep
 """
 
-import argparse
+import os
 import sys
 import yaml
 import wandb
+import subprocess
+import argparse
 
+# ============================================================================
+# WANDB SWEEP MANAGEMENT
+# ============================================================================
 
 def load_sweep_config(config_path="sweep.yml"):
     """Load sweep configuration from YAML file"""
-    with open(config_path, 'r') as f:
-        return yaml.safe_load(f)
+    try:
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        print(f"❌ Error: {config_path} not found!")
+        print("Creating default sweep.yml...")
+        create_default_sweep_config()
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+
+
+def create_default_sweep_config():
+    """Create a default sweep.yml if it doesn't exist"""
+    default_config = """project: fast-cwdm-brats
+program: app/scripts/train.py
+method: random
+metric:
+  name: val/ssim
+  goal: maximize
+parameters:
+  data_dir:
+    value: ./datasets/BRATS2023/training
+  dataset:
+    value: brats
+  image_size:
+    value: 224
+  batch_size:
+    value: 2
+  num_workers:
+    value: 12
+  diffusion_steps:
+    value: 100
+  sample_schedule:
+    value: sampled
+  dims:
+    value: 3
+  num_channels:
+    value: 64
+  in_channels:
+    value: 32
+  out_channels:
+    value: 8
+  lr:
+    values: [1e-5, 5e-5, 1e-4]
+  save_interval:
+    value: 500
+  log_interval:
+    value: 100
+  contr:
+    values: ['t1n', 't1c', 't2w', 't2f']
+"""
+    with open('sweep.yml', 'w') as f:
+        f.write(default_config)
+    print("✅ Created default sweep.yml")
 
 
 def create_sweep(config_path="sweep.yml", entity=None, project=None):
-    """Create a new sweep and return sweep ID"""
+    """Create a new wandb sweep and return sweep ID"""
     config = load_sweep_config(config_path)
     
     # Override entity/project if provided
@@ -26,144 +87,174 @@ def create_sweep(config_path="sweep.yml", entity=None, project=None):
     if project:
         config['project'] = project
     
-    print(f"📊 Creating sweep in {config.get('entity', 'default')}/{config['project']}")
+    entity = entity or config.get('entity', 'timgsereda')
+    project = project or config.get('project', 'fast-cwdm-brats')
     
-    # Create sweep
-    sweep_id = wandb.sweep(config, entity=entity, project=project)
-    
-    print(f"✅ Sweep created: {sweep_id}")
-    print(f"🔗 View at: https://wandb.ai/{entity or wandb.api.default_entity}/{project or config['project']}/sweeps/{sweep_id}")
-    print(f"\n🚀 To launch agents, run:")
-    print(f"   wandb agent {entity or wandb.api.default_entity}/{project or config['project']}/{sweep_id}")
-    
-    return sweep_id
-
-
-def cancel_sweep(sweep_id, entity=None, project=None):
-    """Cancel a running sweep"""
-    api = wandb.Api()
-    
-    # Parse sweep path
-    if '/' in sweep_id:
-        sweep_path = sweep_id
-    else:
-        entity = entity or wandb.api.default_entity
-        project = project or "wavelet-brats-synthesis"
-        sweep_path = f"{entity}/{project}/{sweep_id}"
-    
-    print(f"🛑 Canceling sweep: {sweep_path}")
+    print(f"\n📊 Creating W&B sweep in {entity}/{project}")
     
     try:
-        sweep = api.sweep(sweep_path)
+        # Create sweep
+        sweep_id = wandb.sweep(config, entity=entity, project=project)
         
-        # Stop the sweep
-        sweep.stop()
+        print(f"✅ Sweep created: {sweep_id}")
+        print(f"🔗 View at: https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}")
         
-        print(f"✅ Sweep {sweep_id} stopped successfully")
+        return sweep_id
         
     except Exception as e:
-        print(f"❌ Error stopping sweep: {e}")
-        return False
+        print(f"❌ Error creating sweep: {e}")
+        return None
+
+
+# ============================================================================
+# KUBERNETES POD GENERATION
+# ============================================================================
+
+def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir="k8s/training_pods", num_pods=3):
+    """Generate numbered pod YAMLs from template"""
+    
+    # Read template
+    try:
+        with open(template_path, 'r') as f:
+            template = f.read()
+    except FileNotFoundError:
+        print(f"❌ Error: Template file '{template_path}' not found!")
+        sys.exit(1)
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    generated_files = []
+    
+    for i in range(1, num_pods + 1):
+        # Replace placeholders with pod number
+        yaml_content = template.replace("{POD_NUM}", str(i))
+        
+        # Also inject sweep ID if present
+        if sweep_id:
+            yaml_content = yaml_content.replace("{SWEEP_ID}", sweep_id)
+        
+        output_file = os.path.join(output_dir, f"wandb-sweep-agent-{i}.yml")
+        
+        with open(output_file, 'w') as f:
+            f.write(yaml_content)
+        
+        generated_files.append(output_file)
+        print(f"✅ Generated: {output_file}")
+    
+    return generated_files
+
+
+def deploy_pods(pod_files):
+    """Deploy pods to Kubernetes"""
+    
+    print(f"\n🚀 Deploying {len(pod_files)} training pods to Kubernetes...")
+    
+    for pod_file in pod_files:
+        pod_name = os.path.basename(pod_file).replace('.yml', '')
+        
+        try:
+            print(f"\n  Deploying {pod_name}...")
+            result = subprocess.run(
+                ['kubectl', 'apply', '-f', pod_file],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            print(f"  ✅ {pod_name}: {result.stdout.strip()}")
+            
+        except subprocess.CalledProcessError as e:
+            print(f"  ❌ {pod_name} failed: {e.stderr}")
+        except FileNotFoundError:
+            print(f"  ❌ kubectl not found. Please install kubectl or deploy manually:")
+            print(f"     kubectl apply -f {pod_file}")
+            return False
     
     return True
 
 
-def list_sweeps(entity=None, project=None):
-    """List recent sweeps"""
-    api = wandb.Api()
-    
-    entity = entity or wandb.api.default_entity
-    project = project or "wavelet-brats-synthesis"
-    
-    print(f"📋 Recent sweeps in {entity}/{project}:\n")
-    
-    try:
-        sweeps = api.project(f"{entity}/{project}").sweeps()
-        
-        for i, sweep in enumerate(sweeps[:10], 1):
-            state = sweep.state
-            config = sweep.config
-            
-            # Get metric info
-            metric_name = config.get('metric', {}).get('name', 'unknown')
-            
-            print(f"{i}. {sweep.id}")
-            print(f"   State: {state}")
-            print(f"   Metric: {metric_name}")
-            print(f"   Method: {config.get('method', 'unknown')}")
-            print(f"   Runs: {len(sweep.runs)}")
-            print(f"   URL: {sweep.url}")
-            print()
-            
-    except Exception as e:
-        print(f"❌ Error listing sweeps: {e}")
-
+# ============================================================================
+# MAIN EXECUTION
+# ============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Manage Wandb Sweeps for BraTS Training",
+        description="BraTS Training Management - Create sweep + deploy training pods",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Create a new sweep
-  python manage_sweep.py create
+  # Default: Create sweep + deploy 3 pods
+  python manage_training.py
   
-  # Create with custom entity/project
-  python manage_sweep.py create --entity myteam --project myproject
+  # Just create sweep
+  python manage_training.py --sweep-only
   
-  # Cancel a running sweep
-  python manage_sweep.py cancel <sweep_id>
+  # Custom number of pods
+  python manage_training.py --num-pods 5
   
-  # List recent sweeps
-  python manage_sweep.py list
+Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
         """
     )
     
-    subparsers = parser.add_subparsers(dest='command', help='Command to run')
-    
-    # Create command
-    create_parser = subparsers.add_parser('create', help='Create a new sweep')
-    create_parser.add_argument('--config', default='sweep.yml', help='Sweep config file')
-    create_parser.add_argument('--entity', help='Wandb entity')
-    create_parser.add_argument('--project', help='Wandb project')
-    
-    # Cancel command
-    cancel_parser = subparsers.add_parser('cancel', help='Cancel a sweep')
-    cancel_parser.add_argument('sweep_id', help='Sweep ID to cancel')
-    cancel_parser.add_argument('--entity', help='Wandb entity')
-    cancel_parser.add_argument('--project', help='Wandb project')
-    
-    # List command
-    list_parser = subparsers.add_parser('list', help='List recent sweeps')
-    list_parser.add_argument('--entity', help='Wandb entity')
-    list_parser.add_argument('--project', help='Wandb project')
+    parser.add_argument('--entity', type=str, default='timgsereda',
+                       help='W&B entity (default: timgsereda)')
+    parser.add_argument('--project', type=str, default='wavelet-brats-synthesis',
+                       help='W&B project (default: wavelet-brats-synthesis)')
+    parser.add_argument('--num-pods', type=int, default=4,
+                       help='Number of sweep agent pods to deploy (default: 4)')
+    parser.add_argument('--template', type=str, default='agent_pod_tr.yml',
+                       help='Path to pod template YAML (default: agent_pod_tr.yml)')
+    parser.add_argument('--sweep-only', action='store_true',
+                       help='Only create sweep, do not deploy pods')
     
     args = parser.parse_args()
     
-    if not args.command:
-        parser.print_help()
+    print("=" * 60)
+    print("🧠 BraTS Training Management")
+    print("=" * 60)
+    
+    # Create sweep
+    print("\n[Step 1/3] Creating W&B sweep...")
+    sweep_id = create_sweep(entity=args.entity, project=args.project)
+    
+    if not sweep_id:
+        print("❌ Failed to create sweep. Aborting...")
         sys.exit(1)
     
-    # Execute command
-    if args.command == 'create':
-        create_sweep(
-            config_path=args.config,
-            entity=args.entity,
-            project=args.project
-        )
+    if args.sweep_only:
+        print("\n✨ Sweep created successfully!")
+        print(f"\n📊 Sweep ID: {sweep_id}")
+        print(f"🔗 View at: https://wandb.ai/{args.entity}/{args.project}/sweeps/{sweep_id}")
+        sys.exit(0)
     
-    elif args.command == 'cancel':
-        cancel_sweep(
-            args.sweep_id,
-            entity=args.entity,
-            project=args.project
-        )
+    # Generate pod YAMLs
+    print(f"\n[Step 2/3] Generating {args.num_pods} Kubernetes pod YAMLs...")
+    pod_files = generate_pod_yamls(
+        sweep_id=sweep_id,
+        template_path=args.template,
+        num_pods=args.num_pods
+    )
     
-    elif args.command == 'list':
-        list_sweeps(
-            entity=args.entity,
-            project=args.project
-        )
+    print(f"\n📁 Pod YAMLs saved to: k8s/training_pods/")
+    
+    # Deploy pods
+    print("\n[Step 3/3] Deploying pods to Kubernetes...")
+    
+    deploy_pods(pod_files)
+    
+    print("\n" + "=" * 60)
+    print("✨ All done!")
+    print("=" * 60)
+    
+    print(f"\n📊 Sweep ID: {sweep_id}")
+    print(f"🔗 View at: https://wandb.ai/{args.entity}/{args.project}/sweeps/{sweep_id}")
+    
+    print(f"\n🎯 Monitor pods:")
+    print(f"  kubectl get pods -l app=wandb-sweep")
+    print(f"\n📋 Check logs:")
+    for i in range(1, args.num_pods + 1):
+        print(f"  kubectl logs -f wandb-sweep-agent-{i}")
+    print(f"\n🛑 Stop all pods:")
+    print(f"  kubectl delete pods -l app=wandb-sweep")
 
 
 if __name__ == "__main__":
