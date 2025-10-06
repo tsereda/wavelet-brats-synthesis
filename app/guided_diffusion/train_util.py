@@ -89,6 +89,7 @@ class TrainLoop:
             self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
             self.weight_decay = weight_decay
             self.lr_anneal_steps = lr_anneal_steps
+            self.wavelet = wavelet  
             self.dwt = DWT_3D(self.wavelet)
             self.idwt = IDWT_3D(self.wavelet)
             self.loss_level = loss_level
@@ -98,7 +99,6 @@ class TrainLoop:
             self.sync_cuda = th.cuda.is_available()
             self.sample_schedule = sample_schedule
             self.diffusion_steps = diffusion_steps
-            self.wavelet = wavelet  
             
             # MODIFIED: Track best SSIM instead of best loss
             self.best_ssims = {}  # Will store best SSIM for each modality (higher is better)
