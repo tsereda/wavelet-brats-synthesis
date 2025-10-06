@@ -1,0 +1,45 @@
+program: scripts/train.py
+method: bayes
+metric:
+  name: test
+  goal: maximize
+parameters:
+  data_dir:
+    value: ./datasets/BRATS2023/training
+  
+  dataset:
+    value: brats
+  
+  image_size:
+    value: 224
+  
+  batch_size:
+    value: 2
+  
+  num_workers:
+    value: 4
+  
+  diffusion_steps:
+    value: 100
+  
+  sample_schedule:
+    value: sampled
+    
+  lr:
+    min: 0.000001  # 1e-6
+    max: 0.0001    # 1e-4
+ 
+  contr:
+    values: ['t1c']  # ['t1n', 't1c', 't2w', 'flair']
+  
+  num_channels:
+    value: 64
+  
+  in_channels:
+    value: 32
+  
+  save_interval:
+    value: 5000
+  
+  log_interval:
+    value: 100

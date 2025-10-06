@@ -5,73 +5,59 @@ A script for training a diffusion model for paired image-to-image translation.
 import argparse
 import numpy as np
 import random
-import sys
+import os
 import torch as th
 import wandb
 
-sys.path.append(".")
-sys.path.append("..")
-
 from guided_diffusion import dist_util, logger
 from guided_diffusion.resample import create_named_schedule_sampler
-from guided_diffusion.script_util import (model_and_diffusion_defaults, create_model_and_diffusion,
-                                          args_to_dict, add_dict_to_argparser)
+from guided_diffusion.script_util import (
+    model_and_diffusion_defaults, 
+    create_model_and_diffusion,
+    args_to_dict, 
+    add_dict_to_argparser
+)
 from guided_diffusion.train_util import TrainLoop
 from guided_diffusion.bratsloader import BRATSVolumes
-from torch.utils.tensorboard import SummaryWriter
 
 
-def main():
-    args = create_argparser().parse_args()
-    seed = args.seed
-    th.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-    # --- wandb integration ---
-    wandb.init(
-        project="fast-cwmd-brats",
-        entity="timgsereda",
-        config=vars(args),
-        mode="online"
+def setup_training(args):
+    """Setup and run training."""
+    # Validate
+    if not args.data_dir or not os.path.exists(args.data_dir):
+        raise ValueError(f"Invalid data_dir: {args.data_dir}")
+    
+    # Set seeds
+    th.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    
+    # Configure logger
+    logger.configure()
+    
+    print(f"[CONFIG] lr={args.lr}, batch_size={args.batch_size}, contr={args.contr}")
+    print(f"[CONFIG] sample_schedule={args.sample_schedule}, diffusion_steps={args.diffusion_steps}")
+    
+    # Create model and diffusion
+    model_args = args_to_dict(args, model_and_diffusion_defaults().keys())
+    model, diffusion = create_model_and_diffusion(**model_args)
+    model.to(dist_util.dev())
+    
+    schedule_sampler = create_named_schedule_sampler(
+        args.schedule_sampler, diffusion, maxt=diffusion.num_timesteps
     )
-    # --- end wandb integration ---
-
-    summary_writer = None
-    if args.use_tensorboard:
-        logdir = None
-        if args.tensorboard_path:
-            logdir = args.tensorboard_path
-        summary_writer = SummaryWriter(log_dir=logdir)
-        summary_writer.add_text(
-            'config',
-            '\n'.join([f'--{k}={repr(v)} <br/>' for k, v in vars(args).items()])
-        )
-        logger.configure(dir=summary_writer.get_logdir())
-    else:
-        logger.configure()
-
-    dist_util.setup_dist(devices=args.devices)
-
-    # Log sample schedule configuration
-    print(f"[SCHEDULE] sample_schedule: {getattr(args, 'sample_schedule', 'direct')}")
-    print(f"[SCHEDULE] diffusion_steps: {getattr(args, 'diffusion_steps', 1000)}")
-    print("Creating model and diffusion...")
-    arguments = args_to_dict(args, model_and_diffusion_defaults().keys())
-    model, diffusion = create_model_and_diffusion(**arguments)
-    model.to(dist_util.dev([0, 1]) if len(args.devices) > 1 else dist_util.dev())
-    schedule_sampler = create_named_schedule_sampler(args.schedule_sampler, diffusion, maxt=diffusion.num_timesteps)
-    if args.dataset == 'brats':
-        ds = BRATSVolumes(args.data_dir, mode='train')
-    datal = th.utils.data.DataLoader(ds,
-                                     batch_size=args.batch_size,
-                                     num_workers=args.num_workers,
-                                     shuffle=True,)
-    print("Start training...")
+    
+    # Load dataset
+    ds = BRATSVolumes(args.data_dir, mode='train')
+    dataloader = th.utils.data.DataLoader(
+        ds, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True
+    )
+    
+    print("Starting training...")
     TrainLoop(
         model=model,
         diffusion=diffusion,
-        data=datal,
+        data=dataloader,
         batch_size=args.batch_size,
         in_channels=args.in_channels,
         image_size=args.image_size,
@@ -96,6 +82,31 @@ def main():
     ).run_loop()
 
 
+def main():
+    """Normal training mode."""
+    args = create_argparser().parse_args()
+    wandb.init(project="fast-cwmd-brats", entity="timgsereda", config=vars(args))
+    setup_training(args)
+
+
+def train_with_wandb_sweep():
+    """W&B sweep training mode."""
+    project = os.getenv('WANDB_PROJECT', 'wavelet-brats-synthesis')
+    entity = os.getenv('WANDB_ENTITY', 'timgsereda')
+    
+    wandb.init(project=project, entity=entity)
+    
+    args = create_argparser().parse_args([])
+    
+    # Override with sweep config
+    for key, value in wandb.config.items():
+        if hasattr(args, key):
+            setattr(args, key, value)
+            print(f"[SWEEP] {key}={value}")
+    
+    setup_training(args)
+
+
 def create_argparser():
     defaults = dict(
         seed=0,
@@ -114,31 +125,26 @@ def create_argparser():
         use_fp16=False,
         fp16_scale_growth=1e-3,
         dataset='brats',
-        use_tensorboard=True,
-        tensorboard_path='',
-        devices=[0],
-        dims=3,
-        learn_sigma=False,
-        num_groups=32,
-        channel_mult="1,2,2,4,4",
-        in_channels=8,
-        out_channels=8,
-        bottleneck_attention=False,
         num_workers=0,
-        mode='default',
-        renormalize=True,
-        additive_skips=False,
-        use_freq=False,
         contr='t1n',
-        sample_schedule='direct',         # NEW: 'direct' or 'sampled'
+        sample_schedule='direct',
     )
-    from guided_diffusion.script_util import model_and_diffusion_defaults, add_dict_to_argparser
     defaults.update(model_and_diffusion_defaults())
-    import argparse
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     return parser
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        if os.getenv('WANDB_SWEEP_ID'):
+            train_with_wandb_sweep()
+        else:
+            main()
+    except KeyboardInterrupt:
+        print("\nTraining interrupted")
+        wandb.finish()
+    except Exception as e:
+        print(f"\nError: {e}")
+        wandb.finish()
+        raise
