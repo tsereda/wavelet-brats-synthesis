@@ -101,11 +101,11 @@ else
     echo "BRATS data already prepared"
 fi
 
-# Setup checkpoints if available
-if [ -f "/data/BraTSChekpoints.zip" ]; then
-    echo "Extracting checkpoints..."
-    unzip -o /data/BraTSChekpoints.zip -d ./
-fi
+# # Setup checkpoints if available
+# if [ -f "/data/BraTSChekpoints.zip" ]; then
+#     echo "Extracting checkpoints..."
+#     unzip -o /data/BraTSChekpoints.zip -d ./
+# fi
 
 echo "Training patients: $(ls datasets/BRATS2023/training/ 2>/dev/null | wc -l)"
 echo "Validation patients: $(ls datasets/BRATS2023/validation/ 2>/dev/null | wc -l)"
