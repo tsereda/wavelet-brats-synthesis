@@ -40,6 +40,7 @@ def setup_training(args):
     
     print(f"[CONFIG] lr={args.lr}, batch_size={args.batch_size}, contr={args.contr}")
     print(f"[CONFIG] sample_schedule={args.sample_schedule}, diffusion_steps={args.diffusion_steps}")
+    print(f"[CONFIG] wavelet={args.wavelet}")
     
     # Create model and diffusion
     model_args = args_to_dict(args, model_and_diffusion_defaults().keys())
@@ -51,7 +52,7 @@ def setup_training(args):
     )
     
     # Load dataset
-    ds = BRATSVolumes(args.data_dir, mode='train')
+    ds = BRATSVolumes(args.data_dir, mode='train', wavelet=args.wavelet)
     dataloader = th.utils.data.DataLoader(
         ds, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True
     )
@@ -82,6 +83,7 @@ def setup_training(args):
         contr=args.contr,
         sample_schedule=args.sample_schedule,
         diffusion_steps=args.diffusion_steps,
+        wavelet=args.wavelet,
     ).run_loop()
 
 
@@ -131,6 +133,7 @@ def create_argparser():
         num_workers=0,
         contr='t1n',
         sample_schedule='direct',
+        wavelet='haar',
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

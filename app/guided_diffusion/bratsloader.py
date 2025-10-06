@@ -7,7 +7,7 @@ import os.path
 import nibabel
 
 class BRATSVolumes(torch.utils.data.Dataset):
-    def __init__(self, directory, mode='train', gen_type=None):
+    def __init__(self, directory, mode='train', gen_type=None, wavelet='haar'):
         '''
         directory is expected to contain some folder structure:
                   if some subfolder contains only files, all of these
@@ -21,6 +21,7 @@ class BRATSVolumes(torch.utils.data.Dataset):
         self.mode = mode
         self.directory = os.path.expanduser(directory)
         self.gentype = gen_type
+        self.wavelet = wavelet
         self.seqtypes = ['t1n', 't1c', 't2w', 't2f', 'seg']
         self.seqtypes_set = set(self.seqtypes)
 

@@ -8,8 +8,8 @@ command:
   - ${args}
 method: bayes
 metric:
-  name: test
-  goal: maximize
+  name: train/mse
+  goal: minimize 
 parameters:
   data_dir:
     value: ./datasets/BRATS2023/training
@@ -28,7 +28,7 @@ parameters:
   dims:
     value: 3
   attention_resolutions:
-    value: ""  # Disable attention to save memory
+    value: ""
   num_heads:
     value: 1
   bottleneck_attention:
@@ -38,10 +38,12 @@ parameters:
   num_channels:
     value: 32
   in_channels:
-    value: 32  # ← Changed to 8 for wavelet subbands
+    value: 32
   out_channels:
-    value: 8  # ← Add this to match input
+    value: 8
   save_interval:
     value: 5000
   log_interval:
     value: 100
+  wavelet:
+    values: ['haar', 'db1', 'db2', 'db4', 'bior1.3', 'bior2.2']

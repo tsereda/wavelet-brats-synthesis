@@ -30,7 +30,6 @@ from guided_diffusion.script_util import (
 )
 from guided_diffusion.bratsloader import clip_and_normalize
 from DWT_IDWT.DWT_IDWT_layer import IDWT_3D, DWT_3D
-from monai.metrics import SSIMMetric, PSNRMetric
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
@@ -60,65 +59,37 @@ def create_brain_mask_from_target(target, threshold=0.01):
     return brain_mask
 
 class ComprehensiveMetrics:
-    """Calculate comprehensive metrics for synthesis evaluation with brain masking"""
+    """Calculate metrics for synthesis evaluation with brain masking"""
     
     def __init__(self, device='cuda'):
         self.device = device
-        self.ssim_metric = SSIMMetric(
-            spatial_dims=3,
-            data_range=1.0,
-            win_size=7,  # Smaller window for medical images
-            k1=0.01,
-            k2=0.03
-        )
-        self.psnr_metric = PSNRMetric(max_val=1.0)
+        # No MONAI metrics needed
         
     def calculate_metrics(self, predicted, target, case_name=""):
-        """Calculate L1, MSE, PSNR, and SSIM metrics with brain masking"""
+        """Calculate L1 and MSE metrics with brain masking"""
         metrics = {}
         
         with th.no_grad():
-            # Ensure tensors are on the same device
             predicted = predicted.to(self.device)
             target = target.to(self.device)
             
-            # Add channel dimension if needed
-            if predicted.dim() == 3:  # [H, W, D]
-                predicted = predicted.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W, D]
-            elif predicted.dim() == 4:  # [B, H, W, D] or [1, H, W, D]
-                predicted = predicted.unsqueeze(1)  # [B, 1, H, W, D]
+            if predicted.dim() == 3:
+                predicted = predicted.unsqueeze(0).unsqueeze(0)
+            elif predicted.dim() == 4:
+                predicted = predicted.unsqueeze(1)
                 
             if target.dim() == 3:
                 target = target.unsqueeze(0).unsqueeze(0)
             elif target.dim() == 4:
                 target = target.unsqueeze(1)
             
-            # CREATE BRAIN MASK FROM TARGET (GROUND TRUTH)
             brain_mask = create_brain_mask_from_target(target, threshold=0.01)
-            
-            # APPLY MASK TO BOTH PREDICTED AND TARGET
             predicted_masked = predicted * brain_mask
             target_masked = target * brain_mask
             
-            # Calculate metrics on MASKED images only
             l1_loss = F.l1_loss(predicted_masked, target_masked).item()
             mse_loss = F.mse_loss(predicted_masked, target_masked).item()
             
-            # PSNR on masked images
-            try:
-                psnr_score = self.psnr_metric(y_pred=predicted_masked, y=target_masked).mean().item()
-            except Exception as e:
-                print(f"  Warning: PSNR calculation failed for {case_name}: {e}")
-                psnr_score = 0.0
-            
-            # SSIM on masked images - KEY IMPROVEMENT!
-            try:
-                ssim_score = self.ssim_metric(y_pred=predicted_masked, y=target_masked).mean().item()
-            except Exception as e:
-                print(f"  Warning: SSIM calculation failed for {case_name}: {e}")
-                ssim_score = 0.0
-            
-            # Calculate brain volume for debugging/reporting
             brain_volume = brain_mask.sum().item()
             total_volume = brain_mask.numel()
             brain_ratio = brain_volume / total_volume
@@ -126,16 +97,13 @@ class ComprehensiveMetrics:
             metrics = {
                 'l1': l1_loss,
                 'mse': mse_loss,
-                'psnr': psnr_score,
-                'ssim': ssim_score,
                 'brain_volume_ratio': brain_ratio
             }
             
             if case_name:
-                print(f"  {case_name}: SSIM={ssim_score:.4f} (brain region = {brain_ratio:.1%})")
+                print(f"  {case_name}: MSE={mse_loss:.6f} (brain region = {brain_ratio:.1%})")
             
         return metrics
-
 
 def load_image(file_path):
     """Load and preprocess image EXACTLY like training dataloader."""
@@ -583,9 +551,9 @@ def log_visual_samples(available_modalities, synthesized, target_data, missing_m
         traceback.print_exc()
 
 
-def prepare_conditioning(available_modalities, missing_modality, device):
+def prepare_conditioning(available_modalities, missing_modality, device, wavelet='haar'):
     """Prepare conditioning tensor from available modalities."""
-    dwt = DWT_3D("haar")
+    dwt = DWT_3D(wavelet)
     
     # Get modalities in consistent order
     available_order = [m for m in MODALITIES if m != missing_modality]
@@ -635,7 +603,7 @@ def prepare_conditioning(available_modalities, missing_modality, device):
     return cond
 
 
-def synthesize_modality(available_modalities, missing_modality, checkpoint_path, device, metrics_calculator=None, target_data=None, override_steps=None):
+def synthesize_modality(available_modalities, missing_modality, checkpoint_path, device, metrics_calculator=None, target_data=None, override_steps=None, wavelet='haar'):
     """Synthesize the missing modality with comprehensive metrics."""
     print(f"\n=== Synthesizing {missing_modality} ===")
     
@@ -662,7 +630,7 @@ def synthesize_modality(available_modalities, missing_modality, checkpoint_path,
     model.eval()
     
     # Prepare conditioning
-    cond = prepare_conditioning(available_modalities, missing_modality, device)
+    cond = prepare_conditioning(available_modalities, missing_modality, device, wavelet)
     
     # Create noise tensor with matching dimensions
     _, _, cond_d, cond_h, cond_w = cond.shape
@@ -708,7 +676,7 @@ def synthesize_modality(available_modalities, missing_modality, checkpoint_path,
     print(f"Sample shape: {sample.shape}")
     
     # Convert back to spatial domain using IDWT
-    idwt = IDWT_3D("haar")
+    idwt = IDWT_3D(wavelet)
     B, _, D, H, W = sample.shape
     
     spatial_sample = idwt(
@@ -742,6 +710,7 @@ def synthesize_modality(available_modalities, missing_modality, checkpoint_path,
     print(f"Final output shape: {spatial_sample.shape}")
     
     # Calculate comprehensive metrics if target is provided
+    # Calculate metrics if target is provided
     metrics = {}
     if metrics_calculator is not None and target_data is not None:
         print(f"Calculating brain-masked metrics...")
@@ -750,10 +719,8 @@ def synthesize_modality(available_modalities, missing_modality, checkpoint_path,
         )
         print(f"  L1: {metrics['l1']:.6f}")
         print(f"  MSE: {metrics['mse']:.6f}")
-        print(f"  PSNR: {metrics['psnr']:.2f} dB")
-        print(f"  SSIM: {metrics['ssim']:.4f} (brain-masked)")
         print(f"  Brain volume: {metrics['brain_volume_ratio']:.1%} of total")
-    
+
     # Add timing info to metrics
     if metrics:
         metrics.update(timing_info)
@@ -808,7 +775,7 @@ def save_result(synthesized, case_dir, missing_modality, output_dir):
 
 def process_case(case_dir, output_dir, checkpoint_dir, device, metrics_calculator=None, 
                 evaluation_mode=False, target_modality=None, override_steps=None, 
-                case_index=0, visual_args=None):
+                case_index=0, visual_args=None, wavelet='haar'):
     """Process a single case with optional metrics evaluation."""
     case_name = os.path.basename(case_dir)
     print(f"\n=== Processing {case_name} ===")
@@ -852,16 +819,15 @@ def process_case(case_dir, output_dir, checkpoint_dir, device, metrics_calculato
         # Synthesize
         synthesized, metrics = synthesize_modality(
             available_modalities, missing_modality, checkpoint_path, device,
-            metrics_calculator, target_data, override_steps
+            metrics_calculator, target_data, override_steps, wavelet
         )
         
+        # Log case-level metrics to wandb
         # Log case-level metrics to wandb
         if metrics and 'l1' in metrics:
             case_metrics = {
                 f"case/{missing_modality}/l1": metrics['l1'],
                 f"case/{missing_modality}/mse": metrics['mse'],
-                f"case/{missing_modality}/psnr": metrics['psnr'],
-                f"case/{missing_modality}/ssim": metrics['ssim'],
                 f"case/{missing_modality}/brain_volume_ratio": metrics['brain_volume_ratio'],
                 f"case/{missing_modality}/sample_time": metrics['sample_time'],
                 f"case/step": metrics.get('steps', 0),
@@ -869,7 +835,7 @@ def process_case(case_dir, output_dir, checkpoint_dir, device, metrics_calculato
                 "case/modality": missing_modality
             }
             wandb.log(case_metrics)
-        
+
         # Create and log visual samples (if enabled and appropriate)
         should_log_visuals = (
             evaluation_mode and  # Only in evaluation mode (we have ground truth)
@@ -925,6 +891,9 @@ def main():
                         help="Random seed for reproducible evaluation")
     parser.add_argument("--diffusion_steps", type=int, default=None,
                         help="Override diffusion steps (default: parse from checkpoint)")
+    parser.add_argument("--wavelet", default="haar", 
+                       choices=['haar', 'db1', 'db2', 'db4', 'bior1.3', 'bior2.2'],
+                       help="Wavelet type for DWT/IDWT")
     
     # Wandb arguments
     parser.add_argument("--wandb_project", default="fast-cwmd-brats-inference",
@@ -1071,7 +1040,8 @@ def main():
         success, metrics = process_case(
             case_dir, args.output_dir, args.checkpoint_dir, device,
             metrics_calculator, args.evaluation_mode, args.target_modality, 
-            args.diffusion_steps, case_index=i, visual_args=visual_args
+            args.diffusion_steps, case_index=i, visual_args=visual_args,
+            wavelet=args.wavelet
         )
         
         if success:
@@ -1151,19 +1121,13 @@ def main():
                     avg_metrics = {
                         'l1': np.mean([m['l1'] for m in metrics_list if 'l1' in m]),
                         'mse': np.mean([m['mse'] for m in metrics_list if 'mse' in m]),
-                        'psnr': np.mean([m['psnr'] for m in metrics_list if 'psnr' in m]),
-                        'ssim': np.mean([m['ssim'] for m in metrics_list if 'ssim' in m])
                     }
                     std_metrics = {
                         'l1': np.std([m['l1'] for m in metrics_list if 'l1' in m]),
                         'mse': np.std([m['mse'] for m in metrics_list if 'mse' in m]),
-                        'psnr': np.std([m['psnr'] for m in metrics_list if 'psnr' in m]),
-                        'ssim': np.std([m['ssim'] for m in metrics_list if 'ssim' in m])
                     }
                     print(f"  L1:   {avg_metrics['l1']:.6f} ± {std_metrics['l1']:.6f}")
                     print(f"  MSE:  {avg_metrics['mse']:.6f} ± {std_metrics['mse']:.6f}")
-                    print(f"  PSNR: {avg_metrics['psnr']:.2f} ± {std_metrics['psnr']:.2f} dB")
-                    print(f"  SSIM: {avg_metrics['ssim']:.4f} ± {std_metrics['ssim']:.4f}")
                     
                     # Log modality-specific metrics to wandb
                     modality_summary = {
@@ -1171,10 +1135,6 @@ def main():
                         f"metrics/{modality}/l1_std": std_metrics['l1'],
                         f"metrics/{modality}/mse_mean": avg_metrics['mse'],
                         f"metrics/{modality}/mse_std": std_metrics['mse'],
-                        f"metrics/{modality}/psnr_mean": avg_metrics['psnr'],
-                        f"metrics/{modality}/psnr_std": std_metrics['psnr'],
-                        f"metrics/{modality}/ssim_mean": avg_metrics['ssim'],
-                        f"metrics/{modality}/ssim_std": std_metrics['ssim'],
                     }
                     final_summary.update(modality_summary)
                 
