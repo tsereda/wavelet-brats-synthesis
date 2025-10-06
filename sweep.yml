@@ -16,15 +16,17 @@ parameters:
   dataset:
     value: brats
   image_size:
-    value: 128  # ← Changed from 224 to 128 (or use 64, 256, 512)
+    value: 128
   batch_size:
-    value: 2
+    value: 1
   num_workers:
-    value: 4
+    value: 0
   diffusion_steps:
     value: 100
   sample_schedule:
     value: sampled
+  dims:  # ← ADD THIS
+    value: 3  # ← Use 3D convolutions for 3D data
   lr:
     min: 0.000001
     max: 0.0001
