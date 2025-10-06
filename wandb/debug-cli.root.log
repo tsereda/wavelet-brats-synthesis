@@ -51,3 +51,40 @@ Traceback (most recent call last):
     raise UsageError(body["errors"][0]["message"])
 wandb.errors.errors.UsageError: Invalid sweep config: invalid hyperparameter configuration: lr
 
+2025-10-05 23:26:21 ERROR Traceback (most recent call last):
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/apis/normalize.py", line 41, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/sdk/internal/internal_api.py", line 3259, in upsert_sweep
+    config = self._validate_config_and_fill_distribution(config)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/sdk/internal/internal_api.py", line 3129, in _validate_config_and_fill_distribution
+    if "min" in parameter and "max" in parameter:
+       ^^^^^^^^^^^^^^^^^^
+TypeError: argument of type 'float' is not iterable
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/cli/cli.py", line 103, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/cli/cli.py", line 886, in sweep
+    sweep_id, warnings = api.upsert_sweep(
+                         ^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/apis/internal.py", line 133, in upsert_sweep
+    return self.api.upsert_sweep(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/apis/normalize.py", line 87, in wrapper
+    raise CommError(message, err).with_traceback(sys.exc_info()[2])
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/apis/normalize.py", line 41, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/sdk/internal/internal_api.py", line 3259, in upsert_sweep
+    config = self._validate_config_and_fill_distribution(config)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/root/miniconda3/lib/python3.12/site-packages/wandb/sdk/internal/internal_api.py", line 3129, in _validate_config_and_fill_distribution
+    if "min" in parameter and "max" in parameter:
+       ^^^^^^^^^^^^^^^^^^
+wandb.errors.errors.CommError: argument of type 'float' is not iterable
+

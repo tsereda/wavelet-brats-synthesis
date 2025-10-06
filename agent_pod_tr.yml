@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: wandb-sweep-agent
+  name: wandb-sweep-agent-1
   namespace: gai-lina-group
   labels:
     app: wandb-sweep
@@ -62,9 +62,9 @@ spec:
     - name: WANDB_PROJECT
       value: "wavelet-brats-synthesis"
     - name: SWEEP_ID
-      value: "wandb agent timgsereda/wavelet-brats-synthesis/7c48f6nd"
+      value: "wandb agent timgsereda/wavelet-brats-synthesis/2empcyx5"
     - name: WANDB_SWEEP_ID
-      value: "wandb agent timgsereda/wavelet-brats-synthesis/7c48f6nd"
+      value: "wandb agent timgsereda/wavelet-brats-synthesis/2empcyx5"
    
     resources:
       requests:
