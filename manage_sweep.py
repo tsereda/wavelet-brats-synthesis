@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
 BraTS Training Management - Unified Script
-Default: Creates wandb sweep + deploys 4 K8s training pods
+Creates wandb sweep + deploys K8s training pods with dual checkpoint saving
+
+Dual Checkpoint Saving:
+  - Wandb: Automatic versioning, tracking, and cloud backup
+  - PVC: Persistent storage, survives pod restarts, faster access
 
 Usage:
-    python manage_training.py              # Create sweep + deploy 4 pods (DEFAULT)
-    python manage_training.py --sweep-only # Just create wandb sweep
+    python manage_sweep.py                           # Create sweep + deploy 4 pods (DEFAULT)
+    python manage_sweep.py --num-pods 6             # Deploy 6 pods
+    python manage_sweep.py --save-iters 100,500,1000 # Save checkpoints at specific iterations
 """
 
 import os
@@ -110,8 +115,9 @@ def create_sweep(config_path="sweep.yml", entity=None, project=None):
 # KUBERNETES POD GENERATION
 # ============================================================================
 
-def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir="k8s/training_pods", num_pods=3):
-    """Generate numbered pod YAMLs from template"""
+def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir="k8s/training_pods", 
+                       num_pods=3, save_iterations=None, pvc_name="brats2025-checkpoints"):
+    """Generate numbered pod YAMLs from template with dual checkpoint saving"""
     
     # Read template
     try:
@@ -129,9 +135,17 @@ def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir
         # Replace placeholders with pod number
         yaml_content = template.replace("{POD_NUM}", str(i))
         
-        # Also inject sweep ID if present
+        # Inject sweep ID if present
         if sweep_id:
             yaml_content = yaml_content.replace("{SWEEP_ID}", sweep_id)
+        
+        # Inject PVC name for checkpoint saving
+        yaml_content = yaml_content.replace("{PVC_NAME}", pvc_name)
+        
+        # Inject save iterations if specified
+        if save_iterations:
+            save_iters_str = ",".join(map(str, save_iterations))
+            yaml_content = yaml_content.replace("{SAVE_ITERATIONS}", save_iters_str)
         
         output_file = os.path.join(output_dir, f"wandb-sweep-agent-{i}.yml")
         
@@ -178,18 +192,26 @@ def deploy_pods(pod_files):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="BraTS Training Management - Create sweep + deploy training pods",
+        description="BraTS Training Management - Create sweep + deploy training pods with dual checkpoint saving",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Default: Create sweep + deploy 3 pods
-  python manage_training.py
-  
-  # Just create sweep
-  python manage_training.py --sweep-only
+  # Default: Create sweep + deploy 4 pods
+  python manage_sweep.py
   
   # Custom number of pods
-  python manage_training.py --num-pods 5
+  python manage_sweep.py --num-pods 6
+  
+  # Save checkpoints at specific iterations
+  python manage_sweep.py --save-iters 100,500,1000,2000
+  
+  # Specify custom PVC for checkpoint storage
+  python manage_sweep.py --pvc-name my-checkpoints-pvc
+  
+Checkpoint Saving:
+  - Checkpoints are saved to BOTH wandb and the PVC
+  - PVC checkpoints persist across pod restarts
+  - Wandb checkpoints are versioned and tracked
   
 Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
         """
@@ -203,10 +225,22 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
                        help='Number of sweep agent pods to deploy (default: 4)')
     parser.add_argument('--template', type=str, default='agent_pod_tr.yml',
                        help='Path to pod template YAML (default: agent_pod_tr.yml)')
-    parser.add_argument('--sweep-only', action='store_true',
-                       help='Only create sweep, do not deploy pods')
+    parser.add_argument('--save-iters', type=str, default=None,
+                       help='Comma-separated list of iterations to save checkpoints (e.g., "100,500,1000")')
+    parser.add_argument('--pvc-name', type=str, default='brats2025-checkpoints',
+                       help='Name of PVC for checkpoint storage (default: brats2025-checkpoints)')
     
     args = parser.parse_args()
+    
+    # Parse save iterations
+    save_iterations = None
+    if args.save_iters:
+        try:
+            save_iterations = [int(x.strip()) for x in args.save_iters.split(',')]
+            print(f"\n💾 Checkpoints will be saved at iterations: {save_iterations}")
+        except ValueError:
+            print(f"❌ Error: Invalid save-iters format. Use comma-separated integers.")
+            sys.exit(1)
     
     print("=" * 60)
     print("🧠 BraTS Training Management")
@@ -220,18 +254,14 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
         print("❌ Failed to create sweep. Aborting...")
         sys.exit(1)
     
-    if args.sweep_only:
-        print("\n✨ Sweep created successfully!")
-        print(f"\n📊 Sweep ID: {sweep_id}")
-        print(f"🔗 View at: https://wandb.ai/{args.entity}/{args.project}/sweeps/{sweep_id}")
-        sys.exit(0)
-    
     # Generate pod YAMLs
     print(f"\n[Step 2/3] Generating {args.num_pods} Kubernetes pod YAMLs...")
     pod_files = generate_pod_yamls(
         sweep_id=sweep_id,
         template_path=args.template,
-        num_pods=args.num_pods
+        num_pods=args.num_pods,
+        save_iterations=save_iterations,
+        pvc_name=args.pvc_name
     )
     
     print(f"\n📁 Pod YAMLs saved to: k8s/training_pods/")
@@ -248,11 +278,25 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
     print(f"\n📊 Sweep ID: {sweep_id}")
     print(f"🔗 View at: https://wandb.ai/{args.entity}/{args.project}/sweeps/{sweep_id}")
     
+    print(f"\n💾 Checkpoint Configuration:")
+    print(f"  - Dual saving enabled: wandb + PVC")
+    print(f"  - PVC name: {args.pvc_name}")
+    if save_iterations:
+        print(f"  - Save iterations: {save_iterations}")
+    else:
+        print(f"  - Save interval: Using sweep config default")
+    
     print(f"\n🎯 Monitor pods:")
     print(f"  kubectl get pods -l app=wandb-sweep")
     print(f"\n📋 Check logs:")
-    for i in range(1, args.num_pods + 1):
+    for i in range(1, min(args.num_pods + 1, 4)):
         print(f"  kubectl logs -f wandb-sweep-agent-{i}")
+    if args.num_pods > 3:
+        print(f"  ... (and {args.num_pods - 3} more)")
+    
+    print(f"\n💾 Access checkpoints:")
+    print(f"  kubectl exec -it wandb-sweep-agent-1 -- ls /data/checkpoints")
+    
     print(f"\n🛑 Stop all pods:")
     print(f"  kubectl delete pods -l app=wandb-sweep")
 

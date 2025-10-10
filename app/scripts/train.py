@@ -1,5 +1,6 @@
 """
 A script for training a diffusion model for paired image-to-image translation.
+Enhanced with dual checkpoint saving to wandb and PVC.
 """
 
 import argparse
@@ -8,6 +9,8 @@ import random
 import os
 import torch as th
 import wandb
+import shutil
+from pathlib import Path
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.resample import create_named_schedule_sampler
@@ -21,8 +24,83 @@ from guided_diffusion.train_util import TrainLoop
 from guided_diffusion.bratsloader import BRATSVolumes
 
 
+def parse_save_iterations(save_iters_str):
+    """Parse save iterations from environment variable or argument"""
+    if not save_iters_str:
+        return None
+    
+    try:
+        return [int(x.strip()) for x in save_iters_str.split(',')]
+    except ValueError:
+        print(f"⚠️ Warning: Invalid save_iterations format: {save_iters_str}")
+        return None
+
+
+def setup_dual_checkpoint_saving():
+    """Setup dual checkpoint saving configuration"""
+    dual_save_enabled = os.getenv('DUAL_CHECKPOINT_SAVE', 'false').lower() == 'true'
+    pvc_checkpoint_dir = os.getenv('PVC_CHECKPOINT_DIR', '/data/checkpoints')
+    save_iters_str = os.getenv('SAVE_ITERATIONS', '')
+    
+    config = {
+        'enabled': dual_save_enabled,
+        'pvc_dir': pvc_checkpoint_dir,
+        'save_iterations': parse_save_iterations(save_iters_str)
+    }
+    
+    if dual_save_enabled:
+        # Create PVC checkpoint directory if it doesn't exist
+        os.makedirs(pvc_checkpoint_dir, exist_ok=True)
+        print(f"💾 Dual checkpoint saving enabled:")
+        print(f"  - Wandb: Automatic cloud backup and versioning")
+        print(f"  - PVC: {pvc_checkpoint_dir}")
+        if config['save_iterations']:
+            print(f"  - Save at iterations: {config['save_iterations']}")
+    
+    return config
+
+
+def save_checkpoint_dual(checkpoint_path, pvc_dir, step, modality):
+    """
+    Save checkpoint to both local (for wandb) and PVC
+    
+    Args:
+        checkpoint_path: Local checkpoint path (will be uploaded to wandb)
+        pvc_dir: PVC directory for persistent storage
+        step: Training step number
+        modality: Training modality (t1n, t1c, t2w, t2f)
+    """
+    if not os.path.exists(checkpoint_path):
+        print(f"⚠️ Warning: Checkpoint not found at {checkpoint_path}")
+        return
+    
+    # Extract filename
+    checkpoint_name = os.path.basename(checkpoint_path)
+    
+    # Save to PVC with informative naming
+    pvc_checkpoint_path = os.path.join(pvc_dir, f"{modality}_{checkpoint_name}")
+    
+    try:
+        shutil.copy2(checkpoint_path, pvc_checkpoint_path)
+        print(f"💾 Saved to PVC: {pvc_checkpoint_path}")
+        
+        # Also save to wandb
+        if wandb.run is not None:
+            wandb.save(checkpoint_path, base_path=os.path.dirname(checkpoint_path))
+            print(f"☁️ Saved to wandb: {checkpoint_name}")
+            
+            # Log checkpoint metadata
+            wandb.log({
+                f"checkpoint/{modality}/step": step,
+                f"checkpoint/{modality}/saved": True
+            })
+            
+    except Exception as e:
+        print(f"❌ Error saving checkpoint: {e}")
+
+
 def setup_training(args):
-    """Setup and run training."""
+    """Setup and run training with dual checkpoint saving."""
     # Validate
     if not args.data_dir or not os.path.exists(args.data_dir):
         raise ValueError(f"Invalid data_dir: {args.data_dir}")
@@ -33,10 +111,13 @@ def setup_training(args):
     random.seed(args.seed)
     
     # Initialize distributed training (REQUIRED - even for single GPU)
-    dist_util.setup_dist()  # ← ADD THIS LINE
+    dist_util.setup_dist()
     
     # Configure logger
     logger.configure()
+    
+    # Setup dual checkpoint saving
+    dual_checkpoint_config = setup_dual_checkpoint_saving()
     
     print(f"[CONFIG] lr={args.lr}, batch_size={args.batch_size}, contr={args.contr}")
     print(f"[CONFIG] sample_schedule={args.sample_schedule}, diffusion_steps={args.diffusion_steps}")
@@ -84,13 +165,27 @@ def setup_training(args):
         sample_schedule=args.sample_schedule,
         diffusion_steps=args.diffusion_steps,
         wavelet=args.wavelet,
+        dual_checkpoint_config=dual_checkpoint_config,
+        save_checkpoint_callback=save_checkpoint_dual,
     ).run_loop()
 
 
 def main():
     """Normal training mode."""
     args = create_argparser().parse_args()
-    wandb.init(project="fast-cwmd-brats", entity="timgsereda", config=vars(args))
+    
+    # Initialize wandb with sweep support
+    if os.getenv('WANDB_SWEEP_ID'):
+        # Wandb sweep mode - wandb.init() called by sweep agent
+        pass
+    else:
+        # Normal mode - manual wandb init
+        wandb.init(
+            project=os.getenv('WANDB_PROJECT', 'fast-cwmd-brats'),
+            entity=os.getenv('WANDB_ENTITY', 'timgsereda'),
+            config=vars(args)
+        )
+    
     setup_training(args)
 
 
@@ -138,6 +233,11 @@ def create_argparser():
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
+    
+    # Add dual checkpoint saving arguments
+    parser.add_argument('--save_iterations', type=str, default=None,
+                       help='Comma-separated list of iterations to save checkpoints (e.g., "100,500,1000")')
+    
     return parser
 
 
