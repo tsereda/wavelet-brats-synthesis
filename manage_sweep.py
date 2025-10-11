@@ -5,7 +5,7 @@ Default: Creates wandb sweep + deploys 4 K8s training pods
 
 Usage:
     python manage_training.py              # Create sweep + deploy 4 pods (DEFAULT)
-    python manage_training.py --sweep-only # Just create wandb sweep
+    python manage_training.py --job        # Create sweep + deploy 4 jobs
 """
 
 import os
@@ -111,7 +111,7 @@ def create_sweep(config_path="sweep.yml", entity=None, project=None):
 # ============================================================================
 
 def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir="k8s/training_pods", num_pods=3):
-    """Generate numbered pod YAMLs from template"""
+    """Generate numbered pod/job YAMLs from template"""
     
     # Read template
     try:
@@ -133,7 +133,11 @@ def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir
         if sweep_id:
             yaml_content = yaml_content.replace("{SWEEP_ID}", sweep_id)
         
-        output_file = os.path.join(output_dir, f"wandb-sweep-agent-{i}.yml")
+        # Determine if it's a job or pod based on template path
+        if "job" in template_path.lower():
+            output_file = os.path.join(output_dir, f"wandb-sweep-job-{i}.yml")
+        else:
+            output_file = os.path.join(output_dir, f"wandb-sweep-agent-{i}.yml")
         
         with open(output_file, 'w') as f:
             f.write(yaml_content)
@@ -145,9 +149,9 @@ def generate_pod_yamls(sweep_id="", template_path="agent_pod_tr.yml", output_dir
 
 
 def deploy_pods(pod_files):
-    """Deploy pods to Kubernetes"""
+    """Deploy pods/jobs to Kubernetes"""
     
-    print(f"\n🚀 Deploying {len(pod_files)} training pods to Kubernetes...")
+    print(f"\n🚀 Deploying {len(pod_files)} training agents to Kubernetes...")
     
     for pod_file in pod_files:
         pod_name = os.path.basename(pod_file).replace('.yml', '')
@@ -182,14 +186,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Default: Create sweep + deploy 3 pods
+  # Default: Create sweep + deploy 4 pods
   python manage_training.py
   
-  # Just create sweep
-  python manage_training.py --sweep-only
+  # Create sweep + deploy jobs
+  python manage_training.py --job
   
-  # Custom number of pods
-  python manage_training.py --num-pods 5
+  # Custom number of pods/jobs
+  python manage_training.py --num-agents 5
   
 Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
         """
@@ -199,12 +203,10 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
                        help='W&B entity (default: timgsereda)')
     parser.add_argument('--project', type=str, default='wavelet-brats-synthesis',
                        help='W&B project (default: wavelet-brats-synthesis)')
-    parser.add_argument('--num-pods', type=int, default=4,
-                       help='Number of sweep agent pods to deploy (default: 4)')
-    parser.add_argument('--template', type=str, default='agent_pod_tr.yml',
-                       help='Path to pod template YAML (default: agent_pod_tr.yml)')
-    parser.add_argument('--sweep-only', action='store_true',
-                       help='Only create sweep, do not deploy pods')
+    parser.add_argument('--num-agents', type=int, default=4,
+                       help='Number of sweep agents to deploy (default: 4)')
+    parser.add_argument('--job', action='store_true',
+                       help='Deploy as Kubernetes Jobs instead of Pods')
     
     args = parser.parse_args()
     
@@ -220,24 +222,26 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
         print("❌ Failed to create sweep. Aborting...")
         sys.exit(1)
     
-    if args.sweep_only:
-        print("\n✨ Sweep created successfully!")
-        print(f"\n📊 Sweep ID: {sweep_id}")
-        print(f"🔗 View at: https://wandb.ai/{args.entity}/{args.project}/sweeps/{sweep_id}")
-        sys.exit(0)
+    # Determine template and deployment type
+    if args.job:
+        template_path = 'agent_job_tr.yml'
+        deployment_type = 'Jobs'
+    else:
+        template_path = 'agent_pod_tr.yml'
+        deployment_type = 'Pods'
     
-    # Generate pod YAMLs
-    print(f"\n[Step 2/3] Generating {args.num_pods} Kubernetes pod YAMLs...")
+    # Generate YAMLs
+    print(f"\n[Step 2/3] Generating {args.num_agents} Kubernetes {deployment_type.lower()} YAMLs...")
     pod_files = generate_pod_yamls(
         sweep_id=sweep_id,
-        template_path=args.template,
-        num_pods=args.num_pods
+        template_path=template_path,
+        num_pods=args.num_agents
     )
     
-    print(f"\n📁 Pod YAMLs saved to: k8s/training_pods/")
+    print(f"\n📁 {deployment_type} YAMLs saved to: k8s/training_pods/")
     
-    # Deploy pods
-    print("\n[Step 3/3] Deploying pods to Kubernetes...")
+    # Deploy 
+    print(f"\n[Step 3/3] Deploying {deployment_type.lower()} to Kubernetes...")
     
     deploy_pods(pod_files)
     
@@ -248,13 +252,22 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
     print(f"\n📊 Sweep ID: {sweep_id}")
     print(f"🔗 View at: https://wandb.ai/{args.entity}/{args.project}/sweeps/{sweep_id}")
     
-    print(f"\n🎯 Monitor pods:")
-    print(f"  kubectl get pods -l app=wandb-sweep")
-    print(f"\n📋 Check logs:")
-    for i in range(1, args.num_pods + 1):
-        print(f"  kubectl logs -f wandb-sweep-agent-{i}")
-    print(f"\n🛑 Stop all pods:")
-    print(f"  kubectl delete pods -l app=wandb-sweep")
+    if args.job:
+        print(f"\n🎯 Monitor jobs:")
+        print(f"  kubectl get jobs -l app=wandb-sweep")
+        print(f"\n📋 Check logs:")
+        for i in range(1, args.num_agents + 1):
+            print(f"  kubectl logs -f job/wandb-sweep-agent-{i}")
+        print(f"\n🛑 Stop all jobs:")
+        print(f"  kubectl delete jobs -l app=wandb-sweep")
+    else:
+        print(f"\n🎯 Monitor pods:")
+        print(f"  kubectl get pods -l app=wandb-sweep")
+        print(f"\n📋 Check logs:")
+        for i in range(1, args.num_agents + 1):
+            print(f"  kubectl logs -f wandb-sweep-agent-{i}")
+        print(f"\n🛑 Stop all pods:")
+        print(f"  kubectl delete pods -l app=wandb-sweep")
 
 
 if __name__ == "__main__":
