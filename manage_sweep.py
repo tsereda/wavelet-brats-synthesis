@@ -39,7 +39,7 @@ program: app/scripts/train.py
 method: random
 metric:
   name: val/mse
-  goal: maximize
+  goal: minimize
 parameters:
   data_dir:
     value: ./datasets/BRATS2023/training
