@@ -47,7 +47,7 @@ The challenge uses a diverse dataset from multiple institutions, based on the **
 
 Your synthesized images will be judged in two primary ways:
 
-1.  **Image Quality:** The **Structural Similarity Index Measure (SSIM)** will be used to compare your generated image to the real one. This will be measured separately for the tumor area and the healthy brain tissue.
+1.  **Image Quality:** **Mean Squared Error (MSE)** will be used to compare your generated image to the real one. This will be measured separately for the tumor area and the healthy brain tissue.
 2.  **Segmentation Performance:** This is an indirect metric. Your synthesized image will be added back to the set of three originals. A pre-trained, state-of-the-art segmentation algorithm will then be run on this "complete" set of four images. The resulting tumor segmentation will be evaluated against the ground truth using **Dice scores** and the **Hausdorff distance**.
 
 -----

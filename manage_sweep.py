@@ -38,7 +38,7 @@ def create_default_sweep_config():
 program: app/scripts/train.py
 method: random
 metric:
-  name: val/ssim
+  name: val/mse
   goal: maximize
 parameters:
   data_dir:
