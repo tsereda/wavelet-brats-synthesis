@@ -313,7 +313,7 @@ class TrainLoop:
             
             # --- Special Checkpoint Saving ---
             current_iteration = self.step + self.resume_step
-            if current_iteration in self.special_checkpoint_steps and current_iteration not in self.saved_special_checkpoints:
+            if self.special_checkpoint_steps is not None and current_iteration in self.special_checkpoint_steps and current_iteration not in self.saved_special_checkpoints:
                 save_start = time.time()
                 self.save_special_checkpoint(current_iteration, mse_loss)
                 save_end = time.time()
