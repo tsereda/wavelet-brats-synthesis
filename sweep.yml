@@ -34,7 +34,7 @@ parameters:
   bottleneck_attention:
     value: false
   contr:
-    values: ['t1n', 't1c']
+    values: ['t1n', 't1c', 't2w', 't2f']
   num_channels:
     value: 32
   in_channels:
@@ -46,4 +46,8 @@ parameters:
   log_interval:
     value: 100
   wavelet:
-    values: ['haar', 'db1', 'db2', 'db4', 'bior1.3']
+    values: ['db2']
+  special_checkpoint_steps:
+    value: "74500,100000,200000,400000,600000"
+  save_to_wandb:
+    value: true

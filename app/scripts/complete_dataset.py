@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Enhanced medical image synthesis script with SSIM evaluation and Wandb integration
-Adds comprehensive metrics including SSIM for Fast-CWDM evaluation
+Enhanced medical image synthesis script with MSE evaluation and Wandb integration
+Adds comprehensive metrics including MSE for Fast-CWDM evaluation
 Now supports both real synthesis and evaluation modes
 FIXED: Proper checkpoint parsing for sampled_X.pt format
 ENHANCED: Brain masking for accurate clinical evaluation

@@ -42,7 +42,7 @@ spec:
       - |
         sudo apt-get update && sudo apt-get install -y git wget p7zip-full
        
-        git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+        git clone -b wandbcheckpointsavinganditerintervals https://github.com/tsereda/wavelet-brats-synthesis.git
         cd wavelet-brats-synthesis
        
         chmod +x run.sh
