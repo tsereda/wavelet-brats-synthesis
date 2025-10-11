@@ -58,7 +58,9 @@ class TrainLoop:
             loss_level='image',
             sample_schedule='direct',
             diffusion_steps=1000,
-            wavelet='haar'
+            wavelet='haar',
+            special_checkpoint_steps=None,
+            save_to_wandb=True
         ):
             self.summary_writer = summary_writer
             self.mode = mode
@@ -95,6 +97,11 @@ class TrainLoop:
             self.loss_level = loss_level
             self.sample_schedule = sample_schedule
             self.diffusion_steps = diffusion_steps
+            
+            # Special checkpoint configuration
+            self.special_checkpoint_steps = special_checkpoint_steps
+            self.save_to_wandb = save_to_wandb
+            self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
             
             # Initialize wavelet transforms (requires self.wavelet to be set)
             self.dwt = DWT_3D(self.wavelet)
@@ -307,6 +314,16 @@ class TrainLoop:
                 total_save_time += save_end - save_start
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
+            
+            # --- Special Checkpoint Saving ---
+            current_iteration = self.step + self.resume_step
+            if current_iteration in self.special_checkpoint_steps and current_iteration not in self.saved_special_checkpoints:
+                save_start = time.time()
+                self.save_special_checkpoint(current_iteration, ssim_score)
+                save_end = time.time()
+                total_save_time += save_end - save_start
+                self.saved_special_checkpoints.add(current_iteration)
+            
             self.step += 1
 
             # Print profiling info every log_interval
@@ -376,6 +393,11 @@ class TrainLoop:
                     th.save(self.opt.state_dict(), f)
                 print(f"💾 Saved optimizer state: {opt_save_path}")
                 
+                # Upload to W&B if enabled
+                if self.save_to_wandb:
+                    self.save_checkpoint_to_wandb(full_save_path)
+                    self.save_checkpoint_to_wandb(opt_save_path)
+                
                 # Log to wandb
                 wandb.log({
                     f"checkpoints/{modality}/best_ssim": current_ssim,
@@ -390,6 +412,65 @@ class TrainLoop:
                 current_best = self.best_ssims.get(modality, -1.0)
                 if self.step % 100 == 0:
                     print(f"SSIM {current_ssim:.4f} not better than best {current_best:.4f} for {modality}")
+
+    def save_special_checkpoint(self, iteration, current_ssim):
+        """Save special checkpoint at specific iterations for experimental purposes"""
+        if dist.get_rank() != 0:
+            return
+            
+        modality = self.contr
+        
+        # Create special checkpoint filename
+        filename = f"brats_{modality}_special_{iteration:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
+        full_save_path = os.path.join(self.checkpoint_dir, filename)
+        
+        try:
+            # Save model checkpoint
+            with bf.BlobFile(full_save_path, "wb") as f:
+                th.save(self.model.state_dict(), f)
+            
+            print(f"🎯 SPECIAL CHECKPOINT SAVED at iteration {iteration}!")
+            print(f"✅ Saved special checkpoint: {full_save_path}")
+            print(f"📊 SSIM at iteration {iteration}: {current_ssim:.4f}")
+            
+            # Save optimizer state for special checkpoint
+            opt_save_path = os.path.join(self.checkpoint_dir, f"opt_special_{modality}_{iteration:06d}.pt")
+            with bf.BlobFile(opt_save_path, "wb") as f:
+                th.save(self.opt.state_dict(), f)
+            print(f"💾 Saved special optimizer state: {opt_save_path}")
+            
+            # Upload to W&B if enabled
+            if self.save_to_wandb:
+                try:
+                    wandb.save(full_save_path, base_path=self.checkpoint_dir)
+                    wandb.save(opt_save_path, base_path=self.checkpoint_dir)
+                    print(f"☁️ Uploaded special checkpoint to W&B: {filename}")
+                except Exception as e:
+                    print(f"⚠️ Warning: Failed to upload special checkpoint to W&B: {e}")
+            
+            # Log special checkpoint metrics to wandb
+            wandb.log({
+                f"special_checkpoints/{modality}/iteration_{iteration}/ssim": current_ssim,
+                f"special_checkpoints/{modality}/saved_at_step": self.step + self.resume_step,
+                "step": self.step + self.resume_step
+            })
+            
+        except Exception as e:
+            print(f"❌ Error saving special checkpoint at iteration {iteration}: {e}")
+
+    def save_checkpoint_to_wandb(self, checkpoint_path, checkpoint_name=None):
+        """Helper method to save checkpoint to W&B"""
+        if not self.save_to_wandb:
+            return
+            
+        try:
+            if checkpoint_name is None:
+                checkpoint_name = os.path.basename(checkpoint_path)
+            
+            wandb.save(checkpoint_path, base_path=os.path.dirname(checkpoint_path))
+            print(f"☁️ Uploaded checkpoint to W&B: {checkpoint_name}")
+        except Exception as e:
+            print(f"⚠️ Warning: Failed to upload checkpoint to W&B: {e}")
 
     def run_step(self, batch, cond, label=None, info=dict()):
         ssim_score, sample, sample_idwt = self.forward_backward(batch, cond, label)

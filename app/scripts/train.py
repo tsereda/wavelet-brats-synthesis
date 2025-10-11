@@ -38,9 +38,17 @@ def setup_training(args):
     # Configure logger
     logger.configure()
     
+    # Process special checkpoint steps
+    if isinstance(args.special_checkpoint_steps, str):
+        special_checkpoint_steps = [int(x.strip()) for x in args.special_checkpoint_steps.split(',') if x.strip()]
+    else:
+        special_checkpoint_steps = args.special_checkpoint_steps
+    
     print(f"[CONFIG] lr={args.lr}, batch_size={args.batch_size}, contr={args.contr}")
     print(f"[CONFIG] sample_schedule={args.sample_schedule}, diffusion_steps={args.diffusion_steps}")
     print(f"[CONFIG] wavelet={args.wavelet}")
+    print(f"[CONFIG] special_checkpoint_steps={special_checkpoint_steps}")
+    print(f"[CONFIG] save_to_wandb={args.save_to_wandb}")
     
     # Create model and diffusion
     model_args = args_to_dict(args, model_and_diffusion_defaults().keys())
@@ -84,6 +92,8 @@ def setup_training(args):
         sample_schedule=args.sample_schedule,
         diffusion_steps=args.diffusion_steps,
         wavelet=args.wavelet,
+        special_checkpoint_steps=special_checkpoint_steps,
+        save_to_wandb=args.save_to_wandb,
     ).run_loop()
 
 
@@ -134,6 +144,8 @@ def create_argparser():
         contr='t1n',
         sample_schedule='direct',
         wavelet='haar',
+        special_checkpoint_steps="75400,100000,200000",
+        save_to_wandb=True,
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
