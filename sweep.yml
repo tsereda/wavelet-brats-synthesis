@@ -16,7 +16,7 @@ parameters:
   dataset:
     value: brats
   image_size:
-    value: 64
+    value: 256
   batch_size:
     value: 1
   num_workers:
