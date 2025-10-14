@@ -17,6 +17,8 @@ parameters:
     value: brats
   image_size:
     value: 224
+  channel_mult:
+    value: "1,2,2,4,4" 
   batch_size:
     value: 1
   num_workers:
