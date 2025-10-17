@@ -32,7 +32,7 @@ def load_sweep_config(config_path="sweep.yml"):
             return yaml.safe_load(f)
 
 
-def create_default_sweep_config():
+def create_default_sweep_config(): #TODO REMOVE
     """Create a default sweep.yml if it doesn't exist"""
     default_config = """project: fast-cwdm-brats
 program: app/scripts/train.py
