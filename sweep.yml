@@ -20,7 +20,7 @@ parameters:
   channel_mult:
     value: "1,2,2,4,4" 
   batch_size:
-    value: 1
+    value: 2
   num_workers:
     value: 12
   diffusion_steps:
@@ -38,7 +38,7 @@ parameters:
   contr:
     values: ['t1n', 't1c', 't2w', 't2f']
   num_channels:
-    value: 32
+    value: 64
   in_channels:
     value: 32
   out_channels:
