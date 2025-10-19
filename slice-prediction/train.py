@@ -126,14 +126,14 @@ def main(args):
     # Load dataset
     dataset = BraTS2D5Dataset(
         data_dir=args.data_dir, 
-        image_size=(args.img_size, args.img_size), 
+        image_size=(args.img_size, args.img_size),  # FIXED: Use args.img_size instead of undefined variable
         spacing=(1.0, 1.0, 1.0), 
         num_patients=args.num_patients
     )
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
 
-    # Load model
-    model = get_model(args.model_type, args.image_size, device)
+    # Load model - FIXED: Use args.img_size instead of args.image_size
+    model = get_model(args.model_type, args.img_size, device)
     wandb.watch(model, log="all", log_freq=100)
     
     # Loss function - use MSE for diffusion models, L1 for Swin
