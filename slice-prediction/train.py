@@ -78,10 +78,11 @@ def get_args():
     return parser.parse_args()
 
 
-def get_model(model_type, device):
+def get_model(model_type, img_size, device):
     """Load model based on type"""
     if model_type == 'swin':
         model = SwinUNETR(
+            img_size=(img_size, img_size),  # Add img_size parameter
             in_channels=8, 
             out_channels=4, 
             feature_size=24, 
@@ -132,7 +133,7 @@ def main(args):
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
 
     # Load model
-    model = get_model(args.model_type, device)
+    model = get_model(args.model_type, args.image_size, device)
     wandb.watch(model, log="all", log_freq=100)
     
     # Loss function - use MSE for diffusion models, L1 for Swin

@@ -177,10 +177,11 @@ def get_args():
     return parser.parse_args()
 
 
-def load_model(checkpoint_path, model_type, device):
+def load_model(checkpoint_path, model_type, img_size, device):
     """Load trained model"""
     if model_type == 'swin':
         model = SwinUNETR(
+            img_size=(img_size, img_size),  # Add img_size parameter
             in_channels=8,
             out_channels=4,
             feature_size=24,
@@ -194,6 +195,8 @@ def load_model(checkpoint_path, model_type, device):
     checkpoint = torch.load(checkpoint_path, map_location=device)
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
         model.load_state_dict(checkpoint['state_dict'])
+    elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
     else:
         model.load_state_dict(checkpoint)
     
@@ -224,7 +227,7 @@ def main():
     
     # Load model
     print(f"Loading model from {args.checkpoint}...")
-    model = load_model(args.checkpoint, args.model_type, device)
+    model = load_model(args.checkpoint, args.model_type, args.img_size, device)
     
     # Evaluate
     print("Running evaluation...")
