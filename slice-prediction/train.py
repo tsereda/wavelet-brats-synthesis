@@ -130,7 +130,7 @@ def main(args):
         spacing=(1.0, 1.0, 1.0), 
         num_patients=args.num_patients
     )
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
     # Load model - FIXED: Use args.img_size instead of args.image_size
     model = get_model(args.model_type, args.img_size, device)
