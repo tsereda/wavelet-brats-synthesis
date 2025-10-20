@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py - Complete training script with FIXED dataset loader for BraTS2020 + AUTO-EVALUATION
+# train.py - Complete training script with FIXED dataset loader for BraTS2020 + WAVELET VISUALIZATION
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -15,7 +15,8 @@ from monai.networks.nets import SwinUNETR
 from torch.nn import L1Loss, MSELoss
 from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
-from skimage.metrics import structural_similarity as ssim
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 
 class BraTS2D5Dataset(Dataset):
@@ -124,8 +125,6 @@ def get_args():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--num_patients', type=int, default=None)
-    parser.add_argument('--skip_eval', action='store_true',
-                       help='Skip automatic evaluation after training')
     return parser.parse_args()
 
 
@@ -156,84 +155,173 @@ def get_model(model_type, wavelet_name, img_size, device):
     return model
 
 
-def evaluate_model_quick(model, data_loader, device, max_batches=50):
+def visualize_wavelet_filters(wavelet_name):
     """
-    Quick evaluation to get MSE and SSIM metrics
+    Visualize the wavelet filter itself
     
     Args:
-        model: trained model
-        data_loader: DataLoader for evaluation
-        device: cuda or cpu
-        max_batches: maximum number of batches to evaluate (to save time)
+        wavelet_name: name of the wavelet (e.g., 'haar', 'db2')
     
     Returns:
-        dict with evaluation metrics
+        matplotlib figure
     """
-    model.eval()
+    import pywt
     
-    all_mse = []
-    all_ssim = []
-    all_mse_per_mod = {mod: [] for mod in ['t1', 't1ce', 't2', 'flair']}
-    all_ssim_per_mod = {mod: [] for mod in ['t1', 't1ce', 't2', 'flair']}
+    wavelet = pywt.Wavelet(wavelet_name)
     
-    print(f"Evaluating on up to {max_batches} batches...")
+    fig, axes = plt.subplots(2, 2, figsize=(10, 8))
+    fig.suptitle(f'Wavelet Filters: {wavelet_name}', fontsize=14, fontweight='bold')
+    
+    # Decomposition filters
+    axes[0, 0].stem(wavelet.dec_lo, basefmt=' ')
+    axes[0, 0].set_title('Decomposition Low-pass (LL)')
+    axes[0, 0].grid(True, alpha=0.3)
+    
+    axes[0, 1].stem(wavelet.dec_hi, basefmt=' ')
+    axes[0, 1].set_title('Decomposition High-pass (LH/HL/HH)')
+    axes[0, 1].grid(True, alpha=0.3)
+    
+    # Reconstruction filters
+    axes[1, 0].stem(wavelet.rec_lo, basefmt=' ')
+    axes[1, 0].set_title('Reconstruction Low-pass')
+    axes[1, 0].grid(True, alpha=0.3)
+    
+    axes[1, 1].stem(wavelet.rec_hi, basefmt=' ')
+    axes[1, 1].set_title('Reconstruction High-pass')
+    axes[1, 1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    return fig
+
+
+def visualize_wavelet_decomposition(coeffs, title, num_modalities=4):
+    """
+    Visualize wavelet decomposition coefficients
+    
+    Args:
+        coeffs: torch.Tensor [C*4, H/2, W/2] - wavelet coefficients (LL, LH, HL, HH for each channel)
+        title: str - title for the plot
+        num_modalities: int - number of modalities to visualize (4 for output, 8 for input)
+    
+    Returns:
+        matplotlib figure
+    """
+    # Ensure coeffs is 3D [total_channels, H, W]
+    if coeffs.dim() == 4:
+        # If [B, C*4, H, W], take first sample
+        coeffs = coeffs[0]
+    
+    # Calculate number of modalities
+    total_channels = coeffs.shape[0]
+    C = total_channels // 4
+    
+    # Only show requested number of modalities
+    C = min(C, num_modalities)
+    
+    modalities = ['T1', 'T1ce', 'T2', 'FLAIR', 'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)']
+    
+    fig = plt.figure(figsize=(16, 4*C))
+    gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
+    
+    for mod_idx in range(C):
+        start_idx = mod_idx * 4
+        
+        # Extract 4 subbands for this modality
+        ll = coeffs[start_idx].cpu().numpy()
+        lh = coeffs[start_idx + 1].cpu().numpy()
+        hl = coeffs[start_idx + 2].cpu().numpy()
+        hh = coeffs[start_idx + 3].cpu().numpy()
+        
+        # Calculate common vmin/vmax for consistent scaling
+        vmin = min(ll.min(), lh.min(), hl.min(), hh.min())
+        vmax = max(ll.max(), lh.max(), hl.max(), hh.max())
+        
+        mod_name = modalities[mod_idx] if mod_idx < len(modalities) else f"Mod{mod_idx}"
+        
+        # Plot LL (approximation)
+        ax = fig.add_subplot(gs[mod_idx, 0])
+        im = ax.imshow(ll, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{mod_name} - LL (Approx)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        
+        # Plot LH (horizontal detail)
+        ax = fig.add_subplot(gs[mod_idx, 1])
+        im = ax.imshow(lh, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{mod_name} - LH (Horiz)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        
+        # Plot HL (vertical detail)
+        ax = fig.add_subplot(gs[mod_idx, 2])
+        im = ax.imshow(hl, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{mod_name} - HL (Vert)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        
+        # Plot HH (diagonal detail)
+        ax = fig.add_subplot(gs[mod_idx, 3])
+        im = ax.imshow(hh, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{mod_name} - HH (Diag)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+    
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    
+    return fig
+
+
+def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, epoch):
+    """
+    Create and log wavelet decomposition visualizations to WandB
+    Only works for wavelet models
+    """
+    if not hasattr(model, 'dwt2d_batch'):
+        return  # Not a wavelet model, skip
     
     with torch.no_grad():
-        for batch_idx, (inputs, targets, slice_indices) in enumerate(data_loader):
-            if batch_idx >= max_batches:
-                break
-                
-            inputs = inputs.to(device)
-            targets = targets.to(device)
-            
-            # Forward pass
-            outputs = model(inputs)
-            
-            # Calculate metrics for each sample in batch
-            batch_size = outputs.shape[0]
-            for i in range(batch_size):
-                pred = outputs[i].cpu().numpy()
-                gt = targets[i].cpu().numpy()
-                
-                # Calculate MSE per modality
-                mse_per_modality = np.mean((pred - gt) ** 2, axis=(1, 2))
-                all_mse.append(np.mean(mse_per_modality))
-                
-                for mod_idx, mod_name in enumerate(['t1', 't1ce', 't2', 'flair']):
-                    all_mse_per_mod[mod_name].append(mse_per_modality[mod_idx])
-                
-                # Calculate SSIM per modality
-                ssim_scores = []
-                for mod_idx, mod_name in enumerate(['t1', 't1ce', 't2', 'flair']):
-                    data_range = max(pred[mod_idx].max(), gt[mod_idx].max()) - min(pred[mod_idx].min(), gt[mod_idx].min())
-                    if data_range == 0:
-                        data_range = 1.0
-                    
-                    score = ssim(
-                        gt[mod_idx], 
-                        pred[mod_idx], 
-                        data_range=data_range
-                    )
-                    ssim_scores.append(score)
-                    all_ssim_per_mod[mod_name].append(score)
-                
-                all_ssim.append(np.mean(ssim_scores))
-    
-    # Aggregate results
-    results = {
-        'eval/mse_mean': np.mean(all_mse),
-        'eval/mse_std': np.std(all_mse),
-        'eval/ssim_mean': np.mean(all_ssim),
-        'eval/ssim_std': np.std(all_ssim),
-        'eval/num_samples': len(all_mse)
-    }
-    
-    # Add per-modality metrics
-    for mod_name in ['t1', 't1ce', 't2', 'flair']:
-        results[f'eval/mse_{mod_name}'] = np.mean(all_mse_per_mod[mod_name])
-        results[f'eval/ssim_{mod_name}'] = np.mean(all_ssim_per_mod[mod_name])
-    
-    return results
+        # Get wavelet decomposition of input (8 channels)
+        input_wavelets = model.dwt2d_batch(inputs[:1])  # Just first sample
+        
+        # Get wavelet decomposition of output (4 channels)
+        output_wavelets = model.dwt2d_batch(outputs[:1])
+        
+        # Get wavelet decomposition of ground truth (4 channels)
+        target_wavelets = model.dwt2d_batch(targets[:1])
+        
+        # Visualize the wavelet filter itself
+        filter_fig = visualize_wavelet_filters(wavelet_name)
+        wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_fig)})
+        plt.close(filter_fig)
+        
+        # Visualize input decomposition (show first 4 modalities = Z-1)
+        input_fig = visualize_wavelet_decomposition(
+            input_wavelets,
+            f'Input Wavelet Decomposition (Z-1 slice) - Epoch {epoch}',
+            num_modalities=4
+        )
+        wandb.log({f"wavelets/input_decomposition": wandb.Image(input_fig)})
+        plt.close(input_fig)
+        
+        # Visualize output decomposition
+        output_fig = visualize_wavelet_decomposition(
+            output_wavelets,
+            f'Output Wavelet Decomposition (Predicted Z) - Epoch {epoch}',
+            num_modalities=4
+        )
+        wandb.log({f"wavelets/output_decomposition": wandb.Image(output_fig)})
+        plt.close(output_fig)
+        
+        # Visualize target decomposition
+        target_fig = visualize_wavelet_decomposition(
+            target_wavelets,
+            f'Target Wavelet Decomposition (Ground Truth Z) - Epoch {epoch}',
+            num_modalities=4
+        )
+        wandb.log({f"wavelets/target_decomposition": wandb.Image(target_fig)})
+        plt.close(target_fig)
 
 
 def main(args):
@@ -278,6 +366,12 @@ def main(args):
     print(f"Starting training for {args.model_type} ({args.wavelet if args.model_type == 'wavelet' else 'N/A'})...")
     best_loss = float('inf')
     
+    # Log wavelet filter visualization once at the start (for wavelet models)
+    if args.model_type == 'wavelet':
+        filter_fig = visualize_wavelet_filters(args.wavelet)
+        wandb.log({"wavelet_filter_kernels": wandb.Image(filter_fig)})
+        plt.close(filter_fig)
+    
     for epoch in range(args.epochs):
         model.train()
         epoch_loss = 0
@@ -310,13 +404,19 @@ def main(args):
             if i % 100 == 0:
                 print(f"Epoch {epoch+1}/{args.epochs}, Batch {i}/{num_batches}, Loss: {loss.item():.6f}")
                 
-                # Create visualization
+                # Create reconstruction visualization
                 with torch.no_grad():
                     panel = create_reconstruction_log_panel(
                         inputs[0], targets[0], outputs[0], 
                         slice_indices[0].item(), i
                     )
                     wandb.log({"reconstruction_preview": wandb.Image(panel)})
+                
+                # Log wavelet decompositions (only for wavelet models, only first batch of epoch)
+                if i == 0 and args.model_type == 'wavelet':
+                    log_wavelet_visualizations(
+                        model, inputs, outputs, targets, args.wavelet, epoch
+                    )
         
         # Calculate average epoch loss
         avg_epoch_loss = epoch_loss / num_batches
@@ -345,55 +445,6 @@ def main(args):
     # Final summary
     print(f"\nTraining completed! Best loss: {best_loss:.6f}")
     wandb.log({"best_loss": best_loss})
-    
-    # ===== AUTOMATIC EVALUATION =====
-    if not args.skip_eval:
-        print("\n" + "="*60)
-        print("STARTING AUTOMATIC EVALUATION")
-        print("="*60)
-        
-        # Reload best model
-        checkpoint_name = f"{args.model_type}_{args.wavelet if args.model_type == 'wavelet' else 'baseline'}_best.pth"
-        checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
-        
-        print(f"Loading best checkpoint from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        
-        # Create evaluation dataloader (no shuffle, larger batch size)
-        eval_loader = DataLoader(
-            dataset, 
-            batch_size=args.batch_size * 2,
-            shuffle=False, 
-            num_workers=4
-        )
-        
-        # Run evaluation
-        eval_results = evaluate_model_quick(model, eval_loader, device, max_batches=50)
-        
-        # Log to WandB
-        wandb.log(eval_results)
-        
-        # Print results
-        print("\n" + "="*60)
-        print("EVALUATION RESULTS")
-        print("="*60)
-        print(f"MSE:  {eval_results['eval/mse_mean']:.6f} ± {eval_results['eval/mse_std']:.6f}")
-        print(f"SSIM: {eval_results['eval/ssim_mean']:.4f} ± {eval_results['eval/ssim_std']:.4f}")
-        print(f"Samples evaluated: {eval_results['eval/num_samples']}")
-        print("\nPer-modality MSE:")
-        print(f"  T1:    {eval_results['eval/mse_t1']:.6f}")
-        print(f"  T1ce:  {eval_results['eval/mse_t1ce']:.6f}")
-        print(f"  T2:    {eval_results['eval/mse_t2']:.6f}")
-        print(f"  FLAIR: {eval_results['eval/mse_flair']:.6f}")
-        print("\nPer-modality SSIM:")
-        print(f"  T1:    {eval_results['eval/ssim_t1']:.4f}")
-        print(f"  T1ce:  {eval_results['eval/ssim_t1ce']:.4f}")
-        print(f"  T2:    {eval_results['eval/ssim_t2']:.4f}")
-        print(f"  FLAIR: {eval_results['eval/ssim_flair']:.4f}")
-        print("="*60)
-    else:
-        print("\nSkipping evaluation (--skip_eval flag set)")
     
     wandb.finish()
 
