@@ -30,7 +30,10 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
         title: str - title for the plot
         output_path: Path - where to save the visualization
     """
-    C = coeffs.shape[0] // 4
+    # Calculate number of channels (should be 4 for T1, T1ce, T2, FLAIR)
+    total_channels = coeffs.shape[0]
+    C = total_channels // 4  # This should be 4
+    
     modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
     
     fig = plt.figure(figsize=(16, 4*C))
