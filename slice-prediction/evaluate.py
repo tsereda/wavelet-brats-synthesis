@@ -30,17 +30,36 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
         title: str - title for the plot
         output_path: Path - where to save the visualization
     """
-    # Calculate number of channels (should be 4 for T1, T1ce, T2, FLAIR)
+    # Ensure coeffs is 3D [total_channels, H, W]
+    if coeffs.dim() == 4:
+        # If [B, C*4, H, W], take first sample
+        coeffs = coeffs[0]
+    
+    # Calculate number of modalities
     total_channels = coeffs.shape[0]
-    C = total_channels // 4  # This should be 4
+    C = total_channels // 4  # Should be 4 for T1, T1ce, T2, FLAIR
+    
+    # Debug print to understand what we're working with
+    print(f"  Debug: coeffs.shape = {coeffs.shape}, C = {C}, total_channels = {total_channels}")
+    
+    # Verify we have the right number of channels
+    if C != 4:
+        print(f"  Warning: Expected 4 modalities but got C={C} (total_channels={total_channels})")
+        print(f"  This might cause visualization issues!")
     
     modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
     
-    fig = plt.figure(figsize=(16, 4*C))
-    gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
+    # Create figure with appropriate size
+    fig = plt.figure(figsize=(16, 4*min(C, 4)))  # Cap at 4 rows
+    gs = GridSpec(min(C, 4), 4, figure=fig, hspace=0.3, wspace=0.3)
     
-    for mod_idx in range(C):
+    for mod_idx in range(min(C, 4)):  # Only plot first 4 modalities
         start_idx = mod_idx * 4
+        
+        # Check if we have enough channels
+        if start_idx + 3 >= total_channels:
+            print(f"  Warning: Not enough channels for modality {mod_idx}")
+            break
         
         # Extract 4 subbands for this modality
         ll = coeffs[start_idx].cpu().numpy()
@@ -52,31 +71,34 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
         vmin = min(ll.min(), lh.min(), hl.min(), hh.min())
         vmax = max(ll.max(), lh.max(), hl.max(), hh.max())
         
+        # Use safe modality name
+        mod_name = modalities[mod_idx] if mod_idx < len(modalities) else f"Mod{mod_idx}"
+        
         # Plot LL (approximation)
         ax = fig.add_subplot(gs[mod_idx, 0])
         im = ax.imshow(ll, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{modalities[mod_idx]} - LL (Approx)')
+        ax.set_title(f'{mod_name} - LL (Approx)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
         
         # Plot LH (horizontal detail)
         ax = fig.add_subplot(gs[mod_idx, 1])
         im = ax.imshow(lh, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{modalities[mod_idx]} - LH (Horiz)')
+        ax.set_title(f'{mod_name} - LH (Horiz)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
         
         # Plot HL (vertical detail)
         ax = fig.add_subplot(gs[mod_idx, 2])
         im = ax.imshow(hl, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{modalities[mod_idx]} - HL (Vert)')
+        ax.set_title(f'{mod_name} - HL (Vert)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
         
         # Plot HH (diagonal detail)
         ax = fig.add_subplot(gs[mod_idx, 3])
         im = ax.imshow(hh, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{modalities[mod_idx]} - HH (Diag)')
+        ax.set_title(f'{mod_name} - HH (Diag)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
     
