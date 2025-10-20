@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py - Complete training script with wavelet diffusion models
+# train.py - Complete training script with FIXED dataset loader for BraTS2020
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -26,11 +26,50 @@ class BraTS2D5Dataset(Dataset):
             patient_dirs = patient_dirs[:num_patients]
         if not patient_dirs:
             raise FileNotFoundError(f"No patient data found in '{data_dir}'. Check your --data_dir path.")
-        self.files = [{"t1": glob.glob(os.path.join(p, "*_t1.nii*"))[0],
-                       "t1ce": glob.glob(os.path.join(p, "*_t1ce.nii*"))[0],
-                       "t2": glob.glob(os.path.join(p, "*_t2.nii*"))[0],
-                       "flair": glob.glob(os.path.join(p, "*_flair.nii*"))[0],
-                       "label": glob.glob(os.path.join(p, "*_seg.nii*"))[0]} for p in patient_dirs]
+        
+        print(f"Found {len(patient_dirs)} patient directories")
+        
+        # Build file list with better error handling
+        self.files = []
+        for p in patient_dirs:
+            patient_name = os.path.basename(p)
+            
+            # Try different naming patterns for BraTS2020
+            # Pattern 1: BraTS20_Training_001_t1.nii (no .gz)
+            # Pattern 2: BraTS20_Training_001_t1.nii.gz
+            
+            try:
+                patient_files = {}
+                
+                # Find each modality with flexible pattern matching
+                for modality in ['t1', 't1ce', 't2', 'flair']:
+                    pattern = os.path.join(p, f"*{modality}.nii*")
+                    matches = glob.glob(pattern)
+                    if not matches:
+                        raise FileNotFoundError(f"No {modality} file found in {patient_name}")
+                    patient_files[modality] = matches[0]
+                
+                # Find segmentation (might be 'seg' or 'label')
+                seg_matches = glob.glob(os.path.join(p, "*seg.nii*"))
+                if not seg_matches:
+                    # Try alternative pattern
+                    seg_matches = glob.glob(os.path.join(p, "*label.nii*"))
+                if not seg_matches:
+                    raise FileNotFoundError(f"No segmentation file found in {patient_name}")
+                patient_files['label'] = seg_matches[0]
+                
+                self.files.append(patient_files)
+                
+            except FileNotFoundError as e:
+                print(f"Warning: Skipping patient {patient_name}: {e}")
+                continue
+        
+        if not self.files:
+            raise RuntimeError("No valid patients found! Check your dataset structure.")
+        
+        print(f"Successfully loaded {len(self.files)} patients")
+        
+        # Process volumes
         transforms = get_train_transforms(image_size, spacing)
         print("--- Pre-loading and processing volumes... ---")
         start_time = time()
@@ -40,6 +79,8 @@ class BraTS2D5Dataset(Dataset):
             if (i + 1) % 10 == 0 or (i + 1) == len(self.files):
                 print(f"   Processed {i + 1}/{len(self.files)} patients...")
         print(f"--- Volume processing took {time() - start_time:.2f} seconds. ---")
+        
+        # Create slice map
         self.slice_map = []
         print("Mapping and filtering slices to create dataset...")
         for vol_idx, p_data in enumerate(self.processed_volumes):
