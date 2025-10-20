@@ -6,8 +6,9 @@ import numpy as np
 
 class WaveletDiffusion(nn.Module):
     """
-    Universal Wavelet Diffusion Model supporting all PyWavelets
-    Can be used with any discrete wavelet: haar, db, sym, coif, bior, rbio, dmey
+    Fast-cWDM for 2D slice prediction
+    Based on the paper but adapted for middleslice reconstruction
+    Uses actual DWT/IDWT like the paper
     """
     def __init__(self, wavelet_name='haar', in_channels=8, out_channels=4, 
                  timesteps=100, base_channels=64):
@@ -18,17 +19,16 @@ class WaveletDiffusion(nn.Module):
         # Validate wavelet
         try:
             self.wavelet = pywt.Wavelet(wavelet_name)
-            if not self.wavelet.orthogonal and not self.wavelet.biorthogonal:
-                raise ValueError(f"Wavelet {wavelet_name} is not suitable for DWT")
         except:
-            raise ValueError(f"Invalid wavelet name: {wavelet_name}. "
-                           f"Use one from: {pywt.wavelist(kind='discrete')}")
+            raise ValueError(f"Invalid wavelet: {wavelet_name}")
         
         print(f"Using wavelet: {self.wavelet.name} (family: {self.wavelet.family_name})")
         
-        # Encoder for context (adjacent slices)
+        # U-Net for processing in wavelet space
+        # Input: 8 input channels * 4 subbands = 32 channels
+        # Output: 4 output channels * 4 subbands = 16 channels
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels, base_channels, 3, padding=1),
+            nn.Conv2d(in_channels * 4, base_channels, 3, padding=1),
             nn.GroupNorm(8, base_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(base_channels, base_channels*2, 3, stride=2, padding=1),
@@ -39,32 +39,28 @@ class WaveletDiffusion(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        # Wavelet coefficient predictor
-        # After DWT, we get 4 subbands (LL, LH, HL, HH) for each of 4 modalities = 16 channels
-        self.wavelet_predictor = nn.Sequential(
+        # Predict wavelet coefficients for output
+        self.decoder = nn.Sequential(
             nn.Conv2d(base_channels*4, base_channels*2, 3, padding=1),
             nn.GroupNorm(16, base_channels*2),
             nn.ReLU(inplace=True),
-            nn.Conv2d(base_channels*2, base_channels, 3, padding=1),
+            nn.ConvTranspose2d(base_channels*2, base_channels, 4, stride=2, padding=1),
             nn.GroupNorm(8, base_channels),
             nn.ReLU(inplace=True),
-            nn.Conv2d(base_channels, 16, 3, padding=1),  # 4 modalities * 4 subbands
+            nn.Conv2d(base_channels, out_channels * 4, 3, padding=1),  # 4 subbands per output channel
         )
-        
-        # Upsample back to original resolution
-        self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
         
     def dwt2d_batch(self, x):
         """
-        Apply 2D DWT to entire batch
+        Apply 2D DWT to batch
         x: [B, C, H, W]
-        returns: [B, C*4, H/2, W/2] with LL, LH, HL, HH coefficients
+        returns: [B, C*4, H/2, W/2]
         """
         batch_size, channels, h, w = x.shape
         device = x.device
         
-        # Process entire batch at once
-        x_np = x.cpu().numpy()
+        # Convert to numpy (detached from gradient)
+        x_np = x.detach().cpu().numpy()
         coeffs_batch = []
         
         for b in range(batch_size):
@@ -86,7 +82,7 @@ class WaveletDiffusion(nn.Module):
     
     def idwt2d_batch(self, coeffs, target_shape):
         """
-        Apply inverse 2D DWT to entire batch
+        Apply inverse 2D DWT to batch
         coeffs: [B, C*4, H/2, W/2]
         returns: [B, C, H, W]
         """
@@ -94,7 +90,8 @@ class WaveletDiffusion(nn.Module):
         num_modalities = total_channels // 4
         device = coeffs.device
         
-        coeffs_np = coeffs.cpu().numpy()
+        # Convert to numpy (detached)
+        coeffs_np = coeffs.detach().cpu().numpy()
         reconstructed_batch = []
         
         for b in range(batch_size):
@@ -128,21 +125,20 @@ class WaveletDiffusion(nn.Module):
         """
         Forward pass
         x: [B, 8, H, W] - concatenated prev and next slices
-        t: timestep (not used in simplified version)
         Returns: [B, 4, H, W] - predicted middle slice
         """
         target_shape = (x.shape[2], x.shape[3])
         
-        # Encode context
-        context = self.encoder(x)  # [B, base_channels*4, H/2, W/2]
+        # Transform input to wavelet space
+        with torch.no_grad():
+            wavelet_input = self.dwt2d_batch(x)  # [B, 32, H/2, W/2]
         
-        # Predict wavelet coefficients
-        wavelet_coeffs = self.wavelet_predictor(context)  # [B, 16, H/2, W/2]
+        # Process in wavelet space (this part has gradients)
+        features = self.encoder(wavelet_input)  # [B, base_channels*4, H/4, W/4]
+        wavelet_output = self.decoder(features)  # [B, 16, H/2, W/2]
         
-        # Upsample coefficients to match DWT output size
-        wavelet_coeffs = self.upsample(wavelet_coeffs)  # [B, 16, H, W]
-        
-        # Reconstruct from wavelets
-        output = self.idwt2d_batch(wavelet_coeffs, target_shape)
+        # Transform back to image space
+        with torch.no_grad():
+            output = self.idwt2d_batch(wavelet_output, target_shape)  # [B, 4, H, W]
         
         return output
