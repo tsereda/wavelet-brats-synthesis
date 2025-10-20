@@ -181,7 +181,7 @@ def load_model(checkpoint_path, model_type, img_size, device):
     """Load trained model"""
     if model_type == 'swin':
         model = SwinUNETR(
-            img_size=(img_size, img_size),  # Add img_size parameter
+            # Remove img_size parameter
             in_channels=8,
             out_channels=4,
             feature_size=24,
