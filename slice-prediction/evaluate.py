@@ -2,6 +2,7 @@
 """
 Evaluation script for middleslice reconstruction
 Calculates MSE and SSIM for model predictions
+NOW WITH WAVELET DECOMPOSITION SAVING AND VISUALIZATION!
 """
 
 import torch
@@ -13,9 +14,73 @@ from torch.utils.data import DataLoader
 from skimage.metrics import structural_similarity as ssim
 from tqdm import tqdm
 import csv
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
+
+
+def visualize_wavelet_decomposition(coeffs, title, output_path):
+    """
+    Visualize wavelet decomposition coefficients
+    
+    Args:
+        coeffs: torch.Tensor [C*4, H/2, W/2] - wavelet coefficients (LL, LH, HL, HH for each channel)
+        title: str - title for the plot
+        output_path: Path - where to save the visualization
+    """
+    C = coeffs.shape[0] // 4
+    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+    
+    fig = plt.figure(figsize=(16, 4*C))
+    gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
+    
+    for mod_idx in range(C):
+        start_idx = mod_idx * 4
+        
+        # Extract 4 subbands for this modality
+        ll = coeffs[start_idx].cpu().numpy()
+        lh = coeffs[start_idx + 1].cpu().numpy()
+        hl = coeffs[start_idx + 2].cpu().numpy()
+        hh = coeffs[start_idx + 3].cpu().numpy()
+        
+        # Calculate common vmin/vmax for consistent scaling
+        vmin = min(ll.min(), lh.min(), hl.min(), hh.min())
+        vmax = max(ll.max(), lh.max(), hl.max(), hh.max())
+        
+        # Plot LL (approximation)
+        ax = fig.add_subplot(gs[mod_idx, 0])
+        im = ax.imshow(ll, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{modalities[mod_idx]} - LL (Approx)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        
+        # Plot LH (horizontal detail)
+        ax = fig.add_subplot(gs[mod_idx, 1])
+        im = ax.imshow(lh, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{modalities[mod_idx]} - LH (Horiz)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        
+        # Plot HL (vertical detail)
+        ax = fig.add_subplot(gs[mod_idx, 2])
+        im = ax.imshow(hl, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{modalities[mod_idx]} - HL (Vert)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+        
+        # Plot HH (diagonal detail)
+        ax = fig.add_subplot(gs[mod_idx, 3])
+        im = ax.imshow(hh, cmap='gray', vmin=vmin, vmax=vmax)
+        ax.set_title(f'{modalities[mod_idx]} - HH (Diag)')
+        ax.axis('off')
+        plt.colorbar(im, ax=ax, fraction=0.046)
+    
+    fig.suptitle(title, fontsize=14, fontweight='bold')
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved wavelet visualization: {output_path}")
 
 
 def calculate_metrics(prediction, ground_truth):
@@ -68,7 +133,7 @@ def calculate_metrics(prediction, ground_truth):
     }
 
 
-def evaluate_model(model, data_loader, device, output_dir):
+def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     """
     Evaluate model on entire dataset
     
@@ -77,6 +142,7 @@ def evaluate_model(model, data_loader, device, output_dir):
         data_loader: DataLoader for validation set
         device: cuda or cpu
         output_dir: where to save results
+        save_wavelets: whether to save wavelet coefficients (only for wavelet models)
     
     Returns:
         dict with aggregated metrics
@@ -87,6 +153,14 @@ def evaluate_model(model, data_loader, device, output_dir):
     predictions_dir = Path(output_dir) / 'predictions'
     predictions_dir.mkdir(parents=True, exist_ok=True)
     
+    # Create wavelet directories if needed
+    if save_wavelets:
+        wavelet_dir = Path(output_dir) / 'wavelets'
+        wavelet_viz_dir = Path(output_dir) / 'wavelet_visualizations'
+        wavelet_dir.mkdir(parents=True, exist_ok=True)
+        wavelet_viz_dir.mkdir(parents=True, exist_ok=True)
+        print("Will save wavelet coefficients and visualizations")
+    
     print(f"Evaluating on {len(data_loader)} batches...")
     
     with torch.no_grad():
@@ -96,6 +170,53 @@ def evaluate_model(model, data_loader, device, output_dir):
             
             # Forward pass
             outputs = model(inputs)
+            
+            # Save wavelet coefficients if this is a wavelet model
+            if save_wavelets and hasattr(model, 'dwt2d_batch'):
+                # Only save for first 10 batches to avoid too much storage
+                if batch_idx < 10:
+                    # Get wavelet decomposition of input
+                    input_wavelets = model.dwt2d_batch(inputs)
+                    
+                    # Get wavelet decomposition of output
+                    output_wavelets = model.dwt2d_batch(outputs)
+                    
+                    # Get wavelet decomposition of ground truth
+                    target_wavelets = model.dwt2d_batch(targets)
+                    
+                    # Save first sample in batch
+                    sample_idx = 0
+                    
+                    # Save coefficients as .npy files
+                    np.save(
+                        wavelet_dir / f'batch{batch_idx}_input_wavelets.npy',
+                        input_wavelets[sample_idx].cpu().numpy()
+                    )
+                    np.save(
+                        wavelet_dir / f'batch{batch_idx}_output_wavelets.npy',
+                        output_wavelets[sample_idx].cpu().numpy()
+                    )
+                    np.save(
+                        wavelet_dir / f'batch{batch_idx}_target_wavelets.npy',
+                        target_wavelets[sample_idx].cpu().numpy()
+                    )
+                    
+                    # Create visualizations
+                    visualize_wavelet_decomposition(
+                        input_wavelets[sample_idx],
+                        f'Input Wavelet Decomposition (Batch {batch_idx})',
+                        wavelet_viz_dir / f'batch{batch_idx}_input_wavelets.png'
+                    )
+                    visualize_wavelet_decomposition(
+                        output_wavelets[sample_idx],
+                        f'Output Wavelet Decomposition (Batch {batch_idx})',
+                        wavelet_viz_dir / f'batch{batch_idx}_output_wavelets.png'
+                    )
+                    visualize_wavelet_decomposition(
+                        target_wavelets[sample_idx],
+                        f'Target Wavelet Decomposition (Batch {batch_idx})',
+                        wavelet_viz_dir / f'batch{batch_idx}_target_wavelets.png'
+                    )
             
             # Calculate metrics for each sample in batch
             batch_size = inputs.shape[0]
@@ -172,24 +293,38 @@ def get_args():
     parser.add_argument('--img_size', type=int, default=256,
                        help='Image size')
     parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'wavelet_haar', 'wavelet_db2'],
+                       choices=['swin', 'wavelet'],
                        help='Model architecture')
+    parser.add_argument('--wavelet', type=str, default='haar',
+                       help='Wavelet type (only for wavelet model)')
+    parser.add_argument('--save_wavelets', action='store_true',
+                       help='Save wavelet coefficients and visualizations (wavelet models only)')
     return parser.parse_args()
 
 
-def load_model(checkpoint_path, model_type, img_size, device):
+def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
     """Load trained model"""
     if model_type == 'swin':
         model = SwinUNETR(
-            # Remove img_size parameter
             in_channels=8,
             out_channels=4,
             feature_size=24,
             spatial_dims=2
         ).to(device)
+        print("Loaded Swin-UNETR model")
+    
+    elif model_type == 'wavelet':
+        from models.wavelet_diffusion import WaveletDiffusion
+        model = WaveletDiffusion(
+            wavelet_name=wavelet_name,
+            in_channels=8,
+            out_channels=4,
+            timesteps=100
+        ).to(device)
+        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
+    
     else:
-        # TODO: Load wavelet diffusion models
-        raise NotImplementedError(f"Model type {model_type} not yet implemented")
+        raise ValueError(f"Unknown model type: {model_type}")
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -227,11 +362,16 @@ def main():
     
     # Load model
     print(f"Loading model from {args.checkpoint}...")
-    model = load_model(args.checkpoint, args.model_type, args.img_size, device)
+    model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
+    
+    # Check if we should save wavelets
+    save_wavelets = args.save_wavelets and args.model_type == 'wavelet'
+    if args.save_wavelets and args.model_type != 'wavelet':
+        print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
     
     # Evaluate
     print("Running evaluation...")
-    results, all_metrics = evaluate_model(model, data_loader, device, args.output)
+    results, all_metrics = evaluate_model(model, data_loader, device, args.output, save_wavelets)
     
     # Print results
     print("\n" + "="*50)
@@ -251,6 +391,9 @@ def main():
     save_results(results, all_metrics, args.output)
     
     print(f"\nResults saved to {args.output}/")
+    if save_wavelets:
+        print(f"Wavelet coefficients saved to {args.output}/wavelets/")
+        print(f"Wavelet visualizations saved to {args.output}/wavelet_visualizations/")
 
 
 if __name__ == '__main__':
