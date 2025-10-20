@@ -2,7 +2,7 @@
 """
 Evaluation script for middleslice reconstruction
 Calculates MSE and SSIM for model predictions
-NOW WITH WAVELET DECOMPOSITION SAVING AND VISUALIZATION!
+NOW WITH WAVELET DECOMPOSITION SAVING, VISUALIZATION, AND WANDB LOGGING!
 """
 
 import torch
@@ -16,6 +16,7 @@ from tqdm import tqdm
 import csv
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+import wandb
 
 from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
@@ -37,29 +38,24 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
     
     # Calculate number of modalities
     total_channels = coeffs.shape[0]
-    C = total_channels // 4  # Should be 4 for T1, T1ce, T2, FLAIR
+    C = total_channels // 4
     
-    # Debug print to understand what we're working with
+    # Debug print
     print(f"  Debug: coeffs.shape = {coeffs.shape}, C = {C}, total_channels = {total_channels}")
     
-    # Verify we have the right number of channels
-    if C != 4:
+    # For input (8 modalities), only show first 4
+    if C > 4:
         print(f"  Warning: Expected 4 modalities but got C={C} (total_channels={total_channels})")
-        print(f"  This might cause visualization issues!")
+        print(f"  Will only visualize first 4 modalities")
+        C = 4
     
     modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
     
-    # Create figure with appropriate size
-    fig = plt.figure(figsize=(16, 4*min(C, 4)))  # Cap at 4 rows
-    gs = GridSpec(min(C, 4), 4, figure=fig, hspace=0.3, wspace=0.3)
+    fig = plt.figure(figsize=(16, 4*C))
+    gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
     
-    for mod_idx in range(min(C, 4)):  # Only plot first 4 modalities
+    for mod_idx in range(C):
         start_idx = mod_idx * 4
-        
-        # Check if we have enough channels
-        if start_idx + 3 >= total_channels:
-            print(f"  Warning: Not enough channels for modality {mod_idx}")
-            break
         
         # Extract 4 subbands for this modality
         ll = coeffs[start_idx].cpu().numpy()
@@ -71,7 +67,6 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
         vmin = min(ll.min(), lh.min(), hl.min(), hh.min())
         vmax = max(ll.max(), lh.max(), hl.max(), hh.max())
         
-        # Use safe modality name
         mod_name = modalities[mod_idx] if mod_idx < len(modalities) else f"Mod{mod_idx}"
         
         # Plot LL (approximation)
@@ -188,6 +183,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     
     print(f"Evaluating on {len(data_loader)} batches...")
     
+    # For logging sample predictions to wandb
+    sample_logged = False
+    
     with torch.no_grad():
         for batch_idx, (inputs, targets, slice_indices) in enumerate(tqdm(data_loader)):
             inputs = inputs.to(device)
@@ -255,6 +253,50 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                 if batch_idx < 10:  # Save first 10 batches for inspection
                     pred_path = predictions_dir / f'batch{batch_idx}_sample{i}.npy'
                     np.save(pred_path, outputs[i].cpu().numpy())
+                
+                # Log first sample to wandb
+                if batch_idx == 0 and i == 0 and not sample_logged:
+                    # Create comparison visualization
+                    fig, axes = plt.subplots(4, 5, figsize=(15, 12))
+                    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+                    
+                    for mod_idx, mod_name in enumerate(modalities):
+                        # Input Z-1
+                        axes[mod_idx, 0].imshow(inputs[i, mod_idx].cpu().numpy(), cmap='gray')
+                        axes[mod_idx, 0].set_title(f'{mod_name} Input (Z-1)' if mod_idx == 0 else '')
+                        axes[mod_idx, 0].axis('off')
+                        
+                        # Input Z+1
+                        axes[mod_idx, 1].imshow(inputs[i, mod_idx+4].cpu().numpy(), cmap='gray')
+                        axes[mod_idx, 1].set_title(f'Input (Z+1)' if mod_idx == 0 else '')
+                        axes[mod_idx, 1].axis('off')
+                        
+                        # Prediction
+                        axes[mod_idx, 2].imshow(outputs[i, mod_idx].cpu().numpy(), cmap='gray')
+                        axes[mod_idx, 2].set_title(f'Prediction (Z)' if mod_idx == 0 else '')
+                        axes[mod_idx, 2].axis('off')
+                        
+                        # Ground truth
+                        axes[mod_idx, 3].imshow(targets[i, mod_idx].cpu().numpy(), cmap='gray')
+                        axes[mod_idx, 3].set_title(f'Ground Truth (Z)' if mod_idx == 0 else '')
+                        axes[mod_idx, 3].axis('off')
+                        
+                        # Error map
+                        error = np.abs(outputs[i, mod_idx].cpu().numpy() - targets[i, mod_idx].cpu().numpy())
+                        im = axes[mod_idx, 4].imshow(error, cmap='hot', vmin=0, vmax=0.3)
+                        axes[mod_idx, 4].set_title(f'|Error|' if mod_idx == 0 else '')
+                        axes[mod_idx, 4].axis('off')
+                    
+                    plt.suptitle(f'Sample Prediction (Slice {slice_indices[i].item()})')
+                    plt.tight_layout()
+                    
+                    # Save and log to wandb
+                    sample_path = predictions_dir / 'sample_prediction.png'
+                    plt.savefig(sample_path, dpi=150, bbox_inches='tight')
+                    wandb.log({"eval/sample_prediction": wandb.Image(str(sample_path))})
+                    plt.close()
+                    
+                    sample_logged = True
     
     # Aggregate metrics
     mse_values = [m['mse'] for m in all_metrics]
@@ -374,6 +416,15 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
 def main():
     args = get_args()
     
+    # Initialize wandb
+    run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
+    wandb.init(
+        project="brats-middleslice-wavelet-sweep",
+        name=run_name,
+        config=vars(args),
+        tags=["evaluation"]
+    )
+    
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
@@ -421,6 +472,29 @@ def main():
     print(f"  FLAIR: {results['mse_flair_mean']:.6f}")
     print("="*50)
     
+    # Log results to wandb
+    wandb.log({
+        "eval/mse_mean": results['mse_mean'],
+        "eval/mse_std": results['mse_std'],
+        "eval/ssim_mean": results['ssim_mean'],
+        "eval/ssim_std": results['ssim_std'],
+        "eval/num_samples": results['num_samples'],
+        "eval/mse_t1": results['mse_t1_mean'],
+        "eval/mse_t1ce": results['mse_t1ce_mean'],
+        "eval/mse_t2": results['mse_t2_mean'],
+        "eval/mse_flair": results['mse_flair_mean'],
+        "eval/ssim_t1": results['ssim_t1_mean'],
+        "eval/ssim_t1ce": results['ssim_t1ce_mean'],
+        "eval/ssim_t2": results['ssim_t2_mean'],
+        "eval/ssim_flair": results['ssim_flair_mean'],
+    })
+    
+    # Log example wavelet visualizations to wandb
+    if save_wavelets:
+        wavelet_viz_dir = Path(args.output) / 'wavelet_visualizations'
+        for img_path in sorted(wavelet_viz_dir.glob('batch0_*.png'))[:3]:  # Log first batch
+            wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
+    
     # Save results
     save_results(results, all_metrics, args.output)
     
@@ -428,6 +502,8 @@ def main():
     if save_wavelets:
         print(f"Wavelet coefficients saved to {args.output}/wavelets/")
         print(f"Wavelet visualizations saved to {args.output}/wavelet_visualizations/")
+    
+    wandb.finish()
 
 
 if __name__ == '__main__':
