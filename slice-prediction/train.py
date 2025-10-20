@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py - Complete training script with FIXED dataset loader for BraTS2020
+# train.py - Complete training script with FIXED dataset loader for BraTS2020 + AUTO-EVALUATION
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -15,6 +15,7 @@ from monai.networks.nets import SwinUNETR
 from torch.nn import L1Loss, MSELoss
 from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
+from skimage.metrics import structural_similarity as ssim
 
 
 class BraTS2D5Dataset(Dataset):
@@ -123,6 +124,8 @@ def get_args():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--num_patients', type=int, default=None)
+    parser.add_argument('--skip_eval', action='store_true',
+                       help='Skip automatic evaluation after training')
     return parser.parse_args()
 
 
@@ -151,6 +154,86 @@ def get_model(model_type, wavelet_name, img_size, device):
         raise ValueError(f"Unknown model type: {model_type}")
     
     return model
+
+
+def evaluate_model_quick(model, data_loader, device, max_batches=50):
+    """
+    Quick evaluation to get MSE and SSIM metrics
+    
+    Args:
+        model: trained model
+        data_loader: DataLoader for evaluation
+        device: cuda or cpu
+        max_batches: maximum number of batches to evaluate (to save time)
+    
+    Returns:
+        dict with evaluation metrics
+    """
+    model.eval()
+    
+    all_mse = []
+    all_ssim = []
+    all_mse_per_mod = {mod: [] for mod in ['t1', 't1ce', 't2', 'flair']}
+    all_ssim_per_mod = {mod: [] for mod in ['t1', 't1ce', 't2', 'flair']}
+    
+    print(f"Evaluating on up to {max_batches} batches...")
+    
+    with torch.no_grad():
+        for batch_idx, (inputs, targets, slice_indices) in enumerate(data_loader):
+            if batch_idx >= max_batches:
+                break
+                
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+            
+            # Forward pass
+            outputs = model(inputs)
+            
+            # Calculate metrics for each sample in batch
+            batch_size = outputs.shape[0]
+            for i in range(batch_size):
+                pred = outputs[i].cpu().numpy()
+                gt = targets[i].cpu().numpy()
+                
+                # Calculate MSE per modality
+                mse_per_modality = np.mean((pred - gt) ** 2, axis=(1, 2))
+                all_mse.append(np.mean(mse_per_modality))
+                
+                for mod_idx, mod_name in enumerate(['t1', 't1ce', 't2', 'flair']):
+                    all_mse_per_mod[mod_name].append(mse_per_modality[mod_idx])
+                
+                # Calculate SSIM per modality
+                ssim_scores = []
+                for mod_idx, mod_name in enumerate(['t1', 't1ce', 't2', 'flair']):
+                    data_range = max(pred[mod_idx].max(), gt[mod_idx].max()) - min(pred[mod_idx].min(), gt[mod_idx].min())
+                    if data_range == 0:
+                        data_range = 1.0
+                    
+                    score = ssim(
+                        gt[mod_idx], 
+                        pred[mod_idx], 
+                        data_range=data_range
+                    )
+                    ssim_scores.append(score)
+                    all_ssim_per_mod[mod_name].append(score)
+                
+                all_ssim.append(np.mean(ssim_scores))
+    
+    # Aggregate results
+    results = {
+        'eval/mse_mean': np.mean(all_mse),
+        'eval/mse_std': np.std(all_mse),
+        'eval/ssim_mean': np.mean(all_ssim),
+        'eval/ssim_std': np.std(all_ssim),
+        'eval/num_samples': len(all_mse)
+    }
+    
+    # Add per-modality metrics
+    for mod_name in ['t1', 't1ce', 't2', 'flair']:
+        results[f'eval/mse_{mod_name}'] = np.mean(all_mse_per_mod[mod_name])
+        results[f'eval/ssim_{mod_name}'] = np.mean(all_ssim_per_mod[mod_name])
+    
+    return results
 
 
 def main(args):
@@ -262,6 +345,56 @@ def main(args):
     # Final summary
     print(f"\nTraining completed! Best loss: {best_loss:.6f}")
     wandb.log({"best_loss": best_loss})
+    
+    # ===== AUTOMATIC EVALUATION =====
+    if not args.skip_eval:
+        print("\n" + "="*60)
+        print("STARTING AUTOMATIC EVALUATION")
+        print("="*60)
+        
+        # Reload best model
+        checkpoint_name = f"{args.model_type}_{args.wavelet if args.model_type == 'wavelet' else 'baseline'}_best.pth"
+        checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+        
+        print(f"Loading best checkpoint from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Create evaluation dataloader (no shuffle, larger batch size)
+        eval_loader = DataLoader(
+            dataset, 
+            batch_size=args.batch_size * 2,
+            shuffle=False, 
+            num_workers=4
+        )
+        
+        # Run evaluation
+        eval_results = evaluate_model_quick(model, eval_loader, device, max_batches=50)
+        
+        # Log to WandB
+        wandb.log(eval_results)
+        
+        # Print results
+        print("\n" + "="*60)
+        print("EVALUATION RESULTS")
+        print("="*60)
+        print(f"MSE:  {eval_results['eval/mse_mean']:.6f} ± {eval_results['eval/mse_std']:.6f}")
+        print(f"SSIM: {eval_results['eval/ssim_mean']:.4f} ± {eval_results['eval/ssim_std']:.4f}")
+        print(f"Samples evaluated: {eval_results['eval/num_samples']}")
+        print("\nPer-modality MSE:")
+        print(f"  T1:    {eval_results['eval/mse_t1']:.6f}")
+        print(f"  T1ce:  {eval_results['eval/mse_t1ce']:.6f}")
+        print(f"  T2:    {eval_results['eval/mse_t2']:.6f}")
+        print(f"  FLAIR: {eval_results['eval/mse_flair']:.6f}")
+        print("\nPer-modality SSIM:")
+        print(f"  T1:    {eval_results['eval/ssim_t1']:.4f}")
+        print(f"  T1ce:  {eval_results['eval/ssim_t1ce']:.4f}")
+        print(f"  T2:    {eval_results['eval/ssim_t2']:.4f}")
+        print(f"  FLAIR: {eval_results['eval/ssim_flair']:.4f}")
+        print("="*60)
+    else:
+        print("\nSkipping evaluation (--skip_eval flag set)")
+    
     wandb.finish()
 
 
