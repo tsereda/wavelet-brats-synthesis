@@ -65,24 +65,25 @@ class BraTS2D5Dataset(Dataset):
 
 def get_args():
     parser = argparse.ArgumentParser(description="2.5D Middleslice Reconstruction")
-    parser.add_argument('--data_dir', type=str, required=True, help='Root directory for the BraTS dataset.')
-    parser.add_argument('--output_dir', type=str, default='./checkpoints', help='Directory to save model checkpoints.')
+    parser.add_argument('--data_dir', type=str, required=True)
+    parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--model_type', type=str, default='swin', 
-                       choices=['swin', 'wavelet_haar', 'wavelet_db2'],
+                       choices=['swin', 'wavelet'],
                        help='Model architecture to use')
-    parser.add_argument('--epochs', type=int, default=50, help='Number of training epochs.')
-    parser.add_argument('--batch_size', type=int, default=8, help='Training batch size.')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
-    parser.add_argument('--img_size', type=int, default=256, help='Image size (height and width).')
-    parser.add_argument('--num_patients',type=int,default=None,help='Number of patient volumes to use for quick testing (default: all).')
+    parser.add_argument('--wavelet', type=str, default='haar',
+                       help='Wavelet type (only for wavelet model). Options: haar, db1-20, sym2-20, coif1-17, bior1.1-6.8, rbio1.1-6.8')
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--img_size', type=int, default=256)
+    parser.add_argument('--num_patients', type=int, default=None)
     return parser.parse_args()
 
 
-def get_model(model_type, img_size, device):
+def get_model(model_type, wavelet_name, img_size, device):
     """Load model based on type"""
     if model_type == 'swin':
         model = SwinUNETR(
-            # Remove img_size parameter - it's not needed for 2D version
             in_channels=8, 
             out_channels=4, 
             feature_size=24, 
@@ -90,23 +91,15 @@ def get_model(model_type, img_size, device):
         ).to(device)
         print("Loaded Swin-UNETR model")
     
-    elif model_type == 'wavelet_haar':
-        from models.wavelet_diffusion_haar import WaveletDiffusionHaar
-        model = WaveletDiffusionHaar(
+    elif model_type == 'wavelet':
+        from models.wavelet_diffusion import WaveletDiffusion
+        model = WaveletDiffusion(
+            wavelet_name=wavelet_name,
             in_channels=8,
             out_channels=4,
             timesteps=100
         ).to(device)
-        print("Loaded Wavelet Diffusion model (Haar)")
-    
-    elif model_type == 'wavelet_db2':
-        from models.wavelet_diffusion_db2 import WaveletDiffusionDb2
-        model = WaveletDiffusionDb2(
-            in_channels=8,
-            out_channels=4,
-            timesteps=100
-        ).to(device)
-        print("Loaded Wavelet Diffusion model (db2)")
+        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
     
     else:
         raise ValueError(f"Unknown model type: {model_type}")
@@ -116,8 +109,14 @@ def get_model(model_type, img_size, device):
 
 def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
-    run_name = f"{args.model_type}_reconstruction_{int(time())}"
-    wandb.init(project="brats-2.5d-reconstruction", config=vars(args), name=run_name)
+    
+    # Create run name with wavelet type
+    if args.model_type == 'wavelet':
+        run_name = f"wavelet_{args.wavelet}_{int(time())}"
+    else:
+        run_name = f"{args.model_type}_reconstruction_{int(time())}"
+    
+    wandb.init(project="brats-middleslice-wavelet-sweep", config=vars(args), name=run_name)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
@@ -126,17 +125,17 @@ def main(args):
     # Load dataset
     dataset = BraTS2D5Dataset(
         data_dir=args.data_dir, 
-        image_size=(args.img_size, args.img_size),  # FIXED: Use args.img_size instead of undefined variable
+        image_size=(args.img_size, args.img_size),
         spacing=(1.0, 1.0, 1.0), 
         num_patients=args.num_patients
     )
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
-    # Load model - FIXED: Use args.img_size instead of args.image_size
-    model = get_model(args.model_type, args.img_size, device)
+    # Load model
+    model = get_model(args.model_type, args.wavelet, args.img_size, device)
     wandb.watch(model, log="all", log_freq=100)
     
-    # Loss function - use MSE for diffusion models, L1 for Swin
+    # Loss function
     if args.model_type == 'swin':
         loss_function = L1Loss()
         print("Using L1 loss (MAE)")
@@ -163,65 +162,8 @@ def main(args):
             if args.model_type == 'swin':
                 outputs = model(inputs)
             else:
-                # For diffusion models, simplified training (direct prediction for now)
-                # TODO: Implement proper diffusion training loop with noise sampling
                 outputs = model(inputs, t=None)
             
             loss = loss_function(outputs, targets)
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
-            
-            # Logging
-            if (i + 1) % 100 == 0:
-                print(f"   Epoch {epoch + 1}/{args.epochs}, Batch {i + 1}/{num_batches} | Loss: {loss.item():.4f}")
-                
-                # Create visualization
-                panel_bgr = create_reconstruction_log_panel(
-                    inputs[0].detach(), 
-                    targets[0].detach(), 
-                    outputs[0].detach(), 
-                    slice_indices[0].item(), 
-                    i + 1
-                )
-                
-                panel_rgb = cv2.cvtColor(panel_bgr, cv2.COLOR_BGR2RGB)
-                
-                wandb.log({
-                    "batch_loss": loss.item(),
-                    "reconstruction_samples": wandb.Image(panel_rgb)
-                })
-        
-        # Epoch summary
-        avg_loss = epoch_loss / num_batches
-        print(f"--- Epoch {epoch + 1}/{args.epochs}, Average Loss: {avg_loss:.4f} ---")
-        wandb.log({"epoch": epoch + 1, "avg_epoch_loss": avg_loss})
-        
-        # Save checkpoint
-        checkpoint_path = os.path.join(args.output_dir, f"{args.model_type}_epoch_{epoch+1}.pth")
-        torch.save({
-            'epoch': epoch + 1,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': avg_loss,
-        }, checkpoint_path)
-        
-        # Save best model
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            best_path = os.path.join(args.output_dir, f"{args.model_type}_best.pth")
-            torch.save({
-                'epoch': epoch + 1,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_loss,
-            }, best_path)
-            print(f"✓ Best model saved to {best_path} (loss: {best_loss:.4f})")
-
-    print(f"\nTraining finished! Best loss: {best_loss:.4f}")
-    wandb.finish()
-
-
-if __name__ == '__main__':
-    args = get_args()
-    main(args)
