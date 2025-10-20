@@ -45,7 +45,7 @@ parameters:
     value: "BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
   
   epochs:
-    value: 20
+    value: 1
   
   batch_size:
     value: 8
