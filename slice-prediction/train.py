@@ -1,4 +1,5 @@
-# train.py - Updated with wavelet diffusion models
+#!/usr/bin/env python3
+# train.py - Complete training script with wavelet diffusion models
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -25,7 +26,11 @@ class BraTS2D5Dataset(Dataset):
             patient_dirs = patient_dirs[:num_patients]
         if not patient_dirs:
             raise FileNotFoundError(f"No patient data found in '{data_dir}'. Check your --data_dir path.")
-        self.files = [{"t1": glob.glob(os.path.join(p, "*_t1.nii"))[0],"t1ce": glob.glob(os.path.join(p, "*_t1ce.nii"))[0],"t2": glob.glob(os.path.join(p, "*_t2.nii"))[0],"flair": glob.glob(os.path.join(p, "*_flair.nii"))[0],"label": glob.glob(os.path.join(p, "*_seg.nii"))[0]} for p in patient_dirs]
+        self.files = [{"t1": glob.glob(os.path.join(p, "*_t1.nii*"))[0],
+                       "t1ce": glob.glob(os.path.join(p, "*_t1ce.nii*"))[0],
+                       "t2": glob.glob(os.path.join(p, "*_t2.nii*"))[0],
+                       "flair": glob.glob(os.path.join(p, "*_flair.nii*"))[0],
+                       "label": glob.glob(os.path.join(p, "*_seg.nii*"))[0]} for p in patient_dirs]
         transforms = get_train_transforms(image_size, spacing)
         print("--- Pre-loading and processing volumes... ---")
         start_time = time()
@@ -52,12 +57,12 @@ class BraTS2D5Dataset(Dataset):
         volume_idx, slice_idx = self.slice_map[index]
         patient_data = self.processed_volumes[volume_idx]
         
-        img_modalities = torch.cat([patient_data['t1'], patient_data['t1ce'], patient_data['t2'], patient_data['flair']], dim=0)
+        img_modalities = torch.cat([patient_data['t1'], patient_data['t1ce'], 
+                                    patient_data['t2'], patient_data['flair']], dim=0)
         
         prev_slice = img_modalities[:, :, :, slice_idx - 1]
         next_slice = img_modalities[:, :, :, slice_idx + 1]
         input_tensor = torch.cat([prev_slice, next_slice], dim=0)
-
         target_tensor = img_modalities[:, :, :, slice_idx]
 
         return input_tensor, target_tensor, slice_idx
@@ -71,7 +76,7 @@ def get_args():
                        choices=['swin', 'wavelet'],
                        help='Model architecture to use')
     parser.add_argument('--wavelet', type=str, default='haar',
-                       help='Wavelet type (only for wavelet model). Options: haar, db1-20, sym2-20, coif1-17, bior1.1-6.8, rbio1.1-6.8')
+                       help='Wavelet type (only for wavelet model)')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -123,6 +128,7 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load dataset
+    print("Loading dataset...")
     dataset = BraTS2D5Dataset(
         data_dir=args.data_dir, 
         image_size=(args.img_size, args.img_size),
@@ -145,7 +151,7 @@ def main(args):
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    print(f"Starting training for {args.model_type}...")
+    print(f"Starting training for {args.model_type} ({args.wavelet if args.model_type == 'wavelet' else 'N/A'})...")
     best_loss = float('inf')
     
     for epoch in range(args.epochs):
@@ -167,3 +173,64 @@ def main(args):
             loss = loss_function(outputs, targets)
             loss.backward()
             optimizer.step()
+            
+            epoch_loss += loss.item()
+            
+            # Log to W&B
+            wandb.log({
+                "batch_loss": loss.item(),
+                "learning_rate": optimizer.param_groups[0]['lr'],
+            })
+            
+            # Log qualitative visualization every 100 batches
+            if i % 100 == 0:
+                print(f"Epoch {epoch+1}/{args.epochs}, Batch {i}/{num_batches}, Loss: {loss.item():.6f}")
+                
+                # Create visualization
+                with torch.no_grad():
+                    panel = create_reconstruction_log_panel(
+                        inputs[0], targets[0], outputs[0], 
+                        slice_indices[0].item(), i
+                    )
+                    wandb.log({"reconstruction_preview": wandb.Image(panel)})
+        
+        # Calculate average epoch loss
+        avg_epoch_loss = epoch_loss / num_batches
+        print(f"Epoch {epoch+1}/{args.epochs} - Average Loss: {avg_epoch_loss:.6f}")
+        
+        wandb.log({
+            "epoch": epoch + 1,
+            "avg_epoch_loss": avg_epoch_loss,
+        })
+        
+        # Save best checkpoint
+        if avg_epoch_loss < best_loss:
+            best_loss = avg_epoch_loss
+            checkpoint_name = f"{args.model_type}_{args.wavelet if args.model_type == 'wavelet' else 'baseline'}_best.pth"
+            checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': best_loss,
+                'config': vars(args)
+            }, checkpoint_path)
+            print(f"Saved best checkpoint to {checkpoint_path}")
+            wandb.save(checkpoint_path)
+    
+    # Final summary
+    print(f"\nTraining completed! Best loss: {best_loss:.6f}")
+    wandb.log({"best_loss": best_loss})
+    wandb.finish()
+
+
+if __name__ == '__main__':
+    try:
+        args = get_args()
+        main(args)
+    except Exception as e:
+        print(f"Error during training: {e}")
+        import traceback
+        traceback.print_exc()
+        wandb.finish(exit_code=1)
+        raise
