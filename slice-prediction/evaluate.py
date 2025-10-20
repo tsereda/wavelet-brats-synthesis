@@ -293,10 +293,10 @@ def get_args():
     parser.add_argument('--img_size', type=int, default=256,
                        help='Image size')
     parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'wavelet'],
+                       choices=['swin', 'wavelet_haar', 'wavelet_db2', 'wavelet'],
                        help='Model architecture')
     parser.add_argument('--wavelet', type=str, default='haar',
-                       help='Wavelet type (only for wavelet model)')
+                       help='Wavelet type (for wavelet model type)')
     parser.add_argument('--save_wavelets', action='store_true',
                        help='Save wavelet coefficients and visualizations (wavelet models only)')
     return parser.parse_args()
@@ -313,8 +313,16 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
         ).to(device)
         print("Loaded Swin-UNETR model")
     
-    elif model_type == 'wavelet':
+    elif model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']:
         from models.wavelet_diffusion import WaveletDiffusion
+        
+        # Determine wavelet type from model_type if specified
+        if model_type == 'wavelet_haar':
+            wavelet_name = 'haar'
+        elif model_type == 'wavelet_db2':
+            wavelet_name = 'db2'
+        # else use the wavelet_name parameter
+        
         model = WaveletDiffusion(
             wavelet_name=wavelet_name,
             in_channels=8,
@@ -365,8 +373,9 @@ def main():
     model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
     
     # Check if we should save wavelets
-    save_wavelets = args.save_wavelets and args.model_type == 'wavelet'
-    if args.save_wavelets and args.model_type != 'wavelet':
+    is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
+    save_wavelets = args.save_wavelets and is_wavelet_model
+    if args.save_wavelets and not is_wavelet_model:
         print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
     
     # Evaluate
