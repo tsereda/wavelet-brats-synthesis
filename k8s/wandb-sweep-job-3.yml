@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: wandb-sweep-agent-3
+  namespace: gai-lina-group
+  labels:
+    app: wandb-sweep
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: wandb-sweep
+    spec:
+      # Keep the nodeSelector AND add anti-affinity
+      nodeSelector:
+        nautilus.io/linstor: "true"
+      
+      # Add pod anti-affinity to avoid the bad node
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: NotIn
+                values:
+                - gpn-fiona-mizzou-4.rnet.missouri.edu
+      
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      
+      containers:
+      - name: sweep-agent
+        image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+        
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+            
+            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+            cd wavelet-brats-synthesis
+            
+            chmod +x run.sh
+            ./run.sh --resume_run timgsereda/wavelet-brats-synthesis/y60gfwlq
+
+            echo "Job completed successfully"
+        
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: WANDB_ENTITY
+          value: "timgsereda"
+        - name: WANDB_PROJECT
+          value: "wavelet-brats-synthesis"
+        - name: SWEEP_ID
+          value: "b3gmpuvg"
+        - name: WANDB_SWEEP_ID
+          value: "b3gmpuvg"
+        
+        resources:
+          requests:
+            memory: "25Gi"
+            cpu: "15"
+            nvidia.com/a100: "1"
+          limits:
+            memory: "30Gi"
+            cpu: "18"
+            nvidia.com/a100: "1"
+        
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        - name: shm
+          mountPath: /dev/shm
+      
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: brats2025-3
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+      
+      restartPolicy: Never
