@@ -99,48 +99,6 @@ def setup_training(args):
     ).run_loop()
 
 
-def main():
-    """Normal training mode."""
-    args = create_argparser().parse_args()
-    wandb.init(project="fast-cwmd-brats", entity="timgsereda", config=vars(args))
-    setup_training(args)
-
-
-def train_with_wandb_sweep():
-    """W&B sweep training mode."""
-    # ❌ DON'T manually init wandb in sweep mode - the agent does it
-    # The sweep agent will call wandb.init() automatically
-    
-    args = create_argparser().parse_args([])
-    
-    # Check if we're resuming from an existing run
-    resume_run_id = os.getenv('WANDB_RUN_ID', '')
-    
-    if resume_run_id:
-        print(f"🔄 Will resume W&B run: {resume_run_id}")
-        # The sweep agent will use these env vars
-        # No need to call wandb.init() ourselves
-    
-    # Override with sweep config (wandb.config is populated by the agent)
-    for key, value in wandb.config.items():
-        if hasattr(args, key):
-            setattr(args, key, value)
-            print(f"[SWEEP] {key}={value}")
-    
-    # Auto-resume from local checkpoint if available
-    latest_checkpoint = os.getenv('LATEST_CHECKPOINT_FILE', '')
-    latest_step = os.getenv('LATEST_CHECKPOINT_STEP', '')
-    
-    if latest_checkpoint and os.path.exists(latest_checkpoint):
-        print(f"🔄 Auto-resuming from local checkpoint: {latest_checkpoint}")
-        print(f"   Starting from step: {latest_step}")
-        args.resume_checkpoint = latest_checkpoint
-        if latest_step:
-            args.resume_step = int(latest_step)
-    
-    setup_training(args)
-
-
 def create_argparser():
     defaults = dict(
         seed=0,
@@ -172,11 +130,79 @@ def create_argparser():
     return parser
 
 
+def train_with_wandb_sweep():
+    """W&B sweep training mode."""
+    
+    # Check if we're resuming from an existing run
+    resume_run_id = os.getenv('WANDB_RUN_ID', '')
+    
+    if resume_run_id:
+        print(f"🔄 Resuming W&B run: {resume_run_id}")
+        # Initialize with specific run ID to resume
+        wandb.init(
+            project=os.getenv('WANDB_PROJECT', 'wavelet-brats-synthesis'),
+            entity=os.getenv('WANDB_ENTITY', 'timgsereda'),
+            id=resume_run_id,
+            resume="must"
+        )
+    else:
+        # Normal sweep mode - let sweep agent handle init
+        # DON'T call wandb.init() here - the sweep agent does it
+        pass
+    
+    args = create_argparser().parse_args([])
+    
+    # Override with sweep config ONLY if wandb is initialized and has config
+    try:
+        if wandb.run is not None and hasattr(wandb, 'config') and wandb.config:
+            for key, value in wandb.config.items():
+                if hasattr(args, key):
+                    setattr(args, key, value)
+                    print(f"[SWEEP] {key}={value}")
+        else:
+            print("[RESUME] No sweep config available - using defaults")
+    except Exception as e:
+        print(f"[RESUME] Could not access wandb config: {e}")
+        print("[RESUME] Proceeding with default arguments")
+    
+    # Auto-resume from local checkpoint if available
+    latest_checkpoint = os.getenv('LATEST_CHECKPOINT_FILE', '')
+    latest_step = os.getenv('LATEST_CHECKPOINT_STEP', '')
+    resume_modality = os.getenv('RESUME_MODALITY', '')
+    
+    if latest_checkpoint and os.path.exists(latest_checkpoint):
+        print(f"🔄 Auto-resuming from local checkpoint: {latest_checkpoint}")
+        print(f"   Starting from step: {latest_step}")
+        args.resume_checkpoint = latest_checkpoint
+        if latest_step:
+            args.resume_step = int(latest_step)
+    
+    # Use detected modality if available
+    if resume_modality:
+        print(f"🧠 Using detected modality: {resume_modality}")
+        args.contr = resume_modality
+    
+    setup_training(args)
+
+
+def main():
+    """Normal training mode."""
+    args = create_argparser().parse_args()
+    wandb.init(project="fast-cwmd-brats", entity="timgsereda", config=vars(args))
+    setup_training(args)
+
+
 if __name__ == "__main__":
     try:
-        if os.getenv('WANDB_SWEEP_ID'):
+        # Check if we're in resume mode or sweep mode
+        if os.getenv('RESUME_RUN') or os.getenv('WANDB_RUN_ID'):
+            # Resume mode - handle direct training with W&B resume
+            train_with_wandb_sweep()
+        elif os.getenv('SWEEP_ID'):  # Fixed: was WANDB_SWEEP_ID, now SWEEP_ID
+            # Sweep mode - let agent handle everything
             train_with_wandb_sweep()
         else:
+            # Normal training mode
             main()
     except KeyboardInterrupt:
         print("\nTraining interrupted")

@@ -226,7 +226,6 @@ elif [ -f "/data/400kCheckpoints.zip" ]; then
     fi
 fi
 
-
 if [ -n "$RESUME_RUN" ]; then
     # Extract run ID from path (format: entity/project/run_id)
     RESUME_RUN_ID=$(echo "$RESUME_RUN" | rev | cut -d'/' -f1 | rev)
@@ -294,11 +293,50 @@ echo "========================================="
 echo "Setup complete!"
 echo "========================================="
 
-# Check for required environment variables
+# Handle resume vs sweep logic
+if [ -n "$RESUME_RUN" ]; then
+    echo ""
+    echo "🔄 RESUME MODE DETECTED"
+    echo "Resuming W&B run: $RESUME_RUN"
+    
+    if [ -n "$LATEST_CHECKPOINT_FILE" ]; then
+        echo "Using checkpoint: $LATEST_CHECKPOINT_FILE (Step: $LATEST_CHECKPOINT_STEP)"
+    fi
+    
+    if [ -n "$RESUME_MODALITY" ]; then
+        echo "Training modality: $RESUME_MODALITY"
+    fi
+    
+    echo ""
+    echo "Running DIRECT training (bypassing sweep agent)..."
+    echo "========================================="
+    
+    # Use the detected modality or default to t2w
+    TRAINING_MODALITY=${RESUME_MODALITY:-"t2w"}
+    
+    # Run training directly instead of using sweep agent
+    exec python app/scripts/train.py \
+        --data_dir=./datasets/BRATS2023/training \
+        --contr="$TRAINING_MODALITY" \
+        --lr=1e-5 \
+        --diffusion_steps=100 \
+        --sample_schedule=sampled \
+        --batch_size=2 \
+        --num_workers=12 \
+        --save_interval=5000 \
+        --log_interval=100 \
+        --special_checkpoint_steps="200000,400000,600000" \
+        --resume_checkpoint="$LATEST_CHECKPOINT_FILE" \
+        --resume_step="$LATEST_CHECKPOINT_STEP" \
+        --wavelet=db2 \
+        --save_to_wandb=true
+fi
+
+# Original sweep logic (only runs if no RESUME_RUN)
 if [ -z "$SWEEP_ID" ]; then
     echo ""
     echo "WARNING: SWEEP_ID environment variable not set"
-    echo "You have two options:"
+    echo "You have three options:"
     echo ""
     echo "1. Run with W&B sweep:"
     echo "   export SWEEP_ID='your-entity/your-project/sweep-id'"
@@ -318,6 +356,7 @@ if [ -z "$SWEEP_ID" ]; then
     exit 1
 fi
 
+# Rest of the sweep logic stays the same...
 if [ -z "$WANDB_ENTITY" ]; then
     echo "WARNING: WANDB_ENTITY not set, using default from sweep config"
 fi

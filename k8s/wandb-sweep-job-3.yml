@@ -61,10 +61,6 @@ spec:
           value: "timgsereda"
         - name: WANDB_PROJECT
           value: "wavelet-brats-synthesis"
-        - name: SWEEP_ID
-          value: "b3gmpuvg"
-        - name: WANDB_SWEEP_ID
-          value: "b3gmpuvg"
         
         resources:
           requests:
