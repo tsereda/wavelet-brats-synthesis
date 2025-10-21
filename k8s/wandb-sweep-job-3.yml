@@ -46,8 +46,9 @@ spec:
             git clone https://github.com/tsereda/wavelet-brats-synthesis.git
             cd wavelet-brats-synthesis
             
-            mkdir /data/checkpoints
-            chmod +x /data/checkpoints
+            sudo mkdir /data/checkpoints
+            sudo chmod +x /data/checkpoints
+            ls /data/
             chmod +x run.sh
             ./run.sh --resume_run timgsereda/wavelet-brats-synthesis/y60gfwlq
 
