@@ -204,21 +204,22 @@ fi
 # ALWAYS detect latest checkpoint after any download/extraction operation
 echo "Searching for the latest local checkpoint in $CHECKPOINT_DIR..."
 
-# Find all .pt files and extract the step number (largest number in filename)
-LATEST_STEP=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
+# Find all MODEL checkpoint .pt files (exclude optimizer checkpoints starting with "opt_")
+# and extract the step number (largest number in filename)
+LATEST_STEP=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" ! -name "opt_*" | \
                     while read f; do 
                         basename "$f" | grep -oP '\d+' | sort -rn | head -1
                     done 2>/dev/null | sort -rn | head -1)
 
 FULL_FILENAME=""
 if [ -n "$LATEST_STEP" ]; then
-    # Find the full filename containing the largest step number
-    FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
+    # Find the full filename containing the largest step number (exclude optimizer checkpoints)
+    FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" ! -name "opt_*" | \
                     grep -P "_${LATEST_STEP}\.pt$" | head -1)
     
     # Fallback if the above doesn't match
     if [ -z "$FULL_FILENAME" ]; then
-        FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*${LATEST_STEP}*.pt" | head -1)
+        FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*${LATEST_STEP}*.pt" ! -name "opt_*" | head -1)
     fi
 fi
 
