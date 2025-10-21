@@ -31,106 +31,107 @@ def visualize(img):
 
 class TrainLoop:
     def __init__(
-            self,
-            *,
-            model,
-            diffusion,
-            data,
-            batch_size,
-            in_channels,
-            image_size,
-            microbatch,
-            lr,
-            ema_rate,
-            log_interval,
-            contr,
-            save_interval,
-            resume_checkpoint,
-            resume_step,
-            use_fp16=False,
-            fp16_scale_growth=1e-3,
-            schedule_sampler=None,
-            weight_decay=0.0,
-            lr_anneal_steps=0,
-            dataset='brats',
-            summary_writer=None,
-            mode='default',
-            loss_level='image',
-            sample_schedule='direct',
-            diffusion_steps=1000,
-            wavelet='haar',
-            special_checkpoint_steps=None,
-            save_to_wandb=True
-        ):
-            self.summary_writer = summary_writer
-            self.mode = mode
-            self.model = model
-            self.diffusion = diffusion
-            self.datal = data
-            self.dataset = dataset
-            self.iterdatal = iter(data)
-            self.batch_size = batch_size
-            self.in_channels = in_channels
-            self.image_size = image_size
-            self.contr = contr
-            self.microbatch = microbatch if microbatch > 0 else batch_size
-            self.lr = lr
-            self.ema_rate = (
-                [ema_rate]
-                if isinstance(ema_rate, float)
-                else [float(x) for x in ema_rate.split(",")]
-            )
-            self.log_interval = log_interval
-            self.save_interval = save_interval
-            self.resume_checkpoint = resume_checkpoint
-            self.use_fp16 = use_fp16
-            if self.use_fp16:
-                self.grad_scaler = amp.GradScaler()
-            else:
-                self.grad_scaler = amp.GradScaler(enabled=False)
-            self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
-            self.weight_decay = weight_decay
-            self.lr_anneal_steps = lr_anneal_steps
-            
-            # Set wavelet parameters BEFORE initializing DWT/IDWT
-            self.wavelet = wavelet
-            self.loss_level = loss_level
-            self.sample_schedule = sample_schedule
-            self.diffusion_steps = diffusion_steps
-            
-            # Special checkpoint configuration
-            self.special_checkpoint_steps = special_checkpoint_steps
-            self.save_to_wandb = save_to_wandb
-            self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
-            
-            # Initialize wavelet transforms (requires self.wavelet to be set)
-            self.dwt = DWT_3D(self.wavelet)
-            self.idwt = IDWT_3D(self.wavelet)
-            
-            # Training state
-            self.step = 1
-            self.resume_step = resume_step
-            self.global_batch = self.batch_size * dist.get_world_size()
-            self.sync_cuda = th.cuda.is_available()
-            
-            # Track best MSE loss (lower is better)
-            self.best_losses = {}
-            self.best_checkpoints = {}
-            self.checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
-            os.makedirs(self.checkpoint_dir, exist_ok=True)
-            
-            # Load existing best losses if resuming
-            self._load_best_losses()
-            
-            self._load_and_sync_parameters()
-            self.opt = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
-            if self.resume_step:
-                print("Resume Step: " + str(self.resume_step))
-                self._load_optimizer_state()
-            if not th.cuda.is_available():
-                logger.warn(
-                    "Training requires CUDA. "
-                )
+        self,
+        *,
+        model,
+        diffusion,
+        data,
+        batch_size,
+        in_channels,
+        image_size,
+        microbatch,
+        lr,
+        ema_rate,
+        log_interval,
+        contr,
+        save_interval,
+        resume_checkpoint,
+        resume_step,
+        use_fp16=False,
+        fp16_scale_growth=1e-3,
+        schedule_sampler=None,
+        weight_decay=0.0,
+        lr_anneal_steps=0,
+        dataset='brats',
+        summary_writer=None,
+        mode='default',
+        loss_level='image',
+        sample_schedule='direct',
+        diffusion_steps=1000,
+        wavelet='haar',
+        special_checkpoint_steps=None,
+        save_to_wandb=True
+    ):
+        self.summary_writer = summary_writer
+        self.mode = mode
+        self.model = model
+        self.diffusion = diffusion
+        self.datal = data
+        self.dataset = dataset
+        self.iterdatal = iter(data)
+        self.batch_size = batch_size
+        self.in_channels = in_channels
+        self.image_size = image_size
+        self.contr = contr
+        self.microbatch = microbatch if microbatch > 0 else batch_size
+        self.lr = lr
+        self.ema_rate = (
+            [ema_rate]
+            if isinstance(ema_rate, float)
+            else [float(x) for x in ema_rate.split(",")]
+        )
+        self.log_interval = log_interval
+        self.save_interval = save_interval
+        self.resume_checkpoint = resume_checkpoint
+        self.use_fp16 = use_fp16
+        if self.use_fp16:
+            self.grad_scaler = amp.GradScaler()
+        else:
+            self.grad_scaler = amp.GradScaler(enabled=False)
+        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        self.weight_decay = weight_decay
+        self.lr_anneal_steps = lr_anneal_steps
+        
+        # Set wavelet parameters BEFORE initializing DWT/IDWT
+        self.wavelet = wavelet
+        self.loss_level = loss_level
+        self.sample_schedule = sample_schedule
+        self.diffusion_steps = diffusion_steps
+        
+        # Special checkpoint configuration
+        self.special_checkpoint_steps = special_checkpoint_steps
+        self.save_to_wandb = save_to_wandb
+        self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
+        
+        # Initialize wavelet transforms (requires self.wavelet to be set)
+        self.dwt = DWT_3D(self.wavelet)
+        self.idwt = IDWT_3D(self.wavelet)
+        
+        # ✅ FIXED: Proper step counter initialization
+        # Start from resume_step if resuming, otherwise start from 0
+        self.step = resume_step if resume_step else 0
+        self.global_batch = self.batch_size * dist.get_world_size()
+        self.sync_cuda = th.cuda.is_available()
+        
+        # Track best MSE loss (lower is better)
+        self.best_losses = {}
+        self.best_checkpoints = {}
+        self.checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        
+        # Load existing best losses if resuming
+        self._load_best_losses()
+        
+        self._load_and_sync_parameters()
+        self.opt = AdamW(self.model.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        
+        # ✅ FIXED: Load optimizer state after creating optimizer
+        if resume_step:
+            print(f"✅ Resuming from step: {resume_step}")
+            self._load_optimizer_state()
+        
+        if not th.cuda.is_available():
+            logger.warn("Training requires CUDA.")
 
     def _load_best_losses(self):
         """Load best MSE losses from file if it exists"""
@@ -176,17 +177,35 @@ class TrainLoop:
 
     def _load_optimizer_state(self):
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
-        opt_checkpoint = bf.join(
-            bf.dirname(main_checkpoint), f"opt{self.resume_step:06}.pt"
+        
+        # Attempt to find optimizer checkpoint based on the main checkpoint's filename
+        # This assumes opt checkpoints are saved with a step number
+        step_str = str(self.step).zfill(6) # self.step is the resume_step here
+        opt_checkpoint_explicit = bf.join(
+            bf.dirname(main_checkpoint), f"opt{step_str}.pt"
         )
-        if bf.exists(opt_checkpoint):
+        
+        # Also try 'opt_best_{modality}.pt' if we are resuming from a 'best' model
+        # Note: This logic for loading opt checkpoint could be refined based on the 
+        # actual checkpoint naming scheme for non-step checkpoints.
+        opt_checkpoint_best = bf.join(
+             bf.dirname(main_checkpoint), f"opt_best_{self.contr}.pt"
+        )
+        
+        opt_checkpoint = None
+        if bf.exists(opt_checkpoint_explicit):
+             opt_checkpoint = opt_checkpoint_explicit
+        elif bf.exists(opt_checkpoint_best):
+             opt_checkpoint = opt_checkpoint_best
+        
+        if opt_checkpoint:
             logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
             state_dict = dist_util.load_state_dict(
                 opt_checkpoint, map_location=dist_util.dev()
             )
             self.opt.load_state_dict(state_dict)
         else:
-            print('no optimizer checkpoint exists')
+            print(f'no optimizer checkpoint found for step {self.step} at path {bf.dirname(main_checkpoint)}')
 
     def run_loop(self):
         import time
@@ -196,9 +215,12 @@ class TrainLoop:
         total_save_time = 0.0
         start_time = time.time()
         t = time.time()
-        while not self.lr_anneal_steps or self.step + self.resume_step < self.lr_anneal_steps:
+        
+        # ✅ FIXED: Loop condition now correctly uses self.step (which includes resume_step)
+        while not self.lr_anneal_steps or self.step < self.lr_anneal_steps:
             t_total = time.time() - t
             t = time.time()
+            
             # --- Data loading ---
             data_load_start = time.time()
             if self.dataset in ['brats']:
@@ -232,25 +254,24 @@ class TrainLoop:
             # --- Logging ---
             log_start = time.time()
             if self.summary_writer is not None:
-                self.summary_writer.add_scalar('time/load', total_data_time, global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('time/forward', total_step_time, global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('time/total', t_total, global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step + self.resume_step)
+                self.summary_writer.add_scalar('time/load', total_data_time, global_step=self.step)
+                self.summary_writer.add_scalar('time/forward', total_step_time, global_step=self.step)
+                self.summary_writer.add_scalar('time/total', t_total, global_step=self.step)
+                self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
 
             wandb_log_dict = {
                 'time/load': total_data_time,
                 'time/forward': total_step_time,
                 'time/total': t_total,
                 'metrics/MSE': mse_loss,
-                'step': self.step + self.resume_step
+                'step': self.step
             }
 
             if self.step % 200 == 0:
                 image_size = sample_idwt.size()[2]
                 midplane = sample_idwt[0, 0, :, :, image_size // 2]
                 if self.summary_writer is not None:
-                    self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0),
-                                                  global_step=self.step + self.resume_step)
+                    self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0), global_step=self.step)
                 img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                 wandb_log_dict['sample/x_0'] = wandb.Image(img, caption='sample/x_0')
 
@@ -259,7 +280,7 @@ class TrainLoop:
                     midplane = sample[0, ch, :, :, image_size // 2]
                     if self.summary_writer is not None:
                         self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
-                                                      global_step=self.step + self.resume_step)
+                                                    global_step=self.step)
                     img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                     wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
 
@@ -268,34 +289,30 @@ class TrainLoop:
                         image_size = batch['t1n'].size()[2]
                         midplane = batch['t1n'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t1n', midplane.unsqueeze(0),
-                                                          global_step=self.step + self.resume_step)
+                            self.summary_writer.add_image('source/t1n', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                         wandb_log_dict['source/t1n'] = wandb.Image(img, caption='source/t1n')
                     if not self.contr == 't1c':
                         image_size = batch['t1c'].size()[2]
                         midplane = batch['t1c'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t1c', midplane.unsqueeze(0),
-                                                          global_step=self.step + self.resume_step)
+                            self.summary_writer.add_image('source/t1c', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                         wandb_log_dict['source/t1c'] = wandb.Image(img, caption='source/t1c')
                     if not self.contr == 't2w':
                         midplane = batch['t2w'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t2w', midplane.unsqueeze(0),
-                                                          global_step=self.step + self.resume_step)
+                            self.summary_writer.add_image('source/t2w', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                         wandb_log_dict['source/t2w'] = wandb.Image(img, caption='source/t2w')
                     if not self.contr == 't2f':
                         midplane = batch['t2f'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t2f', midplane.unsqueeze(0),
-                                                          global_step=self.step + self.resume_step)
+                            self.summary_writer.add_image('source/t2f', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                         wandb_log_dict['source/t2f'] = wandb.Image(img, caption='source/t2f')
 
-            wandb.log(wandb_log_dict, step=self.step + self.resume_step)
+            wandb.log(wandb_log_dict, step=self.step)
             log_end = time.time()
             total_log_time += log_end - log_start
 
@@ -303,7 +320,7 @@ class TrainLoop:
                 logger.dumpkvs()
 
             # --- Saving ---
-            if self.step % self.save_interval == 0:
+            if self.step % self.save_interval == 0 and self.step > 0:
                 save_start = time.time()
                 self.save_if_best(mse_loss)
                 save_end = time.time()
@@ -312,24 +329,23 @@ class TrainLoop:
                     return
             
             # --- Special Checkpoint Saving ---
-            current_iteration = self.step + self.resume_step
-            if self.special_checkpoint_steps is not None and current_iteration in self.special_checkpoint_steps and current_iteration not in self.saved_special_checkpoints:
+            if self.special_checkpoint_steps is not None and self.step in self.special_checkpoint_steps and self.step not in self.saved_special_checkpoints:
                 save_start = time.time()
-                self.save_special_checkpoint(current_iteration, mse_loss)
+                self.save_special_checkpoint(self.step, mse_loss)
                 save_end = time.time()
                 total_save_time += save_end - save_start
-                self.saved_special_checkpoints.add(current_iteration)
+                self.saved_special_checkpoints.add(self.step)
             
             self.step += 1
 
             # Print profiling info every log_interval
-            if self.step % self.log_interval == 0:
+            if (self.step - 1) % self.log_interval == 0:
                 elapsed = time.time() - start_time
-                print(f"[PROFILE] Step {self.step}: Data {total_data_time:.2f}s, Step {total_step_time:.2f}s, Log {total_log_time:.2f}s, Save {total_save_time:.2f}s, Total {elapsed:.2f}s")
+                print(f"[PROFILE] Step {self.step-1}: Data {total_data_time:.2f}s, Step {total_step_time:.2f}s, Log {total_log_time:.2f}s, Save {total_save_time:.2f}s, Total {elapsed:.2f}s")
                 # Debug print for MSE loss tracking
-                if self.step <= 1000 or self.step % 500 == 0:
+                if (self.step - 1) % 500 == 0:
                     best_loss = self.best_losses.get(self.contr, float('inf'))
-                    print(f"[MSE] Step {self.step}: Current={mse_loss:.4f}, Best={best_loss:.4f} ({self.contr})")
+                    print(f"[MSE] Step {self.step-1}: Current={mse_loss:.4f}, Best={best_loss:.4f} ({self.contr})")
                 # Reset counters for next interval
                 total_data_time = 0.0
                 total_step_time = 0.0
@@ -369,8 +385,10 @@ class TrainLoop:
                     except Exception as e:
                         print(f"Error removing old checkpoint: {e}")
             
-            # Save new best checkpoint
-            filename = f"brats_{self.contr}_{(self.step+self.resume_step):06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
+            # ✅ FIXED: Use self.step directly for naming
+            # Use self.step - 1 because save_if_best is called after self.step += 1 in run_loop
+            step_to_save = self.step - 1 if self.step > 0 else 0
+            filename = f"brats_{self.contr}_{step_to_save:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
             full_save_path = os.path.join(self.checkpoint_dir, filename)
             
             try:
@@ -398,7 +416,7 @@ class TrainLoop:
                 wandb.log({
                     f"checkpoints/{modality}/best_loss": current_loss,
                     f"checkpoints/{modality}/improvement": improvement,
-                    "step": self.step + self.resume_step
+                    "step": step_to_save
                 })
                 
             except Exception as e:
@@ -416,7 +434,7 @@ class TrainLoop:
             
         modality = self.contr
         
-        # Create special checkpoint filename
+        # ✅ FIXED: iteration IS self.step now, no need for calculation
         filename = f"brats_{modality}_special_{iteration:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
         full_save_path = os.path.join(self.checkpoint_dir, filename)
         
@@ -447,8 +465,8 @@ class TrainLoop:
             # Log special checkpoint metrics to wandb
             wandb.log({
                 f"special_checkpoints/{modality}/iteration_{iteration}/loss": current_loss,
-                f"special_checkpoints/{modality}/saved_at_step": self.step + self.resume_step,
-                "step": self.step + self.resume_step
+                f"special_checkpoints/{modality}/saved_at_step": self.step,
+                "step": self.step
             })
             
         except Exception as e:
@@ -538,20 +556,20 @@ class TrainLoop:
 
         # Log all loss components
         if self.summary_writer is not None:
-            self.summary_writer.add_scalar('loss/MSE', mse_loss, global_step=self.step + self.resume_step)
-            self.summary_writer.add_scalar('loss/Final', final_loss.item(), global_step=self.step + self.resume_step)
+            self.summary_writer.add_scalar('loss/MSE', mse_loss, global_step=self.step)
+            self.summary_writer.add_scalar('loss/Final', final_loss.item(), global_step=self.step)
             
             # Log wavelet level MSE losses
             if "mse_wav" in losses:
                 mse_wav = losses["mse_wav"]
-                self.summary_writer.add_scalar('loss/mse_wav_lll', mse_wav[0].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_llh', mse_wav[1].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_lhl', mse_wav[2].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_lhh', mse_wav[3].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_hll', mse_wav[4].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_hlh', mse_wav[5].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_hhl', mse_wav[6].item(), global_step=self.step + self.resume_step)
-                self.summary_writer.add_scalar('loss/mse_wav_hhh', mse_wav[7].item(), global_step=self.step + self.resume_step)
+                self.summary_writer.add_scalar('loss/mse_wav_lll', mse_wav[0].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_llh', mse_wav[1].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_lhl', mse_wav[2].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_lhh', mse_wav[3].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_hll', mse_wav[4].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_hlh', mse_wav[5].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_hhl', mse_wav[6].item(), global_step=self.step)
+                self.summary_writer.add_scalar('loss/mse_wav_hhh', mse_wav[7].item(), global_step=self.step)
 
         # Use MSE loss for backpropagation and model saving
         loss = final_loss
@@ -560,7 +578,7 @@ class TrainLoop:
         wandb.log({
             'loss/MSE': mse_loss,
             'loss/Final': final_loss.item(),
-            'step': self.step + self.resume_step
+            'step': self.step
         })
 
         # Create weights for MSE loss
@@ -583,30 +601,32 @@ class TrainLoop:
     def _anneal_lr(self):
         if not self.lr_anneal_steps:
             return
-        frac_done = (self.step + self.resume_step) / self.lr_anneal_steps
+        # ✅ FIXED: Just use self.step
+        frac_done = self.step / self.lr_anneal_steps
         lr = self.lr * (1 - frac_done)
         for param_group in self.opt.param_groups:
             param_group["lr"] = lr
 
     def log_step(self):
-        logger.logkv("step", self.step + self.resume_step)
-        logger.logkv("samples", (self.step + self.resume_step + 1) * self.global_batch)
+        # ✅ FIXED: Just use self.step
+        logger.logkv("step", self.step)
+        logger.logkv("samples", (self.step + 1) * self.global_batch)
 
     def save(self):
         """Legacy save method - kept for compatibility but prints warning"""
-        print("⚠️  Warning: Using legacy save(). Consider using save_if_best() instead.")
+        print("⚠️ Warning: Using legacy save(). Consider using save_if_best() instead.")
         def save_checkpoint(rate, state_dict):
             if dist.get_rank() == 0:
                 logger.log("Saving model...")
                 # Compose filename with modality, iterations, sample method, and timesteps
                 if self.dataset == 'brats':
-                    filename = f"brats_{self.contr}_{(self.step+self.resume_step):06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
+                    filename = f"brats_{self.contr}_{self.step:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
                 elif self.dataset == 'lidc-idri':
-                    filename = f"lidc-idri_{self.contr}_{(self.step+self.resume_step):06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
+                    filename = f"lidc-idri_{self.contr}_{self.step:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
                 elif self.dataset == 'brats_inpainting':
-                    filename = f"brats_inpainting_{self.contr}_{(self.step + self.resume_step):06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
+                    filename = f"brats_inpainting_{self.contr}_{self.step:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
                 elif self.dataset == 'synthrad':
-                    filename = f"synthrad_{self.contr}_{(self.step + self.resume_step):06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
+                    filename = f"synthrad_{self.contr}_{self.step:06d}_{self.sample_schedule}_{self.diffusion_steps}.pt"
                 else:
                     raise ValueError(f'dataset {self.dataset} not implemented')
 
@@ -626,7 +646,7 @@ class TrainLoop:
         if dist.get_rank() == 0:
             checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
             os.makedirs(checkpoint_dir, exist_ok=True)
-            opt_save_path = os.path.join(checkpoint_dir, f"opt{(self.step+self.resume_step):06d}.pt")
+            opt_save_path = os.path.join(checkpoint_dir, f"opt{self.step:06d}.pt")
             print(f"Saving optimizer to: {opt_save_path}")
             
             with bf.BlobFile(opt_save_path, "wb") as f:
