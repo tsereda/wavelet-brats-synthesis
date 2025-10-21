@@ -180,58 +180,55 @@ EOF
         exit 1
     fi
     
-else
+elif [ -f "/data/400kCheckpoints.zip" ]; then
     # Check if checkpoint archive exists (fallback)
-    if [ -f "/data/400kCheckpoints.zip" ]; then
-        echo "Found checkpoint archive at /data/400kCheckpoints.zip"
-        if [ ! -d "$CHECKPOINT_DIR" ] || [ -z "$(ls -A $CHECKPOINT_DIR/*.pt 2>/dev/null)" ]; then
-            echo "Extracting checkpoints..."
-            unzip -o /data/400kCheckpoints.zip -d ./
-            
-            # Copy checkpoints to the checkpoint directory
-            for modality in t1n t1c t2w t2f; do
-                if [ -d "${modality}" ]; then
-                    echo "Copying ${modality} checkpoints..."
-                    cp ${modality}/brats_*.pt "$CHECKPOINT_DIR/" 2>/dev/null || true
-                fi
-            done
-            
-            echo "✓ Checkpoints extracted to $CHECKPOINT_DIR"
-        else
-            echo "✓ Checkpoints already exist in $CHECKPOINT_DIR"
-        fi
-
-    else
-        # Find latest local checkpoint
-        echo "Searching for the latest local checkpoint in $CHECKPOINT_DIR..."
+    echo "Found checkpoint archive at /data/400kCheckpoints.zip"
+    if [ ! -d "$CHECKPOINT_DIR" ] || [ -z "$(ls -A $CHECKPOINT_DIR/*.pt 2>/dev/null)" ]; then
+        echo "Extracting checkpoints..."
+        unzip -o /data/400kCheckpoints.zip -d ./
         
-        # Find all .pt files and extract the step number (largest number in filename)
-        LATEST_STEP=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
-                            while read f; do 
-                                basename "$f" | grep -oP '\d+' | sort -rn | head -1
-                            done 2>/dev/null | sort -rn | head -1)
-
-        FULL_FILENAME=""
-        if [ -n "$LATEST_STEP" ]; then
-            # Find the full filename containing the largest step number
-            FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
-                            grep -P "_${LATEST_STEP}\.pt$" | head -1)
-            
-            # Fallback if the above doesn't match
-            if [ -z "$FULL_FILENAME" ]; then
-                FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*${LATEST_STEP}*.pt" | head -1)
+        # Copy checkpoints to the checkpoint directory
+        for modality in t1n t1c t2w t2f; do
+            if [ -d "${modality}" ]; then
+                echo "Copying ${modality} checkpoints..."
+                cp ${modality}/brats_*.pt "$CHECKPOINT_DIR/" 2>/dev/null || true
             fi
-        fi
-
-        if [ -n "$FULL_FILENAME" ]; then
-            echo "✅ Found latest checkpoint: $(basename "$FULL_FILENAME") (Step: $LATEST_STEP)"
-            export LATEST_CHECKPOINT_FILE="$FULL_FILENAME"
-            export LATEST_CHECKPOINT_STEP="$LATEST_STEP"
-            echo "Exported LATEST_CHECKPOINT_FILE and LATEST_CHECKPOINT_STEP."
-        else
-            echo "⚠️ No checkpoint files found in $CHECKPOINT_DIR. Starting from scratch."
-        fi
+        done
+        
+        echo "✓ Checkpoints extracted to $CHECKPOINT_DIR"
+    else
+        echo "✓ Checkpoints already exist in $CHECKPOINT_DIR"
     fi
+fi
+
+# ALWAYS detect latest checkpoint after any download/extraction operation
+echo "Searching for the latest local checkpoint in $CHECKPOINT_DIR..."
+
+# Find all .pt files and extract the step number (largest number in filename)
+LATEST_STEP=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
+                    while read f; do 
+                        basename "$f" | grep -oP '\d+' | sort -rn | head -1
+                    done 2>/dev/null | sort -rn | head -1)
+
+FULL_FILENAME=""
+if [ -n "$LATEST_STEP" ]; then
+    # Find the full filename containing the largest step number
+    FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
+                    grep -P "_${LATEST_STEP}\.pt$" | head -1)
+    
+    # Fallback if the above doesn't match
+    if [ -z "$FULL_FILENAME" ]; then
+        FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*${LATEST_STEP}*.pt" | head -1)
+    fi
+fi
+
+if [ -n "$FULL_FILENAME" ]; then
+    echo "✅ Found latest checkpoint: $(basename "$FULL_FILENAME") (Step: $LATEST_STEP)"
+    export LATEST_CHECKPOINT_FILE="$FULL_FILENAME"
+    export LATEST_CHECKPOINT_STEP="$LATEST_STEP"
+    echo "Exported LATEST_CHECKPOINT_FILE and LATEST_CHECKPOINT_STEP."
+else
+    echo "⚠️ No checkpoint files found in $CHECKPOINT_DIR. Starting from scratch."
 fi
 
 echo "Training patients: $(ls datasets/BRATS2023/training/ 2>/dev/null | wc -l)"
