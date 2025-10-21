@@ -1,14 +1,27 @@
 """
 A script for training a diffusion model for paired image-to-image translation.
+FIXED: Proper import handling for app/ directory structure
 """
 
 import argparse
 import numpy as np
 import random
 import os
+import sys
 import torch as th
 import wandb
 
+# ✅ CRITICAL FIX: Add the parent directory and app directory to Python path
+# This allows importing from guided_diffusion when running from app/scripts/
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)  # This gets us to the 'app' directory
+root_dir = os.path.dirname(parent_dir)     # This gets us to the project root
+
+# Add both app directory and project root to path
+sys.path.insert(0, parent_dir)
+sys.path.insert(0, root_dir)
+
+# Now the imports should work
 from guided_diffusion import dist_util, logger
 from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (

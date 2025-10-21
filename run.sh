@@ -42,9 +42,10 @@ apt-get update && apt-get install -y \
     unzip \
     || echo "System packages already installed"
 
-# Set environment variables
+# ✅ FIXED: Set environment variables correctly
 export REPO_PATH="$(pwd)"
-export PYTHONPATH="$(pwd)"
+# ✅ CRITICAL FIX: Add the app directory to PYTHONPATH so guided_diffusion can be imported
+export PYTHONPATH="$(pwd):$(pwd)/app:${PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 export PYTHONIOENCODING=UTF-8
 # New environment variables for auto-resume
@@ -82,6 +83,22 @@ if [ ! -f "app/scripts/train.py" ]; then
     exit 1
 fi
 echo "✓ app/scripts/train.py found"
+
+# ✅ FIXED: Test the import to make sure it works
+echo "[3.5/7] Testing Python imports..."
+python -c "
+import sys
+print('Python path:')
+for p in sys.path:
+    print(f'  {p}')
+
+try:
+    from guided_diffusion import dist_util, logger
+    print('✓ guided_diffusion import successful')
+except ImportError as e:
+    print(f'✗ guided_diffusion import failed: {e}')
+    sys.exit(1)
+"
 
 # Setup directories
 echo "[4/7] Setting up directories..."
@@ -314,8 +331,11 @@ if [ -n "$RESUME_RUN" ]; then
     # Use the detected modality or default to t2w
     TRAINING_MODALITY=${RESUME_MODALITY:-"t2w"}
     
-    # Run training directly instead of using sweep agent
-    exec python app/scripts/train.py \
+    # ✅ CRITICAL FIX: Change directory to the project root and use proper path
+    cd "$SCRIPT_DIR"
+    
+    # ✅ FIXED: Run training directly with PYTHONPATH properly set
+    exec python -m app.scripts.train \
         --data_dir=./datasets/BRATS2023/training \
         --contr="$TRAINING_MODALITY" \
         --lr=1e-5 \
@@ -344,10 +364,10 @@ if [ -z "$SWEEP_ID" ]; then
     echo ""
     echo "2. Run normal training:"
     if [ -n "$LATEST_CHECKPOINT_FILE" ]; then
-        echo "   python app/scripts/train.py --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5 \\"
+        echo "   python -m app.scripts.train --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5 \\"
         echo "     --resume_checkpoint=\"\$LATEST_CHECKPOINT_FILE\" --resume_step=\"\$LATEST_CHECKPOINT_STEP\""
     else
-        echo "   python app/scripts/train.py --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5"
+        echo "   python -m app.scripts.train --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5"
     fi
     echo ""
     echo "3. Resume from W&B run:"
