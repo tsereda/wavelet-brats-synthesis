@@ -133,6 +133,10 @@ echo "[5.5/7] Setting up checkpoints..."
 if [ -n "$RESUME_RUN" ]; then
     echo "🔄 Resuming from W&B run: $RESUME_RUN"
     
+    # Export RESUME_RUN so Python can access it
+    export RESUME_RUN
+    export CHECKPOINT_DIR
+    
     # Download checkpoints from W&B and capture modality
     echo "Downloading checkpoints from W&B..."
     RESUME_MODALITY=$(python3 << 'EOF'
@@ -142,6 +146,11 @@ import sys
 
 run_path = os.environ.get("RESUME_RUN")
 checkpoint_dir = os.environ.get("CHECKPOINT_DIR")
+
+# Add validation check
+if not run_path:
+    print(f"❌ RESUME_RUN environment variable is not set!", file=sys.stderr)
+    sys.exit(1)
 
 try:
     # Initialize API
