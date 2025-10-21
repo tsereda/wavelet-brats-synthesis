@@ -33,7 +33,7 @@ def setup_training(args):
     random.seed(args.seed)
     
     # Initialize distributed training (REQUIRED - even for single GPU)
-    dist_util.setup_dist()  # ← ADD THIS LINE
+    dist_util.setup_dist()
     
     # Configure logger
     logger.configure()
@@ -49,6 +49,8 @@ def setup_training(args):
     print(f"[CONFIG] wavelet={args.wavelet}")
     print(f"[CONFIG] special_checkpoint_steps={special_checkpoint_steps}")
     print(f"[CONFIG] save_to_wandb={args.save_to_wandb}")
+    print(f"[CONFIG] resume_checkpoint={args.resume_checkpoint}")
+    print(f"[CONFIG] resume_step={args.resume_step}")
     
     # Create model and diffusion
     model_args = args_to_dict(args, model_and_diffusion_defaults().keys())
@@ -118,6 +120,17 @@ def train_with_wandb_sweep():
         if hasattr(args, key):
             setattr(args, key, value)
             print(f"[SWEEP] {key}={value}")
+    
+    # Auto-resume from local checkpoint if available
+    latest_checkpoint = os.getenv('LATEST_CHECKPOINT_FILE', '')
+    latest_step = os.getenv('LATEST_CHECKPOINT_STEP', '')
+    
+    if latest_checkpoint and os.path.exists(latest_checkpoint):
+        print(f"🔄 Auto-resuming from local checkpoint: {latest_checkpoint}")
+        print(f"   Starting from step: {latest_step}")
+        args.resume_checkpoint = latest_checkpoint
+        if latest_step:
+            args.resume_step = int(latest_step)
     
     setup_training(args)
 

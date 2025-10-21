@@ -201,32 +201,37 @@ else
             echo "✓ Checkpoints already exist in $CHECKPOINT_DIR"
         fi
 
-    else # <--- START OF NEW LOGIC: Find latest local checkpoint
+    else
+        # Find latest local checkpoint
         echo "Searching for the latest local checkpoint in $CHECKPOINT_DIR..."
         
-        # Find all .pt files, strip their path, look for the step number (first large sequence of digits), 
-        # and sort numerically to find the largest one.
+        # Find all .pt files and extract the step number (largest number in filename)
         LATEST_STEP=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
                             while read f; do 
-                                basename "$f" | grep -oP '\d+' | head -1; 
+                                basename "$f" | grep -oP '\d+' | sort -rn | head -1
                             done 2>/dev/null | sort -rn | head -1)
 
         FULL_FILENAME=""
         if [ -n "$LATEST_STEP" ]; then
-            # Find the full filename corresponding to the largest step number
-            FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*${LATEST_STEP}*.pt" | head -1)
+            # Find the full filename containing the largest step number
+            FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*.pt" | \
+                            grep -P "_${LATEST_STEP}\.pt$" | head -1)
+            
+            # Fallback if the above doesn't match
+            if [ -z "$FULL_FILENAME" ]; then
+                FULL_FILENAME=$(find "$CHECKPOINT_DIR" -maxdepth 1 -type f -name "*${LATEST_STEP}*.pt" | head -1)
+            fi
         fi
 
         if [ -n "$FULL_FILENAME" ]; then
             echo "✅ Found latest checkpoint: $(basename "$FULL_FILENAME") (Step: $LATEST_STEP)"
-            # Export the checkpoint file and step as environment variables for the final training script
             export LATEST_CHECKPOINT_FILE="$FULL_FILENAME"
             export LATEST_CHECKPOINT_STEP="$LATEST_STEP"
             echo "Exported LATEST_CHECKPOINT_FILE and LATEST_CHECKPOINT_STEP."
         else
             echo "⚠️ No checkpoint files found in $CHECKPOINT_DIR. Starting from scratch."
         fi
-    fi # <--- END OF NEW LOGIC
+    fi
 fi
 
 echo "Training patients: $(ls datasets/BRATS2023/training/ 2>/dev/null | wc -l)"
@@ -267,7 +272,6 @@ if [ -z "$SWEEP_ID" ]; then
     echo "   ./run.sh"
     echo ""
     echo "2. Run normal training:"
-    # Modified to show how to use the exported variables for normal run
     if [ -n "$LATEST_CHECKPOINT_FILE" ]; then
         echo "   python app/scripts/train.py --data_dir=./datasets/BRATS2023/training --contr=t1n --lr=1e-5 \\"
         echo "     --resume_checkpoint=\"\$LATEST_CHECKPOINT_FILE\" --resume_step=\"\$LATEST_CHECKPOINT_STEP\""
@@ -299,7 +303,6 @@ if [ -n "$RESUME_RUN" ]; then
     echo "Resumed from W&B run: $RESUME_RUN"
 fi
 
-# Inform the user about local checkpoint status
 if [ -n "$LATEST_CHECKPOINT_FILE" ]; then
     echo "Local resume candidate: ${LATEST_CHECKPOINT_FILE} (Step: ${LATEST_CHECKPOINT_STEP})"
     echo "The W&B agent's runs will automatically use these local checkpoints if configured to resume."
@@ -308,7 +311,4 @@ fi
 echo "========================================="
 echo ""
 
-# The W&B agent will execute the training command defined in your sweep YAML.
-# To utilize the LATEST_CHECKPOINT_FILE and LATEST_CHECKPOINT_STEP, your 
-# sweep config's command must refer to these environment variables.
 wandb agent "$SWEEP_ID"
