@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: wandb-sweep-agent-3
+  name: wandb-sweep-agent-4
   namespace: gai-lina-group
   labels:
     app: wandb-sweep
@@ -47,7 +47,7 @@ spec:
             cd wavelet-brats-synthesis
             
             chmod +x run.sh
-            ./run.sh --resume_run timgsereda/wavelet-brats-synthesis/y60gfwlq
+            ./run.sh --resume_run timgsereda/wavelet-brats-synthesis/af66p81o
 
             echo "Job completed successfully"
         
@@ -85,7 +85,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-3
+          claimName: brats2025-4
       - name: shm
         emptyDir:
           medium: Memory

@@ -108,14 +108,20 @@ def main():
 
 def train_with_wandb_sweep():
     """W&B sweep training mode."""
-    project = os.getenv('WANDB_PROJECT', 'wavelet-brats-synthesis')
-    entity = os.getenv('WANDB_ENTITY', 'timgsereda')
-    
-    wandb.init(project=project, entity=entity)
+    # ❌ DON'T manually init wandb in sweep mode - the agent does it
+    # The sweep agent will call wandb.init() automatically
     
     args = create_argparser().parse_args([])
     
-    # Override with sweep config
+    # Check if we're resuming from an existing run
+    resume_run_id = os.getenv('WANDB_RUN_ID', '')
+    
+    if resume_run_id:
+        print(f"🔄 Will resume W&B run: {resume_run_id}")
+        # The sweep agent will use these env vars
+        # No need to call wandb.init() ourselves
+    
+    # Override with sweep config (wandb.config is populated by the agent)
     for key, value in wandb.config.items():
         if hasattr(args, key):
             setattr(args, key, value)

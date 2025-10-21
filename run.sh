@@ -226,6 +226,16 @@ elif [ -f "/data/400kCheckpoints.zip" ]; then
     fi
 fi
 
+
+if [ -n "$RESUME_RUN" ]; then
+    # Extract run ID from path (format: entity/project/run_id)
+    RESUME_RUN_ID=$(echo "$RESUME_RUN" | rev | cut -d'/' -f1 | rev)
+    
+    echo "🔄 Setting W&B to resume run: $RESUME_RUN_ID"
+    export WANDB_RUN_ID="$RESUME_RUN_ID"
+    export WANDB_RESUME="must"
+fi
+
 # ALWAYS detect latest checkpoint after any download/extraction operation
 echo "Searching for the latest local checkpoint in $CHECKPOINT_DIR..."
 
