@@ -133,51 +133,67 @@ echo "[5.5/7] Setting up checkpoints..."
 if [ -n "$RESUME_RUN" ]; then
     echo "🔄 Resuming from W&B run: $RESUME_RUN"
     
-    # Download checkpoints from W&B run
+    # Download checkpoints from W&B and capture modality
     echo "Downloading checkpoints from W&B..."
-    python3 << EOF
+    RESUME_MODALITY=$(python3 << 'EOF'
 import wandb
 import os
 import sys
 
-run_path = "$RESUME_RUN"
-checkpoint_dir = "$CHECKPOINT_DIR"
+run_path = os.environ.get("RESUME_RUN")
+checkpoint_dir = os.environ.get("CHECKPOINT_DIR")
 
 try:
     # Initialize API
     api = wandb.Api()
     
     # Get the run
-    print(f"Fetching run: {run_path}")
+    print(f"Fetching run: {run_path}", file=sys.stderr)
     run = api.run(run_path)
+    
+    # Extract modality from run config
+    modality = run.config.get('contr', None)
+    if modality:
+        print(f"📋 Detected modality from run config: {modality}", file=sys.stderr)
+        # Print modality to stdout for capture
+        print(modality)
+    else:
+        print("⚠️  Could not detect modality from run config", file=sys.stderr)
     
     # Download all checkpoint files
     checkpoint_files = [f for f in run.files() if f.name.endswith('.pt')]
     
     if not checkpoint_files:
-        print("❌ No checkpoint files found in this run!")
+        print("❌ No checkpoint files found in this run!", file=sys.stderr)
         sys.exit(1)
     
-    print(f"Found {len(checkpoint_files)} checkpoint files")
+    print(f"Found {len(checkpoint_files)} checkpoint files", file=sys.stderr)
     
     os.makedirs(checkpoint_dir, exist_ok=True)
     
     for file in checkpoint_files:
-        print(f"   Downloading: {file.name}")
+        print(f"   Downloading: {file.name}", file=sys.stderr)
         file.download(root=checkpoint_dir, replace=True)
     
-    print(f"✅ Downloaded {len(checkpoint_files)} checkpoints to {checkpoint_dir}")
+    print(f"✅ Downloaded {len(checkpoint_files)} checkpoints to {checkpoint_dir}", file=sys.stderr)
     
 except Exception as e:
-    print(f"❌ Error downloading checkpoints: {e}")
+    print(f"❌ Error downloading checkpoints: {e}", file=sys.stderr)
     import traceback
-    traceback.print_exc()
+    traceback.print_exc(file=sys.stderr)
     sys.exit(1)
 EOF
+)
     
     if [ $? -ne 0 ]; then
         echo "❌ Failed to download checkpoints from W&B"
         exit 1
+    fi
+    
+    # Export the captured modality
+    if [ -n "$RESUME_MODALITY" ]; then
+        export RESUME_MODALITY
+        echo "✅ Will resume training for modality: $RESUME_MODALITY"
     fi
     
 elif [ -f "/data/400kCheckpoints.zip" ]; then
