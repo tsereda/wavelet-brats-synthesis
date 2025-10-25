@@ -2,7 +2,7 @@
 """
 Evaluation script for middleslice reconstruction
 Calculates MSE and SSIM for model predictions
-NOW WITH WAVELET DECOMPOSITION SAVING, VISUALIZATION, AND WANDB LOGGING!
+WITH FIXED SSIM CALCULATION AND PER-MODALITY WANDB LOGGING!
 """
 
 import torch
@@ -106,6 +106,7 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
 def calculate_metrics(prediction, ground_truth):
     """
     Calculate MSE and SSIM between prediction and ground truth
+    FIXED: Uses stable data_range for SSIM calculation
     
     Args:
         prediction: torch.Tensor [4, H, W] - predicted middle slice
@@ -123,19 +124,19 @@ def calculate_metrics(prediction, ground_truth):
     mse_avg = np.mean(mse_per_modality)
     
     # Calculate SSIM (per-modality, then average)
+    # FIXED: Use fixed data_range since inputs are normalized to [0, 1]
     ssim_scores = []
     for i in range(4):  # 4 modalities
-        # SSIM requires data_range parameter
-        data_range = max(pred_np[i].max(), gt_np[i].max()) - min(pred_np[i].min(), gt_np[i].min())
-        if data_range == 0:
-            data_range = 1.0
-        
-        score = ssim(
-            gt_np[i], 
-            pred_np[i], 
-            data_range=data_range
-        )
-        ssim_scores.append(score)
+        try:
+            score = ssim(
+                gt_np[i], 
+                pred_np[i], 
+                data_range=1.0  # Fixed range for normalized data
+            )
+            ssim_scores.append(score)
+        except Exception as e:
+            print(f"Warning: SSIM calculation failed for modality {i}: {e}")
+            ssim_scores.append(0.0)  # Fallback value
     
     ssim_avg = np.mean(ssim_scores)
     
@@ -185,6 +186,10 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     
     # For logging sample predictions to wandb
     sample_logged = False
+    
+    # Track running per-modality metrics for WandB
+    running_mse_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
+    running_ssim_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
     
     with torch.no_grad():
         for batch_idx, (inputs, targets, slice_indices) in enumerate(tqdm(data_loader)):
@@ -249,6 +254,11 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                 metrics['batch_idx'] = batch_idx
                 all_metrics.append(metrics)
                 
+                # Track per-modality metrics for running average
+                for mod in ['t1', 't1ce', 't2', 'flair']:
+                    running_mse_per_mod[mod].append(metrics[f'mse_{mod}'])
+                    running_ssim_per_mod[mod].append(metrics[f'ssim_{mod}'])
+                
                 # Optionally save predictions
                 if batch_idx < 10:  # Save first 10 batches for inspection
                     pred_path = predictions_dir / f'batch{batch_idx}_sample{i}.npy'
@@ -297,6 +307,20 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     plt.close()
                     
                     sample_logged = True
+            
+            # Log running metrics every 10 batches
+            if batch_idx % 10 == 0 and batch_idx > 0:
+                wandb.log({
+                    "eval/running_mse_t1": np.mean(running_mse_per_mod['t1']),
+                    "eval/running_mse_t1ce": np.mean(running_mse_per_mod['t1ce']),
+                    "eval/running_mse_t2": np.mean(running_mse_per_mod['t2']),
+                    "eval/running_mse_flair": np.mean(running_mse_per_mod['flair']),
+                    "eval/running_ssim_t1": np.mean(running_ssim_per_mod['t1']),
+                    "eval/running_ssim_t1ce": np.mean(running_ssim_per_mod['t1ce']),
+                    "eval/running_ssim_t2": np.mean(running_ssim_per_mod['t2']),
+                    "eval/running_ssim_flair": np.mean(running_ssim_per_mod['flair']),
+                    "eval/progress": batch_idx / len(data_loader)
+                })
     
     # Aggregate metrics
     mse_values = [m['mse'] for m in all_metrics]
@@ -315,7 +339,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
         mse_mod = [m[f'mse_{mod}'] for m in all_metrics]
         ssim_mod = [m[f'ssim_{mod}'] for m in all_metrics]
         results[f'mse_{mod}_mean'] = np.mean(mse_mod)
+        results[f'mse_{mod}_std'] = np.std(mse_mod)
         results[f'ssim_{mod}_mean'] = np.mean(ssim_mod)
+        results[f'ssim_{mod}_std'] = np.std(ssim_mod)
     
     return results, all_metrics
 
@@ -466,28 +492,73 @@ def main():
     print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
     print(f"Samples evaluated: {results['num_samples']}")
     print("\nPer-modality MSE:")
-    print(f"  T1:    {results['mse_t1_mean']:.6f}")
-    print(f"  T1ce:  {results['mse_t1ce_mean']:.6f}")
-    print(f"  T2:    {results['mse_t2_mean']:.6f}")
-    print(f"  FLAIR: {results['mse_flair_mean']:.6f}")
+    print(f"  T1:    {results['mse_t1_mean']:.6f} ± {results['mse_t1_std']:.6f}")
+    print(f"  T1ce:  {results['mse_t1ce_mean']:.6f} ± {results['mse_t1ce_std']:.6f}")
+    print(f"  T2:    {results['mse_t2_mean']:.6f} ± {results['mse_t2_std']:.6f}")
+    print(f"  FLAIR: {results['mse_flair_mean']:.6f} ± {results['mse_flair_std']:.6f}")
+    print("\nPer-modality SSIM:")
+    print(f"  T1:    {results['ssim_t1_mean']:.4f} ± {results['ssim_t1_std']:.4f}")
+    print(f"  T1ce:  {results['ssim_t1ce_mean']:.4f} ± {results['ssim_t1ce_std']:.4f}")
+    print(f"  T2:    {results['ssim_t2_mean']:.4f} ± {results['ssim_t2_std']:.4f}")
+    print(f"  FLAIR: {results['ssim_flair_mean']:.4f} ± {results['ssim_flair_std']:.4f}")
     print("="*50)
     
-    # Log results to wandb
+    # Log results to wandb - COMPREHENSIVE PER-MODALITY LOGGING
     wandb.log({
+        # Overall metrics
         "eval/mse_mean": results['mse_mean'],
         "eval/mse_std": results['mse_std'],
         "eval/ssim_mean": results['ssim_mean'],
         "eval/ssim_std": results['ssim_std'],
         "eval/num_samples": results['num_samples'],
-        "eval/mse_t1": results['mse_t1_mean'],
-        "eval/mse_t1ce": results['mse_t1ce_mean'],
-        "eval/mse_t2": results['mse_t2_mean'],
-        "eval/mse_flair": results['mse_flair_mean'],
-        "eval/ssim_t1": results['ssim_t1_mean'],
-        "eval/ssim_t1ce": results['ssim_t1ce_mean'],
-        "eval/ssim_t2": results['ssim_t2_mean'],
-        "eval/ssim_flair": results['ssim_flair_mean'],
+        
+        # Per-modality MSE
+        "eval/mse_t1_mean": results['mse_t1_mean'],
+        "eval/mse_t1_std": results['mse_t1_std'],
+        "eval/mse_t1ce_mean": results['mse_t1ce_mean'],
+        "eval/mse_t1ce_std": results['mse_t1ce_std'],
+        "eval/mse_t2_mean": results['mse_t2_mean'],
+        "eval/mse_t2_std": results['mse_t2_std'],
+        "eval/mse_flair_mean": results['mse_flair_mean'],
+        "eval/mse_flair_std": results['mse_flair_std'],
+        
+        # Per-modality SSIM
+        "eval/ssim_t1_mean": results['ssim_t1_mean'],
+        "eval/ssim_t1_std": results['ssim_t1_std'],
+        "eval/ssim_t1ce_mean": results['ssim_t1ce_mean'],
+        "eval/ssim_t1ce_std": results['ssim_t1ce_std'],
+        "eval/ssim_t2_mean": results['ssim_t2_mean'],
+        "eval/ssim_t2_std": results['ssim_t2_std'],
+        "eval/ssim_flair_mean": results['ssim_flair_mean'],
+        "eval/ssim_flair_std": results['ssim_flair_std'],
     })
+    
+    # Create per-modality comparison chart
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+    
+    # MSE comparison
+    mse_values = [results[f'mse_{m.lower()}_mean'] for m in modalities]
+    mse_stds = [results[f'mse_{m.lower()}_std'] for m in modalities]
+    axes[0].bar(modalities, mse_values, yerr=mse_stds, capsize=5, alpha=0.7)
+    axes[0].set_ylabel('MSE')
+    axes[0].set_title('MSE per Modality')
+    axes[0].grid(True, alpha=0.3)
+    
+    # SSIM comparison
+    ssim_values = [results[f'ssim_{m.lower()}_mean'] for m in modalities]
+    ssim_stds = [results[f'ssim_{m.lower()}_std'] for m in modalities]
+    axes[1].bar(modalities, ssim_values, yerr=ssim_stds, capsize=5, alpha=0.7, color='green')
+    axes[1].set_ylabel('SSIM')
+    axes[1].set_title('SSIM per Modality')
+    axes[1].set_ylim([0, 1])
+    axes[1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    chart_path = Path(args.output) / 'per_modality_comparison.png'
+    plt.savefig(chart_path, dpi=150, bbox_inches='tight')
+    wandb.log({"eval/per_modality_comparison": wandb.Image(str(chart_path))})
+    plt.close()
     
     # Log example wavelet visualizations to wandb
     if save_wavelets:
