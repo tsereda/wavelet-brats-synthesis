@@ -35,7 +35,7 @@ spec:
       effect: PreferNoSchedule
   containers:
   - name: sweep-agent
-    image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+    image: nvcr.io/nvidia/pytorch:24.09-py3
    
     command: ["/bin/bash", "-c"]
     args:
@@ -53,8 +53,10 @@ spec:
         git clone https://github.com/tsereda/wavelet-brats-synthesis.git
         cd wavelet-brats-synthesis/slice-prediction
 
+
         unzip /data/brats20-dataset-training-validation.zip
-        python train.py   --data_dir BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData   --model_type swin   --epochs 2   --num_patients 10
+        pip install PyWavelets
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/h848gu3r
 
         tail -f /dev/null
    
@@ -68,11 +70,6 @@ spec:
       value: "timgsereda"
     - name: WANDB_PROJECT
       value: "wavelet-brats-synthesis"
-    - name: SWEEP_ID
-      value: "7x7mbf25"
-    - name: WANDB_SWEEP_ID
-      value: "7x7mbf25"
-   
     resources:
       requests:
         memory: "16Gi"
