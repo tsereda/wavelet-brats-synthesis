@@ -371,120 +371,8 @@ def save_results(results, all_metrics, output_dir):
     print(f"Detailed metrics saved to {details_path}")
 
 
-def get_args():
-    parser = argparse.ArgumentParser(description="Evaluate middleslice reconstruction model")
-    parser.add_argument('--checkpoint', type=str, required=True, 
-                       help='Path to model checkpoint')
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to BraTS dataset')
-    parser.add_argument('--output', type=str, default='./results/swin',
-                       help='Output directory for results')
-    parser.add_argument('--batch_size', type=int, default=16,
-                       help='Batch size for evaluation')
-    parser.add_argument('--num_patients', type=int, default=None,
-                       help='Number of patients to evaluate (default: all)')
-    parser.add_argument('--img_size', type=int, default=256,
-                       help='Image size')
-    parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'wavelet_haar', 'wavelet_db2', 'wavelet'],
-                       help='Model architecture')
-    parser.add_argument('--wavelet', type=str, default='haar',
-                       help='Wavelet type (for wavelet model type)')
-    parser.add_argument('--save_wavelets', action='store_true',
-                       help='Save wavelet coefficients and visualizations (wavelet models only)')
-    return parser.parse_args()
-
-
-def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
-    """Load trained model"""
-    if model_type == 'swin':
-        model = SwinUNETR(
-            in_channels=8,
-            out_channels=4,
-            feature_size=24,
-            spatial_dims=2
-        ).to(device)
-        print("Loaded Swin-UNETR model")
-    
-    elif model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']:
-        from models.wavelet_diffusion import WaveletDiffusion
-        
-        # Determine wavelet type from model_type if specified
-        if model_type == 'wavelet_haar':
-            wavelet_name = 'haar'
-        elif model_type == 'wavelet_db2':
-            wavelet_name = 'db2'
-        # else use the wavelet_name parameter
-        
-        model = WaveletDiffusion(
-            wavelet_name=wavelet_name,
-            in_channels=8,
-            out_channels=4,
-            timesteps=100
-        ).to(device)
-        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
-    
-    else:
-        raise ValueError(f"Unknown model type: {model_type}")
-    
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['state_dict'])
-    elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    
-    return model
-
-
-def main():
-    args = get_args()
-    
-    # Initialize wandb
-    run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
-    wandb.init(
-        project="brats-middleslice-wavelet-sweep",
-        name=run_name,
-        config=vars(args),
-        tags=["evaluation"]
-    )
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    
-    # Load dataset
-    print("Loading dataset...")
-    dataset = BraTS2D5Dataset(
-        data_dir=args.data_dir,
-        image_size=(args.img_size, args.img_size),
-        spacing=(1.0, 1.0, 1.0),
-        num_patients=args.num_patients
-    )
-    
-    data_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,  # Don't shuffle for reproducible evaluation
-        num_workers=4
-    )
-    
-    # Load model
-    print(f"Loading model from {args.checkpoint}...")
-    model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
-    
-    # Check if we should save wavelets
-    is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
-    save_wavelets = args.save_wavelets and is_wavelet_model
-    if args.save_wavelets and not is_wavelet_model:
-        print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
-    
-    # Evaluate
-    print("Running evaluation...")
-    results, all_metrics = evaluate_model(model, data_loader, device, args.output, save_wavelets)
-    
-    # Print results
+def print_results(results):
+    """Print evaluation results to console"""
     print("\n" + "="*50)
     print("EVALUATION RESULTS")
     print("="*50)
@@ -502,8 +390,29 @@ def main():
     print(f"  T2:    {results['ssim_t2_mean']:.4f} ± {results['ssim_t2_std']:.4f}")
     print(f"  FLAIR: {results['ssim_flair_mean']:.4f} ± {results['ssim_flair_std']:.4f}")
     print("="*50)
+
+
+def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_name, save_wavelets=False):
+    """
+    Main evaluation function that can be called from other scripts
     
-    # Log results to wandb - COMPREHENSIVE PER-MODALITY LOGGING
+    Args:
+        model: trained model
+        data_loader: DataLoader for validation set
+        device: cuda or cpu
+        output_dir: where to save results
+        model_type: type of model ('swin', 'wavelet', etc.)
+        wavelet_name: wavelet type (for wavelet models)
+        save_wavelets: whether to save wavelet coefficients
+    
+    Returns:
+        results: dict with aggregated metrics
+        all_metrics: list of per-sample metrics
+    """
+    # Run evaluation
+    results, all_metrics = evaluate_model(model, data_loader, device, output_dir, save_wavelets)
+    
+    # Log comprehensive results to wandb
     wandb.log({
         # Overall metrics
         "eval/mse_mean": results['mse_mean'],
@@ -555,24 +464,152 @@ def main():
     axes[1].grid(True, alpha=0.3)
     
     plt.tight_layout()
-    chart_path = Path(args.output) / 'per_modality_comparison.png'
+    chart_path = Path(output_dir) / 'per_modality_comparison.png'
     plt.savefig(chart_path, dpi=150, bbox_inches='tight')
     wandb.log({"eval/per_modality_comparison": wandb.Image(str(chart_path))})
     plt.close()
     
     # Log example wavelet visualizations to wandb
     if save_wavelets:
-        wavelet_viz_dir = Path(args.output) / 'wavelet_visualizations'
+        wavelet_viz_dir = Path(output_dir) / 'wavelet_visualizations'
         for img_path in sorted(wavelet_viz_dir.glob('batch0_*.png'))[:3]:  # Log first batch
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
     
-    # Save results
-    save_results(results, all_metrics, args.output)
+    # Save results to CSV
+    save_results(results, all_metrics, output_dir)
     
-    print(f"\nResults saved to {args.output}/")
+    print(f"\nResults saved to {output_dir}/")
     if save_wavelets:
-        print(f"Wavelet coefficients saved to {args.output}/wavelets/")
-        print(f"Wavelet visualizations saved to {args.output}/wavelet_visualizations/")
+        print(f"Wavelet coefficients saved to {output_dir}/wavelets/")
+        print(f"Wavelet visualizations saved to {output_dir}/wavelet_visualizations/")
+    
+    return results, all_metrics
+
+
+def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
+    """Load trained model"""
+    if model_type == 'swin':
+        model = SwinUNETR(
+            in_channels=8,
+            out_channels=4,
+            feature_size=24,
+            spatial_dims=2
+        ).to(device)
+        print("Loaded Swin-UNETR model")
+    
+    elif model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']:
+        from models.wavelet_diffusion import WaveletDiffusion
+        
+        # Determine wavelet type from model_type if specified
+        if model_type == 'wavelet_haar':
+            wavelet_name = 'haar'
+        elif model_type == 'wavelet_db2':
+            wavelet_name = 'db2'
+        # else use the wavelet_name parameter
+        
+        model = WaveletDiffusion(
+            wavelet_name=wavelet_name,
+            in_channels=8,
+            out_channels=4,
+            timesteps=100
+        ).to(device)
+        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
+    
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+    
+    # Load checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['state_dict'])
+    elif isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+        model.load_state_dict(checkpoint['model_state_dict'])
+    else:
+        model.load_state_dict(checkpoint)
+    
+    return model
+
+
+def get_args():
+    parser = argparse.ArgumentParser(description="Evaluate middleslice reconstruction model")
+    parser.add_argument('--checkpoint', type=str, required=True, 
+                       help='Path to model checkpoint')
+    parser.add_argument('--data_dir', type=str, required=True,
+                       help='Path to BraTS dataset')
+    parser.add_argument('--output', type=str, default='./results/swin',
+                       help='Output directory for results')
+    parser.add_argument('--batch_size', type=int, default=16,
+                       help='Batch size for evaluation')
+    parser.add_argument('--num_patients', type=int, default=None,
+                       help='Number of patients to evaluate (default: all)')
+    parser.add_argument('--img_size', type=int, default=256,
+                       help='Image size')
+    parser.add_argument('--model_type', type=str, default='swin',
+                       choices=['swin', 'wavelet_haar', 'wavelet_db2', 'wavelet'],
+                       help='Model architecture')
+    parser.add_argument('--wavelet', type=str, default='haar',
+                       help='Wavelet type (for wavelet model type)')
+    parser.add_argument('--save_wavelets', action='store_true',
+                       help='Save wavelet coefficients and visualizations (wavelet models only)')
+    return parser.parse_args()
+
+
+def main():
+    """CLI entry point"""
+    args = get_args()
+    
+    # Initialize wandb
+    run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
+    wandb.init(
+        project="brats-middleslice-wavelet-sweep",
+        name=run_name,
+        config=vars(args),
+        tags=["evaluation"]
+    )
+    
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"Using device: {device}")
+    
+    # Load dataset
+    print("Loading dataset...")
+    dataset = BraTS2D5Dataset(
+        data_dir=args.data_dir,
+        image_size=(args.img_size, args.img_size),
+        spacing=(1.0, 1.0, 1.0),
+        num_patients=args.num_patients
+    )
+    
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,  # Don't shuffle for reproducible evaluation
+        num_workers=4
+    )
+    
+    # Load model
+    print(f"Loading model from {args.checkpoint}...")
+    model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
+    
+    # Check if we should save wavelets
+    is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
+    save_wavelets = args.save_wavelets and is_wavelet_model
+    if args.save_wavelets and not is_wavelet_model:
+        print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
+    
+    # Run evaluation
+    print("Running evaluation...")
+    results, all_metrics = run_evaluation(
+        model=model,
+        data_loader=data_loader,
+        device=device,
+        output_dir=args.output,
+        model_type=args.model_type,
+        wavelet_name=args.wavelet,
+        save_wavelets=save_wavelets
+    )
+    
+    # Print results
+    print_results(results)
     
     wandb.finish()
 

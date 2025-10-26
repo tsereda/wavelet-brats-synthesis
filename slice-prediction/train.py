@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py - Complete training script with FIXED dataset loader for BraTS2020 + WAVELET VISUALIZATION
+# train.py - Complete training script with FIXED dataset loader for BraTS2020 + WAVELET VISUALIZATION + POST-TRAINING EVALUATION
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -125,6 +125,10 @@ def get_args():
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--num_patients', type=int, default=None)
+    parser.add_argument('--eval_batch_size', type=int, default=16,
+                       help='Batch size for evaluation (default: 16)')
+    parser.add_argument('--skip_eval', action='store_true',
+                       help='Skip evaluation after training')
     return parser.parse_args()
 
 
@@ -445,6 +449,72 @@ def main(args):
     # Final summary
     print(f"\nTraining completed! Best loss: {best_loss:.6f}")
     wandb.log({"best_loss": best_loss})
+    
+    # ===== POST-TRAINING EVALUATION =====
+    if not args.skip_eval:
+        print("\n" + "="*60)
+        print("Running evaluation on best checkpoint...")
+        print("="*60)
+        
+        # Reload best checkpoint
+        checkpoint_name = f"{args.model_type}_{args.wavelet if args.model_type == 'wavelet' else 'baseline'}_best.pth"
+        checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
+        
+        print(f"Loading best checkpoint from {checkpoint_path}...")
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        
+        # Create evaluation dataloader (no shuffle for reproducibility)
+        eval_loader = DataLoader(
+            dataset, 
+            batch_size=args.eval_batch_size,  # Larger batch for faster eval
+            shuffle=False,  # Don't shuffle for reproducible evaluation
+            num_workers=4
+        )
+        
+        # Import and run evaluation
+        from evaluate import run_evaluation
+        
+        # Determine output directory for results
+        if args.model_type == 'wavelet':
+            results_dir = f"./results/{args.model_type}_{args.wavelet}"
+        else:
+            results_dir = f"./results/{args.model_type}_baseline"
+        
+        # Run evaluation (this logs to the same wandb run)
+        print(f"Evaluating model...")
+        results, _ = run_evaluation(
+            model=model,
+            data_loader=eval_loader,
+            device=device,
+            output_dir=results_dir,
+            model_type=args.model_type,
+            wavelet_name=args.wavelet if args.model_type == 'wavelet' else 'N/A',
+            save_wavelets=(args.model_type == 'wavelet')  # Only save wavelets for wavelet models
+        )
+        
+        # Print final evaluation results
+        print("\n" + "="*60)
+        print("FINAL EVALUATION RESULTS")
+        print("="*60)
+        print(f"MSE:  {results['mse_mean']:.6f} ± {results['mse_std']:.6f}")
+        print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
+        print(f"Samples evaluated: {results['num_samples']}")
+        print("\nPer-modality MSE:")
+        print(f"  T1:    {results['mse_t1_mean']:.6f} ± {results['mse_t1_std']:.6f}")
+        print(f"  T1ce:  {results['mse_t1ce_mean']:.6f} ± {results['mse_t1ce_std']:.6f}")
+        print(f"  T2:    {results['mse_t2_mean']:.6f} ± {results['mse_t2_std']:.6f}")
+        print(f"  FLAIR: {results['mse_flair_mean']:.6f} ± {results['mse_flair_std']:.6f}")
+        print("\nPer-modality SSIM:")
+        print(f"  T1:    {results['ssim_t1_mean']:.4f} ± {results['ssim_t1_std']:.4f}")
+        print(f"  T1ce:  {results['ssim_t1ce_mean']:.4f} ± {results['ssim_t1ce_std']:.4f}")
+        print(f"  T2:    {results['ssim_t2_mean']:.4f} ± {results['ssim_t2_std']:.4f}")
+        print(f"  FLAIR: {results['ssim_flair_mean']:.4f} ± {results['ssim_flair_std']:.4f}")
+        print("="*60)
+        
+        print(f"\nEvaluation results saved to {results_dir}/")
+    else:
+        print("\nSkipping evaluation (--skip_eval flag set)")
     
     wandb.finish()
 
