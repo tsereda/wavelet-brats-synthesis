@@ -49,6 +49,7 @@ spec:
         pip install --upgrade "monai[nibabel]>=1.3.0"
         pip install einops>=0.7.0
         pip install blobfile
+        pip install scikit-image
        
         git clone https://github.com/tsereda/wavelet-brats-synthesis.git
         cd wavelet-brats-synthesis/slice-prediction
@@ -56,7 +57,7 @@ spec:
 
         unzip /data/brats20-dataset-training-validation.zip
         pip install PyWavelets
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/6tjywway
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/ukxhvqq4
 
         tail -f /dev/null
    
