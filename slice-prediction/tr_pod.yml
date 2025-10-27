@@ -57,7 +57,7 @@ spec:
 
         unzip /data/brats20-dataset-training-validation.zip
         pip install PyWavelets
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/ukxhvqq4
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/d8iroxxv
 
         tail -f /dev/null
    
