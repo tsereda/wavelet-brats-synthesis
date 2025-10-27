@@ -21,33 +21,33 @@ def get_input_file():
         if os.path.exists(input_file):
             return input_file
         else:
-            print(f"❌ Error: File '{input_file}' not found!")
+            print(f" Error: File '{input_file}' not found!")
             sys.exit(1)
     
     # Search for CSV files in current directory
     csv_files = [f for f in os.listdir('.') if f.endswith('.csv')]
     
     if not csv_files:
-        print("❌ Error: No CSV files found in current directory!")
-        print("\n📋 Usage:")
+        print(" Error: No CSV files found in current directory!")
+        print("\n Usage:")
         print("   python analyze.py <path_to_csv_file>")
         print("\n   Example:")
         print("   python analyze.py wandb_export_2025-10-26T19_05_40.002-05_00.csv")
         sys.exit(1)
     
     if len(csv_files) == 1:
-        print(f"✅ Found CSV file: {csv_files[0]}")
+        print(f" Found CSV file: {csv_files[0]}")
         return csv_files[0]
     else:
-        print(f"❌ Multiple CSV files found. Please specify which one to use:")
+        print(f" Multiple CSV files found. Please specify which one to use:")
         for i, f in enumerate(csv_files, 1):
             print(f"   {i}. {f}")
-        print("\n📋 Usage: python analyze.py <filename>")
+        print("\n Usage: python analyze.py <filename>")
         sys.exit(1)
 
 def load_and_clean_data(filepath):
     """Load CSV and remove incomplete experiments"""
-    print(f"📂 Loading data from: {filepath}")
+    print(f" Loading data from: {filepath}")
     df = pd.read_csv(filepath)
     metric_cols = [col for col in df.columns if col != 'Name']
     df_clean = df.dropna(subset=metric_cols, how='all').copy()
@@ -76,7 +76,7 @@ def create_visualizations(df_clean, output_file):
     df_ssim.columns = [col.replace('eval/ssim_', '').replace('_mean', '').upper() 
                        for col in df_ssim.columns]
     df_ssim.plot(kind='bar', ax=ax1, width=0.8)
-    ax1.set_title('SSIM by Wavelet Type and Modality (Higher is Better)', fontweight='bold')
+    ax1.set_title('SSIM by Wavelet Type and Modality', fontweight='bold')
     ax1.set_xlabel('Wavelet Type')
     ax1.set_ylabel('SSIM Score')
     ax1.legend(title='Modality', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -90,7 +90,7 @@ def create_visualizations(df_clean, output_file):
     df_mse.columns = [col.replace('eval/mse_', '').replace('_mean', '').upper() 
                       for col in df_mse.columns]
     df_mse.plot(kind='bar', ax=ax2, width=0.8)
-    ax2.set_title('MSE by Wavelet Type and Modality (Lower is Better)', fontweight='bold')
+    ax2.set_title('MSE by Wavelet Type and Modality', fontweight='bold')
     ax2.set_xlabel('Wavelet Type')
     ax2.set_ylabel('MSE')
     ax2.legend(title='Modality', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -117,7 +117,7 @@ def create_visualizations(df_clean, output_file):
     df_avg_mse = df_clean[['wavelet_type', 'avg_mse']].sort_values('avg_mse', ascending=True)
     bars = ax4.barh(df_avg_mse['wavelet_type'], df_avg_mse['avg_mse'], 
                     color=sns.color_palette("RdYlGn_r", len(df_avg_mse)))
-    ax4.set_title('Average MSE Across All Modalities (Ranked)', fontweight='bold')
+    ax4.set_title('Average MSE Across All Modalities', fontweight='bold')
     ax4.set_xlabel('Average MSE')
     ax4.set_ylabel('Wavelet Type')
     ax4.grid(axis='x', alpha=0.3)
@@ -135,9 +135,9 @@ def create_visualizations(df_clean, output_file):
                     (row['avg_mse'], row['avg_ssim']),
                     xytext=(5, 5), textcoords='offset points', 
                     fontsize=9, fontweight='bold')
-    ax5.set_title('SSIM vs MSE Trade-off (Ideal: Top-Left)', fontweight='bold')
-    ax5.set_xlabel('Average MSE (Lower is Better)')
-    ax5.set_ylabel('Average SSIM (Higher is Better)')
+    ax5.set_title('SSIM vs MSE Trade-off', fontweight='bold')
+    ax5.set_xlabel('Average MSE')
+    ax5.set_ylabel('Average SSIM')
     ax5.grid(True, alpha=0.3)
 
     # 6. Heatmap of all metrics
@@ -163,7 +163,7 @@ def create_visualizations(df_clean, output_file):
 
     plt.tight_layout()
     plt.savefig(output_file, dpi=300, bbox_inches='tight')
-    print(f"\n✅ Visualization saved to: {output_file}")
+    print(f"\n Visualization saved to: {output_file}")
     
     return df_clean
 
