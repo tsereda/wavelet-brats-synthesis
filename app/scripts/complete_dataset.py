@@ -304,8 +304,8 @@ def parse_checkpoint_info(checkpoint_path):
     print(f"✅ Checkpoint config: schedule={sample_schedule}, steps={diffusion_steps}")
     return sample_schedule, diffusion_steps
 
-def create_model_args_manual_fix(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
-    """Create model arguments - MANUAL FIX based on observed error patterns."""
+def create_model_args_FINAL_FIX(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
+    """Create model arguments - FINAL FIX with CONFIRMED values from checkpoint analysis."""
     from guided_diffusion.script_util import model_and_diffusion_defaults
     
     # Start with all default arguments
@@ -320,13 +320,13 @@ def create_model_args_manual_fix(checkpoint_path, sample_schedule="direct", diff
     for key, value in defaults.items():
         setattr(args, key, value)
     
-    # MANUAL FIX: Based on the error patterns, your checkpoint actually uses:
-    # - Base channels: 128 (checkpoint has 128, 256, 384, 512)
-    # - Channel multipliers: 1,2,3,4 (128×1=128, 128×2=256, 128×3=384, 128×4=512)
+    # CHECKPOINT ANALYSIS CONFIRMED THESE EXACT VALUES:
+    # input_blocks.0.0.weight shape: torch.Size([64, 32, 3, 3, 3])
+    # Channel progression: [64, 128, 256]
     
     args.image_size = 224
-    args.num_channels = 128  # ✅ MANUAL: Base channels = 128
-    args.channel_mult = "1,2,3,4"  # ✅ MANUAL: Correct multipliers
+    args.num_channels = 64          # CONFIRMED: From checkpoint analysis
+    args.channel_mult = "1,2,4"     # CONFIRMED: From checkpoint analysis  
     args.num_res_blocks = 2
     args.dims = 3
     
@@ -337,7 +337,7 @@ def create_model_args_manual_fix(checkpoint_path, sample_schedule="direct", diff
     # From checkpoint
     args.diffusion_steps = diffusion_steps
     
-    print(f"🔧 MANUAL model config: channels={args.num_channels}, mult={args.channel_mult}")
+    print(f"FINAL CONFIG: channels={args.num_channels}, mult={args.channel_mult}")
     
     return args
 
@@ -349,8 +349,8 @@ def synthesize_modality(modalities, missing_modality, checkpoint_path, device,
     # Parse checkpoint config
     sample_schedule, checkpoint_diffusion_steps = parse_checkpoint_info(checkpoint_path)
     
-    # Create model args with MANUAL configuration
-    args = create_model_args_manual_fix(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
+    # Create model args with FINAL CORRECT configuration
+    args = create_model_args_FINAL_FIX(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
     
     # Override diffusion steps from user
     args.diffusion_steps = diffusion_steps
