@@ -125,7 +125,7 @@ def detect_model_architecture(checkpoint_path):
             channel_mult = ",".join(map(str, multipliers))
         else:
             # Fallback based on typical architectures
-            channel_mult = "1,2,4"
+            channel_mult = "1,2,2,4,4"
         
         # Determine num_res_blocks - analyze the actual structure
         # Look for patterns in block numbering
