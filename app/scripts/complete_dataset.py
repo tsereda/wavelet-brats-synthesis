@@ -395,7 +395,7 @@ def synthesize_modality(modalities, missing_modality, checkpoint_path, device,
     sample_schedule, checkpoint_diffusion_steps = parse_checkpoint_info(checkpoint_path)
     
     # Create model args with auto-detected configuration
-    args = create_model_args_auto_detected(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
+    args = create_model_args_hardcoded(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
     
     # Override diffusion steps from user
     args.diffusion_steps = diffusion_steps
