@@ -39,7 +39,7 @@ except ImportError:
 MODALITIES = ['t1n', 't1c', 't2w', 't2f']
 
 def detect_model_architecture(checkpoint_path):
-    """Automatically detect model architecture from checkpoint"""
+    """Automatically detect model architecture from checkpoint with detailed analysis"""
     print(f"🔍 Auto-detecting architecture from: {os.path.basename(checkpoint_path)}")
     
     try:
@@ -51,48 +51,69 @@ def detect_model_architecture(checkpoint_path):
             state_dict = checkpoint
             
         # Look for first conv layer to determine base channels
-        first_conv_key = None
-        for key in state_dict.keys():
-            if 'input_blocks.0' in key and 'weight' in key and len(state_dict[key].shape) == 5:
-                first_conv_key = key
-                break
-                
-        if not first_conv_key:
+        first_conv_key = 'input_blocks.0.0.weight'
+        if first_conv_key not in state_dict:
             raise ValueError("Could not find first conv layer in checkpoint")
             
         first_conv_shape = state_dict[first_conv_key].shape
         num_channels = first_conv_shape[0]  # Output channels of first conv
+        in_channels = first_conv_shape[1]   # Input channels
         
         print(f"✅ Detected num_channels: {num_channels}")
+        print(f"✅ Detected in_channels: {in_channels}")
         
-        # Better channel detection - look at specific input_blocks layers
+        # Analyze the actual block structure
+        input_block_count = 0
+        output_block_count = 0
+        has_attention = False
         channel_sizes = set()
+        skip_connections = set()
         
-        # Scan through input_blocks to find all channel sizes
+        # Count blocks and analyze structure
         for key in state_dict.keys():
-            if 'input_blocks' in key and '.0.in_layers.2.weight' in key:
-                shape = state_dict[key].shape
-                out_channels = shape[0]
-                channel_sizes.add(out_channels)
-            elif 'middle_block' in key and '.0.in_layers.2.weight' in key:
+            if key.startswith('input_blocks.'):
+                parts = key.split('.')
+                if len(parts) >= 2:
+                    try:
+                        block_num = int(parts[1])
+                        input_block_count = max(input_block_count, block_num + 1)
+                    except ValueError:
+                        pass
+                        
+                # Check for skip connections
+                if 'skip_connection' in key:
+                    skip_connections.add(key.split('.')[1])  # block number
+                    
+                # Check for attention layers
+                if any(x in key for x in ['norm.', 'qkv.', 'proj_out.']):
+                    has_attention = True
+                    
+            elif key.startswith('output_blocks.'):
+                parts = key.split('.')
+                if len(parts) >= 2:
+                    try:
+                        block_num = int(parts[1])
+                        output_block_count = max(output_block_count, block_num + 1)
+                    except ValueError:
+                        pass
+                        
+            # Check middle block for attention
+            elif key.startswith('middle_block.') and any(x in key for x in ['norm.', 'qkv.', 'proj_out.']):
+                has_attention = True
+        
+        # Collect channel sizes from residual blocks
+        for key in state_dict.keys():
+            if '.0.in_layers.2.weight' in key and 'input_blocks' in key:
                 shape = state_dict[key].shape
                 out_channels = shape[0]
                 channel_sizes.add(out_channels)
                 
-        # Also check output_blocks to understand the full progression
-        for key in state_dict.keys():
-            if 'output_blocks' in key and '.0.in_layers.2.weight' in key:
-                shape = state_dict[key].shape
-                out_channels = shape[0]
-                channel_sizes.add(out_channels)
-        
-        # Remove duplicates and sort
+        # Determine channel multipliers
         unique_channels = sorted(list(channel_sizes))
-        print(f"  Detected all channel sizes: {unique_channels}")
+        print(f"  Channel progression: {unique_channels}")
         
-        # Infer channel multipliers based on base channels
-        if len(unique_channels) >= 1:
-            base = num_channels  # Use detected base channels
+        if len(unique_channels) >= 2:
+            base = num_channels
             multipliers = []
             
             for ch in unique_channels:
@@ -100,26 +121,37 @@ def detect_model_architecture(checkpoint_path):
                 if mult > 0 and mult not in multipliers:
                     multipliers.append(mult)
                     
-            # Sort and take reasonable multipliers
-            multipliers = sorted(multipliers)[:5]  # Max 5 levels
+            multipliers = sorted(multipliers)
             channel_mult = ",".join(map(str, multipliers))
         else:
-            # Fallback based on common patterns
-            if num_channels == 64:
-                channel_mult = "1,2,3,4"  # Common pattern for 64-base models
-            elif num_channels == 128:
-                channel_mult = "1,2,4,4"  # Common pattern for 128-base models
-            else:
-                channel_mult = "1,2,4,4"  # Safe fallback
-                
+            # Fallback based on typical architectures
+            channel_mult = "1,2,4"
+        
+        # Determine num_res_blocks - analyze the actual structure
+        # Look for patterns in block numbering
+        res_blocks_per_level = 2  # default
+        
+        # Check how many blocks are at each resolution level
+        if input_block_count >= 12:
+            res_blocks_per_level = 3
+        elif input_block_count >= 8:
+            res_blocks_per_level = 2
+        else:
+            res_blocks_per_level = 2
+        
+        print(f"  Input blocks: {input_block_count}")
+        print(f"  Output blocks: {output_block_count}")
+        print(f"  Skip connections at blocks: {sorted(skip_connections)}")
+        print(f"  Has attention: {has_attention}")
+        print(f"  Inferred num_res_blocks: {res_blocks_per_level}")
         print(f"  Inferred channel_mult: {channel_mult}")
         
-        return num_channels, channel_mult
+        return num_channels, channel_mult, res_blocks_per_level, has_attention, in_channels
         
     except Exception as e:
         print(f"⚠️ Auto-detection failed: {e}")
         print("  Falling back to default architecture")
-        return 128, "1,2,3,4"  # Try a different fallback
+        return 128, "1,2,3,4", 2, True, 32
 
 
 def create_brain_mask_from_target(target, threshold=0.01):
@@ -304,9 +336,12 @@ def parse_checkpoint_info(checkpoint_path):
     print(f"✅ Checkpoint config: schedule={sample_schedule}, steps={diffusion_steps}")
     return sample_schedule, diffusion_steps
 
-def create_model_args_FINAL_FIX(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
-    """Create model arguments - FINAL FIX with CONFIRMED values from checkpoint analysis."""
+def create_model_args_auto_detected(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
+    """Create model arguments using auto-detected architecture"""
     from guided_diffusion.script_util import model_and_diffusion_defaults
+    
+    # Auto-detect architecture from checkpoint
+    num_channels, channel_mult, num_res_blocks, has_attention, in_channels = detect_model_architecture(checkpoint_path)
     
     # Start with all default arguments
     defaults = model_and_diffusion_defaults()
@@ -320,25 +355,39 @@ def create_model_args_FINAL_FIX(checkpoint_path, sample_schedule="direct", diffu
     for key, value in defaults.items():
         setattr(args, key, value)
     
-    # CHECKPOINT ANALYSIS CONFIRMED THESE EXACT VALUES:
-    # input_blocks.0.0.weight shape: torch.Size([64, 32, 3, 3, 3])
-    # Channel progression: [64, 128, 256]
-    # BUT: checkpoint has blocks up to input_blocks.14, suggesting more num_res_blocks
-    
+    # Override with detected values
     args.image_size = 224
-    args.num_channels = 64          # CONFIRMED: From checkpoint analysis
-    args.channel_mult = "1,2,4"     # CONFIRMED: From checkpoint analysis  
-    args.num_res_blocks = 4         # INCREASED: Based on error patterns showing many blocks
+    args.num_channels = num_channels
+    args.channel_mult = channel_mult
+    args.num_res_blocks = num_res_blocks
     args.dims = 3
     
-    # Override other specific values for BraTS
-    args.in_channels = 32  # 3 modalities * 8 DWT components + 8 target
-    args.out_channels = 8  # Single modality output
+    # Set input/output channels for BraTS
+    args.in_channels = in_channels  # Detected from checkpoint
+    args.out_channels = 8  # Single modality output in DWT space
+    
+    # Attention configuration
+    if has_attention:
+        args.use_scale_shift_norm = True
+        # Add attention at middle resolution levels
+        attention_resolutions = []
+        channel_list = [int(x) for x in channel_mult.split(',')]
+        if len(channel_list) >= 2:
+            # Add attention at second level (commonly 2x base channels)
+            attention_resolutions = [224 // 2]  # 112
+        args.attention_resolutions = ",".join(map(str, attention_resolutions))
+    else:
+        args.attention_resolutions = ""
     
     # From checkpoint
     args.diffusion_steps = diffusion_steps
     
-    print(f"FINAL CONFIG: channels={args.num_channels}, mult={args.channel_mult}")
+    print(f"✅ AUTO-DETECTED CONFIG:")
+    print(f"   num_channels: {args.num_channels}")
+    print(f"   channel_mult: {args.channel_mult}")
+    print(f"   num_res_blocks: {args.num_res_blocks}")
+    print(f"   in_channels: {args.in_channels}")
+    print(f"   attention_resolutions: {args.attention_resolutions}")
     
     return args
 
@@ -350,13 +399,13 @@ def synthesize_modality(modalities, missing_modality, checkpoint_path, device,
     # Parse checkpoint config
     sample_schedule, checkpoint_diffusion_steps = parse_checkpoint_info(checkpoint_path)
     
-    # Create model args with FINAL CORRECT configuration
-    args = create_model_args_FINAL_FIX(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
+    # Create model args with auto-detected configuration
+    args = create_model_args_auto_detected(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
     
     # Override diffusion steps from user
     args.diffusion_steps = diffusion_steps
     
-    print(f"🔧 Model config: channels={args.num_channels}, mult={args.channel_mult}, steps={args.diffusion_steps}")
+    print(f"🔧 Final model config: channels={args.num_channels}, mult={args.channel_mult}, res_blocks={args.num_res_blocks}, steps={args.diffusion_steps}")
     
     # Create model and diffusion
     try:
