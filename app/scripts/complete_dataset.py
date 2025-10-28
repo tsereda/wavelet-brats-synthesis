@@ -108,9 +108,9 @@ def detect_model_architecture(checkpoint_path):
             if num_channels == 64:
                 channel_mult = "1,2,3,4"  # Common pattern for 64-base models
             elif num_channels == 128:
-                channel_mult = "1,2,2,4,4"  # Common pattern for 128-base models
+                channel_mult = "1,2,4,4"  # Common pattern for 128-base models
             else:
-                channel_mult = "1,2,2,4,4"  # Safe fallback
+                channel_mult = "1,2,4,4"  # Safe fallback
                 
         print(f"  Inferred channel_mult: {channel_mult}")
         
