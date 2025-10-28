@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: brads3d-eval-6
+  namespace: gai-lina-group
+  labels:
+    app: wandb-sweep
+spec:
+  nodeSelector:
+    nautilus.io/linstor: "true"
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.product
+            operator: In
+            values:
+            - NVIDIA-A10
+            - NVIDIA-GeForce-RTX-3090
+            - NVIDIA-GeForce-RTX-4090
+            - NVIDIA-TITAN-RTX
+            - NVIDIA-RTX-A5000
+            - Quadro-RTX-6000
+            - Tesla-V100-SXM2-32GB
+            - NVIDIA-A40
+            - NVIDIA-L40
+            - NVIDIA-RTX-A6000
+            - Quadro-RTX-8000
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: PreferNoSchedule
+  containers:
+  - name: sweep-agent
+    image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+   
+    command: ["/bin/bash", "-c"]
+    args:
+      - |
+        apt-get update && apt-get install -y git wget p7zip-full
+        
+        # Clone repository
+        echo "[2/5] Cloning repository..."
+        git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+        cd wavelet-brats-synthesis
+        
+        # Run setup script
+        echo "[3/5] Running setup script..."
+        python app/scripts/setupeval.py \
+          --install-deps \
+          --wandb-run timgsereda/wavelet-brats-synthesis/REPLACE_WITH_RUN_ID \
+          --checkpoint-dir /data/checkpoints \
+          --data-dir /data/validation_COMPLETE
+        
+        if [ $? -ne 0 ]; then
+            echo "❌ Setup failed!"
+        fi
+        
+        # Run evaluation
+        echo "[4/5] Running evaluation..."
+        python app/scripts/complete_dataset.py \
+          --input_dir /data/validation_COMPLETE \
+          --output_dir /data/synthesis_outputs \
+          --checkpoint_dir /data/checkpoints \
+          --evaluation_mode \
+          --evaluate_metrics \
+          --target_modality t2w \
+          --diffusion_steps 100 \
+          --wandb_mode online \
+          --wandb_project brats-evaluation
+        
+        if [ $? -ne 0 ]; then
+            echo "❌ Evaluation failed!"
+        fi
+        
+        echo "[5/5] Evaluation complete!"
+        echo "================================="
+        echo "✅ SUCCESS"
+        echo "================================="
+        echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
+        echo "Outputs saved to: /data/synthesis_outputs"
+        
+        # Keep pod alive for inspection
+        tail -f /dev/null
+   
+    env:
+    - name: WANDB_API_KEY
+      valueFrom:
+        secretKeyRef:
+          name: wandb-credentials
+          key: api-key
+    - name: WANDB_ENTITY
+      value: "timgsereda"
+    - name: WANDB_PROJECT
+      value: "wavelet-brats-synthesis"
+   
+    resources:
+      requests:
+        memory: "16Gi"
+        cpu: "4"
+        nvidia.com/gpu: "1"
+      limits:
+        memory: "32Gi"
+        cpu: "8"
+        nvidia.com/gpu: "1"
+   
+    volumeMounts:
+    - name: data-volume
+      mountPath: /data
+ 
+  volumes:
+  - name: data-volume
+    persistentVolumeClaim:
+      claimName: brats2025-6
