@@ -125,7 +125,7 @@ def detect_model_architecture(checkpoint_path):
             channel_mult = ",".join(map(str, multipliers))
         else:
             # Fallback based on typical architectures
-            channel_mult = "1,2,2,4,4"
+            channel_mult = "1,2,4"
         
         # Determine num_res_blocks - analyze the actual structure
         # Look for patterns in block numbering
@@ -336,12 +336,9 @@ def parse_checkpoint_info(checkpoint_path):
     print(f"✅ Checkpoint config: schedule={sample_schedule}, steps={diffusion_steps}")
     return sample_schedule, diffusion_steps
 
-def create_model_args_auto_detected(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
-    """Create model arguments using auto-detected architecture"""
+def create_model_args_hardcoded(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
+    """Create model arguments using HARDCODED values that match the checkpoint exactly"""
     from guided_diffusion.script_util import model_and_diffusion_defaults
-    
-    # Auto-detect architecture from checkpoint
-    num_channels, channel_mult, num_res_blocks, has_attention, in_channels = detect_model_architecture(checkpoint_path)
     
     # Start with all default arguments
     defaults = model_and_diffusion_defaults()
@@ -355,34 +352,32 @@ def create_model_args_auto_detected(checkpoint_path, sample_schedule="direct", d
     for key, value in defaults.items():
         setattr(args, key, value)
     
-    # Override with detected values
+    # HARDCODED VALUES based on checkpoint analysis and error patterns
     args.image_size = 224
-    args.num_channels = num_channels
-    args.channel_mult = channel_mult
-    args.num_res_blocks = num_res_blocks
+    args.num_channels = 128        # Base channels (from checkpoint analysis)
+    args.channel_mult = "1,2,2,4,4"  # Exact pattern from user hint
+    args.num_res_blocks = 2        # 2 residual blocks per level
     args.dims = 3
     
     # Set input/output channels for BraTS
-    args.in_channels = in_channels  # Detected from checkpoint
+    args.in_channels = 32  # 3 modalities * 8 DWT components + 8 target placeholder
     args.out_channels = 8  # Single modality output in DWT space
     
-    # Attention configuration
-    if has_attention:
-        args.use_scale_shift_norm = True
-        # Add attention at middle resolution levels
-        attention_resolutions = []
-        channel_list = [int(x) for x in channel_mult.split(',')]
-        if len(channel_list) >= 2:
-            # Add attention at second level (commonly 2x base channels)
-            attention_resolutions = [224 // 2]  # 112
-        args.attention_resolutions = ",".join(map(str, attention_resolutions))
-    else:
-        args.attention_resolutions = ""
+    # Attention configuration - based on error messages showing attention layers
+    args.use_scale_shift_norm = True
+    args.attention_resolutions = "112"  # Attention at 224//2 resolution
+    
+    # Other important settings
+    args.use_checkpoint = False
+    args.use_scale_shift_norm = True
+    args.resblock_updown = False
+    args.use_fp16 = False
+    args.use_new_attention_order = False
     
     # From checkpoint
     args.diffusion_steps = diffusion_steps
     
-    print(f"✅ AUTO-DETECTED CONFIG:")
+    print(f"✅ HARDCODED CONFIG:")
     print(f"   num_channels: {args.num_channels}")
     print(f"   channel_mult: {args.channel_mult}")
     print(f"   num_res_blocks: {args.num_res_blocks}")
