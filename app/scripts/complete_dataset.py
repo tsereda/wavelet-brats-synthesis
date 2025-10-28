@@ -260,7 +260,7 @@ def create_model_args(sample_schedule="direct", diffusion_steps=1000):
     
     # Model architecture
     args.image_size = 224
-    args.num_channels = 128
+    args.num_channels = 64
     args.num_res_blocks = 2
     args.channel_mult = "1,2,2,4,4"
     args.learn_sigma = False
