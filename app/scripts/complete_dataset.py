@@ -320,13 +320,13 @@ def create_model_args_manual_fix(checkpoint_path, sample_schedule="direct", diff
     for key, value in defaults.items():
         setattr(args, key, value)
     
-    # MANUAL FIX: Based on the error patterns, your checkpoint uses:
-    # - Base channels: 128 (since we see 128, 256, 384 = 128×1, 128×2, 128×3)
-    # - Channel multipliers: 1,2,3 (since we see progression 128→256→384)
+    # MANUAL FIX: Based on the error patterns, your checkpoint actually uses:
+    # - Base channels: 64 (since we see 64, 128, 256 = 64×1, 64×2, 64×4)
+    # - Channel multipliers: 1,2,4 (since we see progression 64→128→256)
     
     args.image_size = 224
-    args.num_channels = 128  # ✅ MANUAL: Base channels
-    args.channel_mult = "1,2,3"  # ✅ MANUAL: Channel multipliers  
+    args.num_channels = 64  # ✅ MANUAL: Base channels (was wrong at 128)
+    args.channel_mult = "1,2,4"  # ✅ MANUAL: Channel multipliers (was wrong at "1,2,3")
     args.num_res_blocks = 2
     args.dims = 3
     
