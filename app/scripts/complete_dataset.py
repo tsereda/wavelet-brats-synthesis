@@ -323,11 +323,12 @@ def create_model_args_FINAL_FIX(checkpoint_path, sample_schedule="direct", diffu
     # CHECKPOINT ANALYSIS CONFIRMED THESE EXACT VALUES:
     # input_blocks.0.0.weight shape: torch.Size([64, 32, 3, 3, 3])
     # Channel progression: [64, 128, 256]
+    # BUT: checkpoint has blocks up to input_blocks.14, suggesting more num_res_blocks
     
     args.image_size = 224
     args.num_channels = 64          # CONFIRMED: From checkpoint analysis
     args.channel_mult = "1,2,4"     # CONFIRMED: From checkpoint analysis  
-    args.num_res_blocks = 2
+    args.num_res_blocks = 4         # INCREASED: Based on error patterns showing many blocks
     args.dims = 3
     
     # Override other specific values for BraTS
