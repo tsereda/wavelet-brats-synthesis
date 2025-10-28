@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: brads3d-eval-6
+  name: brads3d-eval-2
   namespace: gai-lina-group
   labels:
     app: wandb-sweep
@@ -40,20 +40,25 @@ spec:
     command: ["/bin/bash", "-c"]
     args:
       - |
-        apt-get update && apt-get install -y git wget p7zip-full
+        sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+        pip install nibabel
         
         # Clone repository
         echo "[2/5] Cloning repository..."
         git clone https://github.com/tsereda/wavelet-brats-synthesis.git
-        cd wavelet-brats-synthesis
+        cd wavelet-brats-synthesis/app/
         
         # Run setup script
         echo "[3/5] Running setup script..."
-        python app/scripts/setupeval.py \
+        7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+        7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
+        mkdir checkpoints
+        chmod +x checkpoints
+        python setupeval.py \
           --install-deps \
-          --wandb-run timgsereda/wavelet-brats-synthesis/REPLACE_WITH_RUN_ID \
-          --checkpoint-dir /data/checkpoints \
-          --data-dir /data/validation_COMPLETE
+          --wandb-run timgsereda/wavelet-brats-synthesis/p607sli9 \
+          --checkpoint-dir checkpoints \
+          --data-dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/MICCAI_BraTS2020_ValidationData
         
         if [ $? -ne 0 ]; then
             echo "❌ Setup failed!"
@@ -61,13 +66,13 @@ spec:
         
         # Run evaluation
         echo "[4/5] Running evaluation..."
-        python app/scripts/complete_dataset.py \
-          --input_dir /data/validation_COMPLETE \
+        python scripts/complete_dataset.py \
+          --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
           --output_dir /data/synthesis_outputs \
-          --checkpoint_dir /data/checkpoints \
+          --checkpoint_dir ../checkpoints \
           --evaluation_mode \
           --evaluate_metrics \
-          --target_modality t2w \
+          --target_modality t1c \
           --diffusion_steps 100 \
           --wandb_mode online \
           --wandb_project brats-evaluation
@@ -110,8 +115,13 @@ spec:
     volumeMounts:
     - name: data-volume
       mountPath: /data
+    - name: data-volume6
+      mountPath: /data6
  
   volumes:
   - name: data-volume
+    persistentVolumeClaim:
+      claimName: brats2025-2
+  - name: data-volume6
     persistentVolumeClaim:
       claimName: brats2025-6

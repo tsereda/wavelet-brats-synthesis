@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: wandb-sweep-agent-1
+  name: wandb-sweep-agent-2
   namespace: gai-lina-group
   labels:
     app: wandb-sweep
@@ -84,7 +84,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-1
+          claimName: brats2025-2
       - name: shm
         emptyDir:
           medium: Memory
