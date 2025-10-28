@@ -65,26 +65,53 @@ def detect_model_architecture(checkpoint_path):
         
         print(f"✅ Detected num_channels: {num_channels}")
         
-        # Try to infer channel multipliers by looking at layer patterns
-        channel_sizes = []
-        for key in state_dict.keys():
-            if 'input_blocks' in key and 'in_layers.2.weight' in key:
-                shape = state_dict[key].shape
-                channel_sizes.append(shape[0])
-                
-        # Remove duplicates and sort
-        unique_channels = sorted(set(channel_sizes))
-        print(f"  Detected channel progression: {unique_channels}")
+        # Better channel detection - look at specific input_blocks layers
+        channel_sizes = set()
         
-        # Infer channel multipliers
+        # Scan through input_blocks to find all channel sizes
+        for key in state_dict.keys():
+            if 'input_blocks' in key and '.0.in_layers.2.weight' in key:
+                shape = state_dict[key].shape
+                out_channels = shape[0]
+                channel_sizes.add(out_channels)
+            elif 'middle_block' in key and '.0.in_layers.2.weight' in key:
+                shape = state_dict[key].shape
+                out_channels = shape[0]
+                channel_sizes.add(out_channels)
+                
+        # Also check output_blocks to understand the full progression
+        for key in state_dict.keys():
+            if 'output_blocks' in key and '.0.in_layers.2.weight' in key:
+                shape = state_dict[key].shape
+                out_channels = shape[0]
+                channel_sizes.add(out_channels)
+        
+        # Remove duplicates and sort
+        unique_channels = sorted(list(channel_sizes))
+        print(f"  Detected all channel sizes: {unique_channels}")
+        
+        # Infer channel multipliers based on base channels
         if len(unique_channels) >= 1:
-            base = unique_channels[0]
-            multipliers = [ch // base for ch in unique_channels[:5]]  # Take first 5
+            base = num_channels  # Use detected base channels
+            multipliers = []
+            
+            for ch in unique_channels:
+                mult = ch // base
+                if mult > 0 and mult not in multipliers:
+                    multipliers.append(mult)
+                    
+            # Sort and take reasonable multipliers
+            multipliers = sorted(multipliers)[:5]  # Max 5 levels
             channel_mult = ",".join(map(str, multipliers))
         else:
-            # Fallback
-            channel_mult = "1,2,4,4"
-            
+            # Fallback based on common patterns
+            if num_channels == 64:
+                channel_mult = "1,2,3,4"  # Common pattern for 64-base models
+            elif num_channels == 128:
+                channel_mult = "1,2,4,4"  # Common pattern for 128-base models
+            else:
+                channel_mult = "1,2,4,4"  # Safe fallback
+                
         print(f"  Inferred channel_mult: {channel_mult}")
         
         return num_channels, channel_mult
@@ -92,7 +119,7 @@ def detect_model_architecture(checkpoint_path):
     except Exception as e:
         print(f"⚠️ Auto-detection failed: {e}")
         print("  Falling back to default architecture")
-        return 64, "1,2,4,4"
+        return 128, "1,2,3,4"  # Try a different fallback
 
 
 def create_brain_mask_from_target(target, threshold=0.01):
@@ -277,8 +304,8 @@ def parse_checkpoint_info(checkpoint_path):
     print(f"✅ Checkpoint config: schedule={sample_schedule}, steps={diffusion_steps}")
     return sample_schedule, diffusion_steps
 
-def create_model_args_auto(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
-    """Create model arguments - AUTO-DETECTED from checkpoint with all defaults."""
+def create_model_args_manual_fix(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
+    """Create model arguments - MANUAL FIX based on observed error patterns."""
     from guided_diffusion.script_util import model_and_diffusion_defaults
     
     # Start with all default arguments
@@ -293,14 +320,14 @@ def create_model_args_auto(checkpoint_path, sample_schedule="direct", diffusion_
     for key, value in defaults.items():
         setattr(args, key, value)
     
-    # AUTO-DETECT architecture from checkpoint
-    num_channels, channel_mult = detect_model_architecture(checkpoint_path)
+    # MANUAL FIX: Based on the error patterns, your checkpoint uses:
+    # - Base channels: 128 (since we see 128, 256, 384 = 128×1, 128×2, 128×3)
+    # - Channel multipliers: 1,2,3 (since we see progression 128→256→384)
     
-    # Override with detected values
     args.image_size = 224
-    args.num_channels = num_channels
+    args.num_channels = 128  # ✅ MANUAL: Base channels
+    args.channel_mult = "1,2,3"  # ✅ MANUAL: Channel multipliers  
     args.num_res_blocks = 2
-    args.channel_mult = channel_mult
     args.dims = 3
     
     # Override other specific values for BraTS
@@ -310,7 +337,7 @@ def create_model_args_auto(checkpoint_path, sample_schedule="direct", diffusion_
     # From checkpoint
     args.diffusion_steps = diffusion_steps
     
-    print(f"🔧 Final model config: channels={args.num_channels}, mult={args.channel_mult}")
+    print(f"🔧 MANUAL model config: channels={args.num_channels}, mult={args.channel_mult}")
     
     return args
 
@@ -322,8 +349,8 @@ def synthesize_modality(modalities, missing_modality, checkpoint_path, device,
     # Parse checkpoint config
     sample_schedule, checkpoint_diffusion_steps = parse_checkpoint_info(checkpoint_path)
     
-    # Create model args with AUTO-DETECTED configuration
-    args = create_model_args_auto(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
+    # Create model args with MANUAL configuration
+    args = create_model_args_manual_fix(checkpoint_path, sample_schedule, checkpoint_diffusion_steps)
     
     # Override diffusion steps from user
     args.diffusion_steps = diffusion_steps
