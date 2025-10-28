@@ -278,55 +278,39 @@ def parse_checkpoint_info(checkpoint_path):
     return sample_schedule, diffusion_steps
 
 def create_model_args_auto(checkpoint_path, sample_schedule="direct", diffusion_steps=1000):
-    """Create model arguments - AUTO-DETECTED from checkpoint."""
+    """Create model arguments - AUTO-DETECTED from checkpoint with all defaults."""
+    from guided_diffusion.script_util import model_and_diffusion_defaults
+    
+    # Start with all default arguments
+    defaults = model_and_diffusion_defaults()
+    
     class Args:
         pass
     
     args = Args()
     
+    # Set all defaults first
+    for key, value in defaults.items():
+        setattr(args, key, value)
+    
     # AUTO-DETECT architecture from checkpoint
     num_channels, channel_mult = detect_model_architecture(checkpoint_path)
     
-    # Model architecture - AUTO-CONFIGURED
+    # Override with detected values
     args.image_size = 224
     args.num_channels = num_channels
     args.num_res_blocks = 2
     args.channel_mult = channel_mult
-    args.learn_sigma = False
-    args.class_cond = False
-    args.use_checkpoint = False
-    args.attention_resolutions = ""
-    args.num_heads = 1
-    args.num_head_channels = -1
-    args.num_heads_upsample = -1
-    args.use_scale_shift_norm = False
-    args.dropout = 0.0
-    args.resblock_updown = True
-    args.use_fp16 = False
-    args.use_new_attention_order = False
     args.dims = 3
-    args.num_groups = 32
-    args.bottleneck_attention = False
-    args.resample_2d = False
-    args.additive_skips = False
-    args.use_freq = False
     
-    # Diffusion parameters
-    args.predict_xstart = True
-    args.noise_schedule = "linear"
-    args.timestep_respacing = ""
-    args.use_kl = False
-    args.rescale_timesteps = False
-    args.rescale_learned_sigmas = False
-    
-    # Model channels: 8 (target) + 24 (3 modalities * 8 DWT components each)
-    args.in_channels = 32
-    args.out_channels = 8
+    # Override other specific values for BraTS
+    args.in_channels = 32  # 3 modalities * 8 DWT components + 8 target
+    args.out_channels = 8  # Single modality output
     
     # From checkpoint
     args.diffusion_steps = diffusion_steps
-    args.sample_schedule = sample_schedule
-    args.mode = 'i2i'
+    
+    print(f"🔧 Final model config: channels={args.num_channels}, mult={args.channel_mult}")
     
     return args
 
