@@ -151,7 +151,7 @@ def detect_model_architecture(checkpoint_path):
     except Exception as e:
         print(f"⚠️ Auto-detection failed: {e}")
         print("  Falling back to default architecture")
-        return 128, "1,2,3,4", 2, True, 32
+        return 64, "1,2,4", 2, True, 32
 
 
 def create_brain_mask_from_target(target, threshold=0.01):
@@ -354,8 +354,8 @@ def create_model_args_hardcoded(checkpoint_path, sample_schedule="direct", diffu
     
     # HARDCODED VALUES based on checkpoint analysis and error patterns
     args.image_size = 224
-    args.num_channels = 128        # Base channels (from checkpoint analysis)
-    args.channel_mult = "1,2,2,4,4"  # Exact pattern from user hint
+    args.num_channels = 64        # Base channels (from checkpoint analysis)
+    args.channel_mult = "1,2,4"  # Exact pattern from user hint
     args.num_res_blocks = 2        # 2 residual blocks per level
     args.dims = 3
     
