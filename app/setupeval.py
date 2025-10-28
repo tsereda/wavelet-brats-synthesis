@@ -121,7 +121,7 @@ def download_checkpoints_from_url(url, output_dir):
         
         print(f"Downloading {filename}...")
         urllib.request.urlretrieve(url, local_path)
-        print(f"✅ Downloaded to {local_path}")
+        print(f"Downloaded to {local_path}")
         
         # Extract based on file type
         print(f"Extracting...")
@@ -132,17 +132,17 @@ def download_checkpoints_from_url(url, output_dir):
             with tarfile.open(local_path, 'r:gz') as tar_ref:
                 tar_ref.extractall(output_dir)
         else:
-            print(f"⚠️  Unknown archive format: {filename}")
+            print(f"Unknown archive format: {filename}")
             return False
         
         # List extracted files
         extracted = list(Path(output_dir).glob("*.pt"))
-        print(f"✅ Extracted {len(extracted)} checkpoints to {output_dir}")
+        print(f"Extracted {len(extracted)} checkpoints to {output_dir}")
         
         return True
         
     except Exception as e:
-        print(f"❌ Error downloading from URL: {e}")
+        print(f"Error downloading from URL: {e}")
         return False
 
 
@@ -156,15 +156,15 @@ def validate_data_paths(data_dir, checkpoint_dir):
     
     # Check data directory
     if not os.path.exists(data_dir):
-        issues.append(f"❌ Data directory not found: {data_dir}")
+        issues.append(f"Data directory not found: {data_dir}")
     else:
         # Count cases
         cases = [d for d in os.listdir(data_dir) 
                 if os.path.isdir(os.path.join(data_dir, d)) and d.startswith('BraTS')]
         if len(cases) == 0:
-            issues.append(f"❌ No BraTS cases found in {data_dir}")
+            issues.append(f"No BraTS cases found in {data_dir}")
         else:
-            print(f"✅ Found {len(cases)} cases in {data_dir}")
+            print(f"Found {len(cases)} cases in {data_dir}")
             
             # Check first case has required files
             first_case = os.path.join(data_dir, cases[0])
@@ -177,13 +177,13 @@ def validate_data_paths(data_dir, checkpoint_dir):
     
     # Check checkpoint directory
     if not os.path.exists(checkpoint_dir):
-        issues.append(f"❌ Checkpoint directory not found: {checkpoint_dir}")
+        issues.append(f"Checkpoint directory not found: {checkpoint_dir}")
     else:
         checkpoints = list(Path(checkpoint_dir).glob("*.pt"))
         if len(checkpoints) == 0:
-            issues.append(f"❌ No checkpoints found in {checkpoint_dir}")
+            issues.append(f"No checkpoints found in {checkpoint_dir}")
         else:
-            print(f"✅ Found {len(checkpoints)} checkpoints")
+            print(f"Found {len(checkpoints)} checkpoints")
             
             # Check for all modalities
             modalities = set()
@@ -198,16 +198,16 @@ def validate_data_paths(data_dir, checkpoint_dir):
             
             missing_mods = set(['t1n', 't1c', 't2w', 't2f']) - modalities
             if missing_mods:
-                issues.append(f"⚠️  Missing checkpoints for: {', '.join(missing_mods)}")
+                issues.append(f"Missing checkpoints for: {', '.join(missing_mods)}")
     
     # Print issues
     if issues:
-        print("\n⚠️  Issues found:")
+        print("\nIssues found:")
         for issue in issues:
             print(f"  {issue}")
         return False
     else:
-        print("\n✅ All paths validated successfully")
+        print("\nAll paths validated successfully")
         return True
 
 
@@ -255,33 +255,33 @@ Examples:
     # Step 1: Install dependencies
     if args.install_deps:
         if not install_dependencies():
-            print("\n❌ Failed to install dependencies")
+            print("\nFailed to install dependencies")
             return 1
         print()
     
     # Step 2: Download checkpoints
     if args.wandb_run:
         if not download_checkpoints_from_wandb(args.wandb_run, args.checkpoint_dir):
-            print("\n❌ Failed to download checkpoints from W&B")
+            print("\nFailed to download checkpoints from W&B")
             success = False
         print()
     
     if args.checkpoint_url:
         if not download_checkpoints_from_url(args.checkpoint_url, args.checkpoint_dir):
-            print("\n❌ Failed to download checkpoints from URL")
+            print("\nFailed to download checkpoints from URL")
             success = False
         print()
     
     # Step 3: Validate paths
     if not args.validate_only or (args.wandb_run or args.checkpoint_url):
         if not validate_data_paths(args.data_dir, args.checkpoint_dir):
-            print("\n⚠️  Validation found issues, but continuing...")
+            print("\nValidation found issues, but continuing...")
             print("You can fix paths and re-run with --validate-only")
         print()
     
     if success:
         print("=" * 60)
-        print("✅ Setup complete!")
+        print("Setup complete!")
         print("=" * 60)
         print("\nNext steps:")
         print("  1. Verify paths are correct:")
@@ -295,7 +295,7 @@ Examples:
         return 0
     else:
         print("=" * 60)
-        print("❌ Setup completed with errors")
+        print("Setup completed with errors")
         print("=" * 60)
         return 1
 
