@@ -60,16 +60,13 @@ spec:
           --checkpoint-dir checkpoints \
           --data-dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/MICCAI_BraTS2020_ValidationData
         
-        if [ $? -ne 0 ]; then
-            echo "❌ Setup failed!"
-        fi
         
         # Run evaluation
         echo "[4/5] Running evaluation..."
         python scripts/complete_dataset.py \
           --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
           --output_dir /data/synthesis_outputs \
-          --checkpoint_dir ../checkpoints \
+          --checkpoint_dir checkpoints \
           --evaluation_mode \
           --evaluate_metrics \
           --target_modality t1c \
@@ -115,13 +112,8 @@ spec:
     volumeMounts:
     - name: data-volume
       mountPath: /data
-    - name: data-volume6
-      mountPath: /data6
  
   volumes:
   - name: data-volume
     persistentVolumeClaim:
       claimName: brats2025-2
-  - name: data-volume6
-    persistentVolumeClaim:
-      claimName: brats2025-6

@@ -37,7 +37,7 @@ def inspect_checkpoint(checkpoint_path):
             key, shape = first_conv
             in_channels = shape[1]
             out_channels = shape[0] 
-            print(f"\n🎯 FIRST CONV LAYER: {key}")
+            print(f"\n  FIRST CONV LAYER: {key}")
             print(f"   Shape: {shape}")
             print(f"   Input channels: {in_channels}")
             print(f"   Output channels (base model channels): {out_channels}")
@@ -58,7 +58,7 @@ def inspect_checkpoint(checkpoint_path):
         unique_channels = sorted(set(conv_channels))
         input_block_channels.sort()
         
-        print(f"\n📊 CHANNEL ANALYSIS:")
+        print(f"\n  CHANNEL ANALYSIS:")
         print(f"All conv output channels: {unique_channels}")
         
         if first_conv:
@@ -66,13 +66,13 @@ def inspect_checkpoint(checkpoint_path):
             multipliers = [ch // base for ch in unique_channels if ch % base == 0]
             multipliers = sorted(set(multipliers))
             
-            print(f"\n🎯 DETERMINED ARCHITECTURE:")
+            print(f"\n  DETERMINED ARCHITECTURE:")
             print(f"   Base channels: {base}")
             print(f"   Channel multipliers: {multipliers}")
             print(f"   Channel progression: {[base * m for m in multipliers]}")
             
             # Show input block progression
-            print(f"\n📋 INPUT BLOCK PROGRESSION:")
+            print(f"\n  INPUT BLOCK PROGRESSION:")
             for block_num, channels in input_block_channels[:8]:  # First 8 blocks
                 mult = channels // base if channels % base == 0 else "?"
                 print(f"   Block {block_num}: {channels} channels (×{mult})")
