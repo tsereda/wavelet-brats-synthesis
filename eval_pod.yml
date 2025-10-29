@@ -60,6 +60,9 @@ spec:
           --checkpoint-dir checkpoints \
           --data-dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/MICCAI_BraTS2020_ValidationData
         
+        mkdir /data/synthesis_outputs
+        chmod +x /data/synthesis_outputs
+
         # Run evaluation
         echo "[4/5] Running evaluation..."
         python scripts/complete_dataset.py \
