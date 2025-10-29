@@ -60,7 +60,6 @@ spec:
           --checkpoint-dir checkpoints \
           --data-dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/MICCAI_BraTS2020_ValidationData
         
-        
         # Run evaluation
         echo "[4/5] Running evaluation..."
         python scripts/complete_dataset.py \
@@ -74,14 +73,7 @@ spec:
           --wandb_mode online \
           --wandb_project brats-evaluation
         
-        if [ $? -ne 0 ]; then
-            echo "❌ Evaluation failed!"
-        fi
-        
         echo "[5/5] Evaluation complete!"
-        echo "================================="
-        echo "✅ SUCCESS"
-        echo "================================="
         echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
         echo "Outputs saved to: /data/synthesis_outputs"
         
