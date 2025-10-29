@@ -1,0 +1,110 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: brads3d-eval-5
+  namespace: gai-lina-group
+  labels:
+    app: wandb-sweep
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: wandb-sweep
+    spec:
+      nodeSelector:
+        nautilus.io/linstor: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      containers:
+      - name: sweep-agent
+        image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+      
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+            pip install nibabel
+            
+            # Clone repository
+            echo "[2/5] Cloning repository..."
+            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+            cd wavelet-brats-synthesis/app/
+            
+            # Run setup script
+            echo "[3/5] Running setup script..."
+            7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+            7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
+            mkdir checkpoints
+            chmod +x checkpoints
+            python setupeval.py \
+              --install-deps \
+              --wandb-run timgsereda/wavelet-brats-synthesis/p607sli9 \
+              --checkpoint-dir checkpoints \
+              --data-dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/MICCAI_BraTS2020_ValidationData
+            
+            sudo mkdir /data/synthesis_outputs
+            sudo chmod +x /data/synthesis_outputs
+            mkdir synthesis_outputs
+
+            7z x /data/400kCheckpoints.zip 
+            cp t2w/brats_t2w_349000_sampled_100.pt  checkpoints/brats_t2w_349000_sampled_100.pt
+
+            # Run evaluation
+            echo "[4/5] Running evaluation..."
+            python scripts/complete_dataset.py \
+              --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
+              --output_dir ./synthesis_outputs \
+              --checkpoint_dir checkpoints \
+              --evaluation_mode \
+              --evaluate_metrics \
+              --target_modality t2w \
+              --diffusion_steps 100 \
+              --wandb_mode online \
+              --wandb_project brats-evaluation
+
+            tar -czf t1cdbk400k.tar.gz synthesis_outputs
+            cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
+            
+            echo "[5/5] Evaluation complete!"
+            echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
+            echo "Outputs saved to: /data/synthesis_outputs"
+            
+            # Keep pod alive for inspection
+            tail -f /dev/null
+      
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: WANDB_ENTITY
+          value: "timgsereda"
+        - name: WANDB_PROJECT
+          value: "wavelet-brats-synthesis"
+      
+        resources:
+          requests:
+            memory: "25Gi"
+            cpu: "15"
+            nvidia.com/a100: "1"
+          limits:
+            memory: "30Gi"
+            cpu: "18"
+            nvidia.com/a100: "1"
+      
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+    
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: brats2025-5
+
+      restartPolicy: Never
