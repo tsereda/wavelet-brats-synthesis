@@ -65,26 +65,25 @@ def download_checkpoints_from_wandb(run_path, output_dir):
         print(f"State: {run.state}")
         print(f"Config modality: {run.config.get('contr', 'unknown')}")
         
-        # Find checkpoint files
-        checkpoint_files = [f for f in run.files() if f.name.endswith('.pt')]
-        
+        # Find checkpoint files - FILTER FOR SPECIFIC ONE
+        desired_ckpt = "brats_t1c_special_400000_sampled_100.pt"
+        checkpoint_files = [f for f in run.files() if f.name == desired_ckpt]
+
         if not checkpoint_files:
-            print("❌ No checkpoint files found in this run!")
+            print(f"❌ Specific checkpoint not found in this run: {desired_ckpt}!")
             return False
-        
-        print(f"\nFound {len(checkpoint_files)} checkpoint files:")
-        for f in checkpoint_files:
-            print(f"  - {f.name}")
-        
+
+        print(f"\nFound specific checkpoint: {checkpoint_files[0].name}")
+
         # Create output directory
         os.makedirs(output_dir, exist_ok=True)
-        
-        # Download each checkpoint
+
+        # Download the specific checkpoint
         print(f"\nDownloading to {output_dir}...")
-        for file in checkpoint_files:
-            print(f"  Downloading {file.name}...", end=" ")
-            file.download(root=output_dir, replace=True)
-            print("✅")
+        file = checkpoint_files[0]
+        print(f"  Downloading {file.name}...", end=" ")
+        file.download(root=output_dir, replace=True)
+        print("✅")
         
         # List downloaded files
         downloaded = list(Path(output_dir).glob("*.pt"))
