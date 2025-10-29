@@ -64,6 +64,9 @@ spec:
         sudo chmod +x /data/synthesis_outputs
         mkdir synthesis_outputs
 
+        7z x /data/400kCheckpoints.zip 
+        cp t1c/brats_t1c_349000_sampled_100.pt checkpoints/brats_t1c_349000_sampled_100.pt
+
         # Run evaluation
         echo "[4/5] Running evaluation..."
         python scripts/complete_dataset.py \

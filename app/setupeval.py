@@ -66,7 +66,7 @@ def download_checkpoints_from_wandb(run_path, output_dir):
         print(f"Config modality: {run.config.get('contr', 'unknown')}")
         
         # Find checkpoint files - FILTER FOR SPECIFIC ONE
-        desired_ckpt = "brats_t1c_special_400000_sampled_100.pt"
+        desired_ckpt = ""
         checkpoint_files = [f for f in run.files() if f.name == desired_ckpt]
 
         if not checkpoint_files:
