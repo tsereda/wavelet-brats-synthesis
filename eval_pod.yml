@@ -62,12 +62,13 @@ spec:
         
         sudo mkdir /data/synthesis_outputs
         sudo chmod +x /data/synthesis_outputs
+        mkdir synthesis_outputs
 
         # Run evaluation
         echo "[4/5] Running evaluation..."
         python scripts/complete_dataset.py \
           --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
-          --output_dir /data/synthesis_outputs \
+          --output_dir ./synthesis_outputs \
           --checkpoint_dir checkpoints \
           --evaluation_mode \
           --evaluate_metrics \
@@ -75,6 +76,9 @@ spec:
           --diffusion_steps 100 \
           --wandb_mode online \
           --wandb_project brats-evaluation
+
+        tar -czf t1cdbk400k.tar.gz synthesis_outputs
+        cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
         
         echo "[5/5] Evaluation complete!"
         echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
