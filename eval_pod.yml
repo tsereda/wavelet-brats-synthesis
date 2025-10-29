@@ -66,7 +66,7 @@ spec:
         python scripts/complete_dataset.py \
           --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
           --output_dir /data/synthesis_outputs \
-          --checkpoint_dir checkpointsdb2 \
+          --checkpoint_dir checkpoints \
           --evaluation_mode \
           --evaluate_metrics \
           --target_modality t1c \
