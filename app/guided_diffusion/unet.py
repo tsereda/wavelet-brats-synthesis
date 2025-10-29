@@ -531,7 +531,7 @@ class UNetModel(nn.Module):
         self.decoder_device_thresh = decoder_device_thresh
         self.additive_skips = additive_skips
 
-        time_embed_dim = model_channels * 4
+        time_embed_dim = 256 #model_channels * 4
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),
