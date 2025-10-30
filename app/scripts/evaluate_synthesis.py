@@ -100,7 +100,7 @@ def download_nnunet_weights():
             
             # Download checkpoint
             print("Downloading checkpoint_best.pth...")
-            gdown.download("1n9dqT114udr9Qq8iYEKsJK347iHg9N88", "checkpoint_best.pth", quiet=False)
+            gdown.download("https://1n9dqT114udr9Qq8iYEKsJK347iHg9N88", "checkpoint_best.pth", quiet=False)
             os.rename("checkpoint_best.pth", checkpoint_path)
             
             # Download dataset.json  
