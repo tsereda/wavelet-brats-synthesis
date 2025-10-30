@@ -155,8 +155,6 @@ def train_with_wandb_sweep():
         wandb.init(
             project=os.getenv('WANDB_PROJECT', 'wavelet-brats-synthesis'),
             entity=os.getenv('WANDB_ENTITY', 'timgsereda'),
-            id=resume_run_id,
-            resume="must"
         )
     else:
         # Normal sweep mode - let sweep agent handle init
