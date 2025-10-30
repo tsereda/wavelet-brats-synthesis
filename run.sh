@@ -222,26 +222,26 @@ EOF
         echo "✅ Will resume training for modality: $RESUME_MODALITY"
     fi
     
-elif [ -f "/data/400kCheckpoints.zip" ]; then
-    # Check if checkpoint archive exists (fallback)
-    echo "Found checkpoint archive at /data/400kCheckpoints.zip"
-    if [ ! -d "$CHECKPOINT_DIR" ] || [ -z "$(ls -A $CHECKPOINT_DIR/*.pt 2>/dev/null)" ]; then
-        echo "Extracting checkpoints..."
-        unzip -o /data/400kCheckpoints.zip -d ./
+# elif [ -f "/data/400kCheckpoints.zip" ]; then
+#     # Check if checkpoint archive exists (fallback)
+#     echo "Found checkpoint archive at /data/400kCheckpoints.zip"
+#     if [ ! -d "$CHECKPOINT_DIR" ] || [ -z "$(ls -A $CHECKPOINT_DIR/*.pt 2>/dev/null)" ]; then
+#         echo "Extracting checkpoints..."
+#         unzip -o /data/400kCheckpoints.zip -d ./
         
-        # Copy checkpoints to the checkpoint directory
-        for modality in t1n t1c t2w t2f; do
-            if [ -d "${modality}" ]; then
-                echo "Copying ${modality} checkpoints..."
-                cp ${modality}/brats_*.pt "$CHECKPOINT_DIR/" 2>/dev/null || true
-            fi
-        done
+#         # Copy checkpoints to the checkpoint directory
+#         for modality in t1n t1c t2w t2f; do
+#             if [ -d "${modality}" ]; then
+#                 echo "Copying ${modality} checkpoints..."
+#                 cp ${modality}/brats_*.pt "$CHECKPOINT_DIR/" 2>/dev/null || true
+#             fi
+#         done
         
-        echo "✓ Checkpoints extracted to $CHECKPOINT_DIR"
-    else
-        echo "✓ Checkpoints already exist in $CHECKPOINT_DIR"
-    fi
-fi
+#         echo "✓ Checkpoints extracted to $CHECKPOINT_DIR"
+#     else
+#         echo "✓ Checkpoints already exist in $CHECKPOINT_DIR"
+#     fi
+# fi
 
 if [ -n "$RESUME_RUN" ]; then
     # Extract run ID from path (format: entity/project/run_id)
