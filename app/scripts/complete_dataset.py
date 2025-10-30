@@ -302,7 +302,7 @@ def create_model_args(sample_schedule="direct", diffusion_steps=1000):
     args.num_heads = 1
     args.num_head_channels = -1
     args.num_heads_upsample = -1
-    args.use_scale_shift_norm = False
+    args.use_scale_shift_norm = True
     args.dropout = 0.0
     args.resblock_updown = True
     args.use_fp16 = False
