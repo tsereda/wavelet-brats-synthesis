@@ -87,7 +87,6 @@ spec:
         echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
         echo "Outputs saved to: /data/synthesis_outputs"
         
-        # Keep pod alive for inspection
         tail -f /dev/null
    
     env:
@@ -118,4 +117,4 @@ spec:
   volumes:
   - name: data-volume
     persistentVolumeClaim:
-      claimName: brats2025-2
+      claimName: brats2025-3

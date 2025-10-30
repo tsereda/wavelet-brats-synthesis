@@ -67,12 +67,16 @@ def calculate_dice_scores(results_folder, ground_truth_folder):
 
 def setup_nnunet_environment():
     """Setup nnUNet environment variables."""
-    os.environ["nnUNet_raw"] = "/app/nnunet/raw"
-    os.environ["nnUNet_preprocessed"] = "/app/nnunet/preprocessed" 
-    os.environ["nnUNet_results"] = "/app/nnunet/results"
+    # Use a local path instead of /app
+    local_root = "./nnunet_data" 
+    
+    os.environ["nnUNet_raw"] = os.path.abspath(f"{local_root}/raw")
+    os.environ["nnUNet_preprocessed"] = os.path.abspath(f"{local_root}/preprocessed") 
+    os.environ["nnUNet_results"] = os.path.abspath(f"{local_root}/results")
     
     # Create directories
-    for path in ["/app/nnunet/raw", "/app/nnunet/preprocessed", "/app/nnunet/results"]:
+    for path_key in ["nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results"]:
+        path = os.environ[path_key]
         os.makedirs(path, exist_ok=True)
     
     print("nnUNet environment variables set:")
@@ -82,7 +86,8 @@ def setup_nnunet_environment():
 
 def download_nnunet_weights():
     """Download pre-trained nnUNet weights if not available."""
-    weights_dir = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_5"
+    # Use the path from the environment variable
+    weights_dir = os.path.join(os.environ["nnUNet_results"], "Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_5")
     os.makedirs(weights_dir, exist_ok=True)
     
     checkpoint_path = os.path.join(weights_dir, "checkpoint_final.pth")
@@ -94,15 +99,18 @@ def download_nnunet_weights():
             import gdown
             
             # Download checkpoint
+            print("Downloading checkpoint_best.pth...")
             gdown.download("1n9dqT114udr9Qq8iYEKsJK347iHg9N88", "checkpoint_best.pth", quiet=False)
             os.rename("checkpoint_best.pth", checkpoint_path)
             
             # Download dataset.json  
-            dataset_json_path = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/dataset.json"
+            dataset_json_path = os.path.join(os.environ["nnUNet_results"], "Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/dataset.json")
+            print("Downloading dataset.json...")
             gdown.download("1A_suxQwElucF3w1HEYg3wMo6dG9OxBHo", dataset_json_path, quiet=False)
             
             # Download plans.json
-            plans_json_path = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/plans.json"  
+            plans_json_path = os.path.join(os.environ["nnUNet_results"], "Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/plans.json")  
+            print("Downloading plans.json...")
             gdown.download("1U2b0BTNi8zrJACReoi_W08Fe-wM394wI", plans_json_path, quiet=False)
             
             print("✅ nnUNet weights downloaded successfully")
@@ -125,17 +133,21 @@ def run_nnunet_prediction(dataset_dir, output_dir):
     print(f"Input: {dataset_dir}/imagesTr")
     print(f"Output: {output_dir}")
     
-    # Create symlink in nnUNet_raw
-    raw_dataset_path = "/app/nnunet/raw/Dataset137_BraTS2021"
-    if os.path.exists(raw_dataset_path):
+    # Create symlink in nnUNet_raw (using the env var)
+    raw_dataset_path = os.path.join(os.environ["nnUNet_raw"], "Dataset137_BraTS2021")
+    if os.path.lexists(raw_dataset_path): # Use lexists for symlinks
         os.remove(raw_dataset_path)
-    os.symlink(os.path.abspath(dataset_dir), raw_dataset_path)
+        
+    # Ensure dataset_dir is an absolute path for the symlink
+    abs_dataset_dir = os.path.abspath(dataset_dir)
+    os.symlink(abs_dataset_dir, raw_dataset_path)
+    print(f"Created symlink: {raw_dataset_path} -> {abs_dataset_dir}")
     
     # Run nnUNet prediction
     cmd = [
         "nnUNetv2_predict",
-        "-i", f"{dataset_dir}/imagesTr",
-        "-o", output_dir,
+        "-i", f"{abs_dataset_dir}/imagesTr",
+        "-o", os.path.abspath(output_dir),
         "-d", "137",
         "-c", "3d_fullres", 
         "-f", "5"
