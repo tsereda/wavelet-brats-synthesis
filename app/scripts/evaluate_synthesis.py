@@ -99,18 +99,15 @@ def download_nnunet_weights():
             import gdown
             
             # Download checkpoint
-            print("Downloading checkpoint_best.pth...")
-            gdown.download("https://1n9dqT114udr9Qq8iYEKsJK347iHg9N88", "checkpoint_best.pth", quiet=False)
+            gdown.download("1n9dqT114udr9Qq8iYEKsJK347iHg9N88", "checkpoint_best.pth", quiet=False)
             os.rename("checkpoint_best.pth", checkpoint_path)
             
             # Download dataset.json  
-            dataset_json_path = os.path.join(os.environ["nnUNet_results"], "Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/dataset.json")
-            print("Downloading dataset.json...")
+            dataset_json_path = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/dataset.json"
             gdown.download("1A_suxQwElucF3w1HEYg3wMo6dG9OxBHo", dataset_json_path, quiet=False)
             
             # Download plans.json
-            plans_json_path = os.path.join(os.environ["nnUNet_results"], "Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/plans.json")  
-            print("Downloading plans.json...")
+            plans_json_path = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/plans.json"  
             gdown.download("1U2b0BTNi8zrJACReoi_W08Fe-wM394wI", plans_json_path, quiet=False)
             
             print("✅ nnUNet weights downloaded successfully")
