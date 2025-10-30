@@ -74,9 +74,6 @@ spec:
             echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
             echo "Outputs saved to: /data/synthesis_outputs"
             
-            # Keep pod alive for inspection
-            tail -f /dev/null
-      
         env:
         - name: WANDB_API_KEY
           valueFrom:
