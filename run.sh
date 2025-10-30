@@ -249,7 +249,7 @@ if [ -n "$RESUME_RUN" ]; then
     
     echo "🔄 Setting W&B to resume run: $RESUME_RUN_ID"
     export WANDB_RUN_ID="$RESUME_RUN_ID"
-    export WANDB_RESUME="must"
+    export WANDB_RESUME="allow"
 fi
 
 # ALWAYS detect latest checkpoint after any download/extraction operation

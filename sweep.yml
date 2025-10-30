@@ -36,7 +36,7 @@ parameters:
   bottleneck_attention:
     value: false
   contr:
-    values: ['t1n', 't1c', 't2w', 't2f']
+    values: ['t2f']
   num_channels:
     value: 64
   in_channels:
