@@ -241,7 +241,7 @@ EOF
 #     else
 #         echo "✓ Checkpoints already exist in $CHECKPOINT_DIR"
 #     fi
-# fi
+fi
 
 if [ -n "$RESUME_RUN" ]; then
     # Extract run ID from path (format: entity/project/run_id)
