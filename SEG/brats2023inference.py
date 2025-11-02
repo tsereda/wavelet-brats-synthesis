@@ -65,7 +65,13 @@ class BraTSInference2023:
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
         print(f"Loading BraTS 2021 trained model from: {model_path}")
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False))
+        
+        # Load the entire checkpoint dictionary
+        checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
+        
+        # Load the nested state_dict that contains the model weights
+        self.model.load_state_dict(checkpoint["state_dict"])
+        
         self.model.eval()
         print("Model loaded successfully!")
         
