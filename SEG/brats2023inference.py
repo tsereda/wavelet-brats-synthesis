@@ -65,7 +65,7 @@ class BraTSInference2023:
             raise FileNotFoundError(f"Model file not found: {model_path}")
         
         print(f"Loading BraTS 2021 trained model from: {model_path}")
-        self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=True))
+        self.model.load_state_dict(torch.load(model_path, map_location=self.device, weights_only=False))
         self.model.eval()
         print("Model loaded successfully!")
         
@@ -264,8 +264,8 @@ def main():
     model_path = "best_metric_model_2021.pth"  # Your BraTS 2021 trained weights
     
     # Example paths - update these for your setup
-    case_dir = "path/to/BraTS2023_case"  # Single case directory
-    dataset_dir = "path/to/BraTS2023_dataset"  # Full dataset directory
+    case_dir = "ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData/BraTS-GLI-00732-001"  # Single case directory
+    dataset_dir = "ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData"  # Full dataset directory
     output_dir = "predictions"
     
     try:
