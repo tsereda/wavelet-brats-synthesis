@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-BraTS 2023 Inference with BraTS 2021 Trained Weights
+BraTS 2023 Inference with BraTS 2021 Trained Weights (SwinUNETR)
 
 This script adapts the inference for BraTS 2023 data format using weights
-trained on BraTS 2021. The tumor definitions are consistent across years.
+trained on BraTS 2021.
 """
 
 import os
@@ -11,7 +11,7 @@ import torch
 import numpy as np
 import glob
 from pathlib import Path
-from monai.networks.nets import SegResNet
+from monai.networks.nets import SwinUNETR  # <--- CHANGED
 from monai.transforms import (
     Activations,
     AsDiscrete,
@@ -31,7 +31,7 @@ import nibabel as nib
 
 class BraTSInference2023:
     """BraTS 2023 inference using BraTS 2021 trained weights"""
-    
+
     def __init__(self, model_path, device=None):
         """
         Initialize the inference class
@@ -42,39 +42,41 @@ class BraTSInference2023:
         """
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
-        
-        # Create model (same architecture as 2021)
-        self.model = SegResNet(
-            blocks_down=[1, 2, 2, 4],
-            blocks_up=[1, 1, 1],
-            init_filters=16,
+
+        # Create model (SwinUNETR architecture)
+        # <--- ENTIRE BLOCK CHANGED ---
+        self.model = SwinUNETR(
+            img_size=(96, 96, 96),  # ROI size from SwinUNETR training
             in_channels=4,
             out_channels=3,
-            dropout_prob=0.2,
+            feature_size=48,       # Feature size from SwinUNETR training
+            use_checkpoint=False,
         ).to(self.device)
-        
+        # ---------------------------
+
         # Load weights
         self.load_model(model_path)
-        
+
         # Setup transforms
         self.setup_transforms()
-        
+
     def load_model(self, model_path):
         """Load pre-trained model weights"""
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
-        
+
         print(f"Loading BraTS 2021 trained model from: {model_path}")
-        
+
         # Load the entire checkpoint dictionary
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
-        
+
         # Load the nested state_dict that contains the model weights
+        # This part was corrected in our previous conversation and remains the same
         self.model.load_state_dict(checkpoint["state_dict"])
-        
+
         self.model.eval()
         print("Model loaded successfully!")
-        
+
     def setup_transforms(self):
         """Setup preprocessing and postprocessing transforms"""
         self.preprocess = Compose([
@@ -85,12 +87,12 @@ class BraTSInference2023:
             Spacingd(keys=["image"], pixdim=(1.0, 1.0, 1.0), mode="bilinear"),
             NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
         ])
-        
+
         self.postprocess = Compose([
             Activations(sigmoid=True),
             AsDiscrete(threshold=0.5)
         ])
-    
+
     def find_brats_2023_files(self, case_dir):
         """
         Auto-detect BraTS 2023 file naming convention
@@ -130,7 +132,7 @@ class BraTSInference2023:
         ]
         
         return image_paths
-    
+
     def predict_case(self, case_dir, use_amp=True):
         """
         Predict on a BraTS 2023 case
@@ -163,16 +165,16 @@ class BraTSInference2023:
                 with torch.autocast("cuda"):
                     prediction = sliding_window_inference(
                         inputs=image,
-                        roi_size=(240, 240, 160),
-                        sw_batch_size=1,
+                        roi_size=(96, 96, 96),    # <--- CHANGED (matches SwinUNETR training patch size)
+                        sw_batch_size=4,         # <--- CHANGED (matches SwinUNETR training script)
                         predictor=self.model,
                         overlap=0.5,
                     )
             else:
                 prediction = sliding_window_inference(
                     inputs=image,
-                    roi_size=(240, 240, 160),
-                    sw_batch_size=1,
+                    roi_size=(96, 96, 96),    # <--- CHANGED
+                    sw_batch_size=4,         # <--- CHANGED
                     predictor=self.model,
                     overlap=0.5,
                 )
@@ -181,7 +183,7 @@ class BraTSInference2023:
         prediction = self.postprocess(prediction[0])
         
         return prediction.cpu().numpy()
-    
+
     def save_prediction(self, prediction, reference_image_path, output_path):
         """
         Save prediction as NIfTI file
