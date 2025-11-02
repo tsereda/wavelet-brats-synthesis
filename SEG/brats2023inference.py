@@ -23,69 +23,51 @@ from monai.transforms import (
     Orientationd,
     Spacingd,
     MapTransform,
+    ConcatItemsd  # <--- ADDED
 )
 from monai.inferers import sliding_window_inference
 from monai.data import Dataset, DataLoader
-from monai.metrics import DiceMetric  # <--- ADDED
+from monai.metrics import DiceMetric
 import nibabel as nib
 
 
-# <--- ADDED: Class definition from the training notebook to convert labels ---
+# <--- This class logic is now correct ---
 class ConvertToMultiChannelBasedOnBratsClassesd(MapTransform):
     """
     Convert labels to multi channels based on brats classes:
-    label 1 is the peritumoral edema
-    label 2 is the GD-enhancing tumor
-    label 3 is the necrotic and non-enhancing tumor core
+    label 1 is the NCR/NET
+    label 2 is the ED
+    label 4 is the ET
     The possible classes are TC (Tumor core), WT (Whole tumor)
     and ET (Enhancing tumor).
     """
-
     def __call__(self, data):
         d = dict(data)
         for key in self.keys:
-            if key not in d:  # <--- ADDED: Skip if key (e.g., 'label') is missing
+            if key not in d or d[key] is None:
                 continue
+            
+            # Input d[key] has shape (1, H, W, D)
+            label_vol = d[key]
+            
             result = []
-            # merge label 2 and label 3 to construct TC
-            result.append(torch.logical_or(d[key] == 2, d[key] == 3))
-            # merge labels 1, 2 and 3 to construct WT
-            result.append(torch.logical_or(torch.logical_or(d[key] == 2, d[key] == 3), d[key] == 1))
-            # label 2 is ET (we use 4 in brats 2023, but 2021 model used 2)
-            # Assuming Enhancing tumor is label 2 from source, or 4 from new data
-            # Let's check BraTS format. ET is 4, NCR/NET is 1, ED is 2.
-            # Training script used: 1=ED, 2=ET, 3=NCR/NET
-            # This class seems to match the notebook:
-            # result.append(torch.logical_or(d[key] == 2, d[key] == 3))  # TC (ET + NCR/NET)
-            # result.append(
-            #     torch.logical_or(torch.logical_or(d[key] == 2, d[key] == 3), d[key] == 1)
-            # )  # WT (ET + NCR/NET + ED)
-            # result.append(d[key] == 2)  # ET
-            
-            # Let's use the standard BraTS labels 1, 2, 4
             # TC (Tumor Core) = 1 (NCR/NET) + 4 (ET)
-            result.append(torch.logical_or(d[key] == 1, d[key] == 4))
+            result.append(torch.logical_or(label_vol == 1, label_vol == 4))
             # WT (Whole Tumor) = 1 (NCR/NET) + 4 (ET) + 2 (ED)
-            result.append(torch.logical_or(torch.logical_or(d[key] == 1, d[key] == 4), d[key] == 2))
+            result.append(torch.logical_or(torch.logical_or(label_vol == 1, label_vol == 4), label_vol == 2))
             # ET (Enhancing Tumor) = 4
-            result.append(d[key] == 4)
+            result.append(label_vol == 4)
             
-            d[key] = torch.stack(result, axis=0).float()
+            # Concat along channel dim (axis=0) to get (3, H, W, D)
+            d[key] = torch.cat(result, axis=0).float()
         return d
-# -------------------------------------------------------------------------
+# -----------------------------------------------------
 
 
 class BraTSInference2023:
     """BraTS 2023 inference using BraTS 2021 trained weights"""
 
     def __init__(self, model_path, device=None):
-        """
-        Initialize the inference class
-        
-        Args:
-            model_path: Path to the trained model (.pth file)
-            device: torch device (cuda/cpu), auto-detected if None
-        """
         self.device = device if device else torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
@@ -97,19 +79,13 @@ class BraTSInference2023:
             use_checkpoint=False,
         ).to(self.device)
 
-        # <--- ADDED: Metrics for Dice score ---
         self.dice_metric = DiceMetric(include_background=False, reduction="mean")
         self.dice_metric_batch = DiceMetric(include_background=False, reduction="mean_batch")
-        # -------------------------------------
         
-        # Load weights
         self.load_model(model_path)
-
-        # Setup transforms
         self.setup_transforms()
 
     def load_model(self, model_path):
-        """Load pre-trained model weights"""
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found: {model_path}")
 
@@ -117,39 +93,44 @@ class BraTSInference2023:
         
         checkpoint = torch.load(model_path, map_location=self.device, weights_only=False)
         
-        # Handle checkpoints saved with "state_dict" key or as raw state_dict
         if "state_dict" in checkpoint:
             self.model.load_state_dict(checkpoint["state_dict"])
         else:
-            self.model.load_state_dict(checkpoint) # <--- MODIFIED: Handle raw state_dict too
+            self.model.load_state_dict(checkpoint)
         
         self.model.eval()
         print("Model loaded successfully!")
 
+    # <--- MODIFIED: Updated transform pipeline ---
     def setup_transforms(self):
         """Setup preprocessing and postprocessing transforms"""
-        # <--- MODIFIED: To handle both image and label ---
+        
+        image_keys = ["t2f", "t1n", "t1c", "t2w"]
+        all_keys = image_keys + ["label"]
+
         self.preprocess = Compose([
-            LoadImaged(keys=["image", "label"], allow_missing_keys=True),
-            EnsureChannelFirstd(keys=["image", "label"], allow_missing_keys=True),
-            EnsureTyped(keys=["image", "label"], allow_missing_keys=True),
-            ConvertToMultiChannelBasedOnBratsClassesd(keys="label", allow_missing_keys=True),
-            Orientationd(keys=["image", "label"], axcodes="RAS", allow_missing_keys=True),
+            LoadImaged(keys=all_keys, allow_missing_keys=True),
+            EnsureChannelFirstd(keys=all_keys, allow_missing_keys=True),
+            EnsureTyped(keys=all_keys, allow_missing_keys=True),
+            Orientationd(keys=all_keys, axcodes="RAS", allow_missing_keys=True),
             Spacingd(
-                keys=["image", "label"],
+                keys=all_keys,
                 pixdim=(1.0, 1.0, 1.0),
-                mode=("bilinear", "nearest"),
+                mode=("bilinear", "bilinear", "bilinear", "bilinear", "nearest"),
                 allow_missing_keys=True,
             ),
-            NormalizeIntensityd(keys="image", nonzero=True, channel_wise=True),
+            NormalizeIntensityd(keys=image_keys, nonzero=True, channel_wise=True, allow_missing_keys=True),
+            ConvertToMultiChannelBasedOnBratsClassesd(keys="label", allow_missing_keys=True),
+            ConcatItemsd(keys=["t2f", "t1n", "t1c", "t2w"], name="image", dim=0), # Stack channels
         ])
-        # -------------------------------------------------
         
         self.postprocess = Compose([
             Activations(sigmoid=True),
             AsDiscrete(threshold=0.5)
         ])
+    # -------------------------------------------------
 
+    # <--- MODIFIED: Returns a dict of paths ---
     def find_brats_2023_files(self, case_dir):
         """
         Auto-detect BraTS 2023 file naming convention
@@ -158,7 +139,7 @@ class BraTSInference2023:
             case_dir: Directory containing the case files
             
         Returns:
-            Tuple: (image_paths, label_path)
+            Dictionary with modality paths
         """
         case_dir = Path(case_dir)
         case_name = case_dir.name
@@ -168,32 +149,29 @@ class BraTSInference2023:
             "t1c": case_dir / f"{case_name}-t1c.nii.gz",
             "t2f": case_dir / f"{case_name}-t2f.nii.gz",
             "t2w": case_dir / f"{case_name}-t2w.nii.gz",
+            "label": case_dir / f"{case_name}-seg.nii.gz",
         }
         
-        missing_files = []
-        for modality, filepath in files.items():
-            if not filepath.exists():
-                missing_files.append(str(filepath))
+        # Check if files exist
+        existing_files = {}
+        missing_images = []
+        for key, path in files.items():
+            if path.exists():
+                existing_files[key] = str(path)
+            elif key != "label":
+                missing_images.append(str(path))
         
-        if missing_files:
-            raise FileNotFoundError(f"Missing files: {missing_files}")
+        if missing_images:
+            raise FileNotFoundError(f"Missing image files: {missing_images}")
         
-        image_paths = [
-            str(files["t2f"]),  # FLAIR
-            str(files["t1n"]),  # T1 native  
-            str(files["t1c"]),  # T1 contrast enhanced
-            str(files["t2w"]),  # T2 weighted
-        ]
-        
-        # <--- ADDED: Find label file ---
-        label_path = case_dir / f"{case_name}-seg.nii.gz"
-        if not label_path.exists():
-            print(f"Warning: No label file found for {case_name}")
-            label_path = None
-        # ----------------------------------
+        if "label" not in existing_files:
+             print(f"Warning: No label file found for {case_name}")
 
-        return image_paths, str(label_path) if label_path else None # <--- MODIFIED
+        return existing_files
+    # ----------------------------------------------
+    
 
+    # <--- MODIFIED: Updated data loading ---
     def predict_case(self, case_dir, use_amp=True):
         """
         Predict on a BraTS 2023 case.
@@ -205,22 +183,19 @@ class BraTSInference2023:
         Returns:
             Tuple: (prediction_tensor, label_tensor)
         """
-        # <--- MODIFIED: Get both image and label paths ---
-        image_paths, label_path = self.find_brats_2023_files(case_dir)
+        # Auto-detect files
+        data = self.find_brats_2023_files(case_dir)
         
         print(f"Processing case: {Path(case_dir).name}")
-        print(f"Found modalities: {[Path(p).name for p in image_paths]}")
-        if label_path:
-            print(f"Found label: {Path(label_path).name}")
+        print(f"Found modalities: {[Path(p).name for k, p in data.items() if k != 'label']}")
+        if "label" in data:
+            print(f"Found label: {Path(data['label']).name}")
             
-        data = {"image": image_paths, "label": label_path}
-        if label_path is None:
-            data.pop("label")
-        # -------------------------------------------------
-
         # Apply transforms
         data = self.preprocess(data)
-        image = data["image"].unsqueeze(0).to(self.device)
+        
+        # 'image' is now created by ConcatItemsd
+        image = data["image"].unsqueeze(0).to(self.device) 
         label = data.get("label")  # Will be None if not found
         
         print(f"Input shape: {image.shape}")
@@ -245,55 +220,37 @@ class BraTSInference2023:
                     overlap=0.5,
                 )
         
-        # Postprocess
         prediction = self.postprocess(prediction[0])
         
-        # <--- MODIFIED: Return tensors for metric calculation ---
         return prediction, label
+    # ------------------------------------------
 
-    def save_prediction(self, prediction_tensor, reference_image_path, output_path): # <--- MODIFIED
+    def save_prediction(self, prediction_tensor, reference_image_path, output_path):
         """
         Save prediction as NIfTI file
-        
-        Args:
-            prediction_tensor: Prediction tensor [3, H, W, D]
-            reference_image_path: Path to reference NIfTI file for header
-            output_path: Output path for segmentation
         """
-        # <--- ADDED: Convert tensor to numpy ---
         prediction = prediction_tensor.cpu().numpy()
         
-        # Load reference to get header info
         ref_img = nib.load(reference_image_path)
         
-        # Convert multi-channel to single label image
-        # Following BraTS convention: 1=NCR/NET, 2=ED, 4=ET
         label_img = np.zeros(prediction.shape[1:], dtype=np.uint8)
         
-        # ET (Enhancing Tumor) = label 4
-        # This is channel 2 (TC, WT, ET)
+        # ET (Enhancing Tumor) = label 4 (Channel 2)
         label_img[prediction[2] > 0] = 4
         
-        # TC (Tumor Core: NCR/NET) = label 1  
-        # This is channel 0 (TC, WT, ET)
-        # We only want label 1 (NCR/NET), so we exclude ET (4)
+        # TC (Tumor Core: NCR/NET) = label 1 (Channel 0)
         ncr_net_mask = (prediction[0] > 0) & (label_img == 0)
         label_img[ncr_net_mask] = 1
         
-        # ED (Edema) = label 2
-        # This is channel 1 (TC, WT, ET)
-        # We exclude areas already labeled as TC or ET
+        # ED (Edema) = label 2 (Channel 1)
         edema_mask = (prediction[1] > 0) & (label_img == 0)
         label_img[edema_mask] = 2
         
-        # Create new NIfTI image
         pred_img = nib.Nifti1Image(label_img, ref_img.affine, ref_img.header)
         
-        # Save
         nib.save(pred_img, output_path)
         print(f"Prediction saved to: {output_path}")
         
-        # Print statistics
         unique_labels, counts = np.unique(label_img, return_counts=True)
         total_voxels = label_img.size
         
@@ -304,14 +261,11 @@ class BraTSInference2023:
                 percentage = (count / total_voxels) * 100
                 label_name = {1: "NCR/NET", 2: "Edema", 4: "Enhancing"}[label]
                 print(f"  {label_name} ({label}): {count} voxels ({percentage:.2f}%)")
-
+    
+    # <--- MODIFIED: Updated to get reference path ---
     def process_dataset(self, dataset_dir, output_dir):
         """
         Process entire BraTS 2023 dataset
-        
-        Args:
-            dataset_dir: Directory containing all cases
-            output_dir: Directory to save predictions
         """
         dataset_dir = Path(dataset_dir)
         output_dir = Path(output_dir)
@@ -324,20 +278,16 @@ class BraTSInference2023:
             print(f"\n--- Processing {i+1}/{len(case_dirs)}: {case_dir.name} ---")
             
             try:
-                # <--- MODIFIED: Get prediction and label tensors ---
                 prediction_tensor, label_tensor = self.predict_case(case_dir)
                 
                 # Get reference image (use FLAIR)
-                image_paths, label_path = self.find_brats_2023_files(case_dir)
-                reference_path = image_paths[0]  # FLAIR
+                data_paths = self.find_brats_2023_files(case_dir)
+                reference_path = data_paths["t2f"]  # FLAIR
                 
-                # Save prediction
                 output_path = output_dir / f"{case_dir.name}-seg.nii.gz"
                 self.save_prediction(prediction_tensor, reference_path, output_path)
                 
-                # <--- ADDED: Calculate Dice score for this case ---
                 if label_tensor is not None:
-                    # Add batch dimension for metric
                     self.dice_metric(
                         y_pred=prediction_tensor.unsqueeze(0).to(self.device),
                         y=label_tensor.unsqueeze(0).to(self.device)
@@ -346,13 +296,11 @@ class BraTSInference2023:
                         y_pred=prediction_tensor.unsqueeze(0).to(self.device),
                         y=label_tensor.unsqueeze(0).to(self.device)
                     )
-                # ------------------------------------------------
                 
             except Exception as e:
                 print(f"Error processing {case_dir.name}: {e}")
                 continue
         
-        # <--- ADDED: Aggregate and print Dice scores ---
         try:
             metric = self.dice_metric.aggregate().item()
             metric_batch = self.dice_metric_batch.aggregate()
@@ -372,7 +320,7 @@ class BraTSInference2023:
         
         except Exception as e:
             print(f"\nCould not calculate Dice scores: {e}. No labels found or all labels were empty.")
-        # -----------------------------------------------
+    # -----------------------------------------------------------------
 
 
 def main():
@@ -380,7 +328,6 @@ def main():
     
     model_path = "best_metric_model_2021.pth"
     
-    # Example paths - update these for your setup
     case_dir = "ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData/BraTS-GLI-00732-001"
     dataset_dir = "ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData"
     output_dir = "predictions"
@@ -389,18 +336,15 @@ def main():
         print("Initializing BraTS 2023 predictor with 2021 weights...")
         predictor = BraTSInference2023(model_path)
         
-        # Example 1: Process single case
+        # <--- MODIFIED: Updated to new logic ---
         if os.path.exists(case_dir):
             print(f"\n=== Processing single case ===")
-            # <--- MODIFIED: Get both tensors ---
             prediction_tensor, label_tensor = predictor.predict_case(case_dir)
             
-            # Save prediction
-            image_paths, label_path = predictor.find_brats_2023_files(case_dir)
+            data_paths = predictor.find_brats_2023_files(case_dir)
             output_path = f"{Path(case_dir).name}_prediction.nii.gz"
-            predictor.save_prediction(prediction_tensor, image_paths[0], output_path) # <--- MODIFIED
+            predictor.save_prediction(prediction_tensor, data_paths["t2f"], output_path)
             
-            # <--- ADDED: Dice score for single case ---
             if label_tensor is not None:
                 predictor.dice_metric(
                     y_pred=prediction_tensor.unsqueeze(0).to(predictor.device),
@@ -409,9 +353,8 @@ def main():
                 metric = predictor.dice_metric.aggregate().item()
                 print(f"Dice for single case: {metric:.4f}")
                 predictor.dice_metric.reset()
-            # ------------------------------------------
+        # --------------------------------------
 
-        # Example 2: Process entire dataset
         if os.path.exists(dataset_dir):
             print(f"\n=== Processing entire dataset ===")
             predictor.process_dataset(dataset_dir, output_dir)
