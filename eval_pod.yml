@@ -113,8 +113,14 @@ spec:
     volumeMounts:
     - name: data-volume
       mountPath: /data
+    - name: shm
+      mountPath: /dev/shm
  
   volumes:
   - name: data-volume
     persistentVolumeClaim:
       claimName: brats2025-3
+  - name: shm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 16Gi
