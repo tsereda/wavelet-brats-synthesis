@@ -83,10 +83,18 @@ spec:
         tar -czf t1cdbk400k.tar.gz synthesis_outputs
         cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
         
-        echo "[5/5] Evaluation complete!"
+        echo "[5/6] Synthesis Evaluation complete!"
         echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
         echo "Outputs saved to: /data/synthesis_outputs"
         
+        #Seg evaluation
+        #SwinUNETR
+        #https://github.com/Project-MONAI/research-contributions/tree/main/SwinUNETR/BRATS21
+        #wget https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/fold0_f48_ep300_4gpu_dice0_8854.zip
+
+        #nnUnet
+        #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
+
         tail -f /dev/null
    
     env:
