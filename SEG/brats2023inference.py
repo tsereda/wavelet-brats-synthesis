@@ -273,6 +273,7 @@ class BraTSInference2023:
         
         case_dirs = [d for d in dataset_dir.iterdir() if d.is_dir()]
         print(f"Found {len(case_dirs)} cases to process")
+        case_dirs = case_dirs[:20]
         
         for i, case_dir in enumerate(case_dirs):
             print(f"\n--- Processing {i+1}/{len(case_dirs)}: {case_dir.name} ---")
