@@ -41,7 +41,7 @@ spec:
     args:
       - |
         sudo apt-get update && sudo apt-get install -y git wget p7zip-full
-        pip install nibabel gdown einops SimpleITK batchgenerators
+        pip install nibabel gdown einops SimpleITK batchgenerators nnunet
         
         # Clone repository
         echo "[2/5] Cloning repository..."
