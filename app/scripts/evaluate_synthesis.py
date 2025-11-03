@@ -24,8 +24,8 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
 
 def calculate_brats_metrics(gt_data, pred_data):
     # ET = Enhancing Tumor (Label 3)
-    gt_et = (gt_data == 3)
-    pred_et = (pred_data == 3)
+    gt_et = (gt_data == 1)
+    pred_et = (pred_data == 1)
     dice_et = dice_coefficient(gt_et, pred_et)
     
     # TC = Tumor Core (Labels 2 + 3)
@@ -39,7 +39,7 @@ def calculate_brats_metrics(gt_data, pred_data):
     dice_wt = dice_coefficient(gt_wt, pred_wt)
     
     # --- DIAGNOSTIC METRIC ---
-    # NCR = Necrotic/Non-Enhancing Core (Label 1)
+    # NCR = Necrotic/Non-Enhancing Core (Label 1) #ITS 3
     gt_ncr = (gt_data == 3)
     pred_ncr = (pred_data == 3)
     dice_ncr = dice_coefficient(gt_ncr, pred_ncr)
