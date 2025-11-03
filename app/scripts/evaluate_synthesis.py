@@ -82,6 +82,85 @@ def log_wandb_visualization(gt_data, pred_data, file_name):
     except Exception as e:
         print(f"  [W&B] Error creating visualization for {file_name}: {e}")
 
+
+def check_label_proportions(results_folder, ground_truth_folder):
+    """
+    Loads the first sample from GT and Pred folders to check
+    label proportions for debugging.
+    """
+    print("\n--- 🔬 LABEL PROPORTION PRE-CHECK ---")
+    try:
+        prediction_files = sorted([f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')])
+        if not prediction_files:
+            print("  [Warning] No prediction files found to check.")
+            return
+
+        first_file = prediction_files[0]
+        pred_path = os.path.join(results_folder, first_file)
+        gt_path = os.path.join(ground_truth_folder, first_file)
+
+        if not os.path.exists(gt_path):
+            print(f"  [Warning] Ground truth not found for first file: {gt_path}")
+            return
+
+        print(f"  Checking first file: {first_file}")
+
+        # Load images
+        pred_img = nib.load(pred_path)
+        gt_img = nib.load(gt_path)
+
+        # Get and fix data using the same logic as the main script
+        pred_data = fix_floating_point_labels(pred_img.get_fdata())
+        gt_data = fix_floating_point_labels(gt_img.get_fdata())
+
+        total_voxels = gt_data.size
+        if total_voxels == 0:
+            print("  [Warning] Loaded empty image.")
+            return
+
+        # Calculate proportions
+        gt_counts = {label: 0 for label in range(5)} # Check 0,1,2,3,4
+        pred_counts = {label: 0 for label in range(5)}
+
+        gt_labels, gt_cts = np.unique(gt_data, return_counts=True)
+        for label, count in zip(gt_labels, gt_cts):
+            if label in gt_counts:
+                gt_counts[label] = count
+
+        pred_labels, pred_cts = np.unique(pred_data, return_counts=True)
+        for label, count in zip(pred_labels, pred_cts):
+            if label in pred_counts:
+                pred_counts[label] = count
+
+        # Print report
+        print("  Label Proportions (% of total voxels):")
+        print("  Label | Ground Truth | Prediction   | Description (BraTS 2021/23)")
+        print("  ------------------------------------------------------------------")
+        
+        labels_desc = {
+            0: "Background",
+            1: "Label 1 (NCR/NET)",
+            2: "Label 2 (Edema)",
+            3: "Label 3 (ET)",
+            4: "Label 4 (Legacy ET - SHOULD BE 0%)" 
+        }
+
+        for i in range(5): # Check 0, 1, 2, 3, 4
+            gt_prop = (gt_counts[i] / total_voxels) * 100
+            pred_prop = (pred_counts[i] / total_voxels) * 100
+            print(f"    {i}   | {gt_prop:10.6f}% | {pred_prop:10.6f}% | {labels_desc.get(i, 'Unknown')}")
+        
+        print("  ------------------------------------------------------------------")
+        
+        if gt_counts[4] > 0 or pred_counts[4] > 0:
+             print("  [ALERT] Label '4' detected! This script expects ET=3.")
+        else:
+             print("  [INFO] No Label '4' detected. Labeling seems correct (ET=3).")
+        print("--- END PRE-CHECK ---\n")
+
+    except Exception as e:
+        print(f"  [Error] Failed to run label proportion check: {e}")
+
 def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=10):
     all_scores = {"dice_et": [], "dice_tc": [], "dice_wt": []}
     case_results = {}
@@ -398,6 +477,13 @@ def main():
             if run: run.finish(exit_code=1)
             return
         
+        # --- RUN LABEL PROPORTION PRE-CHECK ---
+        try:
+            check_label_proportions(args.output_dir, ground_truth_dir)
+        except Exception as _:
+            # Don't fail evaluation for pre-check errors; just warn and continue
+            print("[Warning] Label proportion pre-check failed. Continuing to Dice calculation.")
+
         print(f"\n🔍 Calculating Dice scores...")
         summary_stats, case_results = calculate_dice_scores(
             args.output_dir, 
