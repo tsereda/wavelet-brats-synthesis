@@ -31,18 +31,21 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     intersection = np.sum(y_true & y_pred)
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
+# --- ###################################################### ---
+# --- THIS IS THE FIXED FUNCTION ---
+# --- ###################################################### ---
 def calculate_brats_metrics(gt_data, pred_data):
     """
     Calculate BraTS region-specific Dice scores (ET, TC, WT).
     
-    CORRECT (Standard nnUNet/BraTS) Labels:
-    - 1: Necrotic/Non-Enhancing Core (NCR/NET)
-    - 2: Peritumoral Edema (ED)
+    ASSUMING SWAPPED (non-standard) Labels based on user feedback:
+    - 1: Peritumoral Edema (ED)         <-- SWAPPED
+    - 2: Necrotic/Non-Enhancing Core (NCR/NET)  <-- SWAPPED
     - 3: Enhancing Tumor (ET)
     
     Evaluation Regions:
     - Enhancing Tumor (ET) = Label 3
-    - Tumor Core (TC)      = Label 1 + Label 3
+    - Tumor Core (TC)      = Label 2 + Label 3  <-- THIS IS THE FIX
     - Whole Tumor (WT)     = Label 1 + Label 2 + Label 3
     """
     
@@ -51,9 +54,9 @@ def calculate_brats_metrics(gt_data, pred_data):
     pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
     
-    # Tumor Core (TC) - Labels 1 + 3  <-- THIS IS THE FIX
-    gt_tc = np.logical_or(gt_data == 1, gt_data == 3)
-    pred_tc = np.logical_or(pred_data == 1, pred_data == 3)
+    # Tumor Core (TC) - Labels 2 + 3  <-- THIS IS THE FIX
+    gt_tc = np.logical_or(gt_data == 2, gt_data == 3)
+    pred_tc = np.logical_or(pred_data == 2, pred_data == 3)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
     # Whole Tumor (WT) - Labels 1 + 2 + 3
@@ -67,6 +70,9 @@ def calculate_brats_metrics(gt_data, pred_data):
         "dice_tc": float(dice_tc),
         "dice_wt": float(dice_wt)
     }
+# --- ###################################################### ---
+# --- END OF FIXED FUNCTION ---
+# --- ###################################################### ---
 
 def fix_floating_point_labels(segmentation):
     """Fix floating point precision issues by rounding to nearest integers"""
@@ -145,6 +151,7 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 result_data = fix_floating_point_labels(result_data_raw)
                 gt_data = fix_floating_point_labels(gt_data_raw)
 
+                # --- THIS FUNCTION IS NOW FIXED ---
                 metrics = calculate_brats_metrics(gt_data, result_data)
                 
                 case_results[file_name] = metrics
@@ -287,7 +294,7 @@ def run_nnunet_prediction(dataset_dir, output_dir):
         return False
 
 # --- ###################################################### ---
-# --- THIS IS THE FIXED FUNCTION ---
+# --- THIS IS THE FIXED FUNCTION (setup_subset_directory) ---
 # --- ###################################################### ---
 def setup_subset_directory(original_dataset_dir, num_cases):
     """
