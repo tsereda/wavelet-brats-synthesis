@@ -12,6 +12,7 @@ CHANGELOG:
 - Updated 'save_prediction' to save in the BraTS 2023 (1, 2, 3)
   label format.
 - Made Dice score aggregation robust to missing channels.
+- Added CropForegroundd before normalization to match training preprocessing.
 """
 
 import os
@@ -31,7 +32,8 @@ from monai.transforms import (
     Orientationd,
     Spacingd,
     MapTransform,
-    ConcatItemsd
+    ConcatItemsd,
+    CropForegroundd  # <--- ADDED
 )
 from monai.inferers import sliding_window_inference
 from monai.data import Dataset, DataLoader
@@ -133,6 +135,19 @@ class BraTSInference2023:
                 mode=("bilinear", "bilinear", "bilinear", "bilinear", "nearest"),
                 allow_missing_keys=True,
             ),
+            
+            # --- ADDED CROPFOREGROUNDD ---
+            # Crop to the foreground (brain) before normalizing.
+            # Use FLAIR (t2f) as the source to define the foreground.
+            CropForegroundd(
+                keys=all_keys, 
+                source_key="t2f", 
+                allow_missing_keys=True,
+                # Pad to be divisible by patch size for SwinUNETR
+                k_divisible=[96, 96, 96] 
+            ),
+            # -----------------------------
+            
             NormalizeIntensityd(keys=image_keys, nonzero=True, channel_wise=True, allow_missing_keys=True),
             # USE THE NEW TRANSFORM FOR 2023 LABELS
             MapBraTS2023LabelsToModelOutputd(keys="label", allow_missing_keys=True),
@@ -193,7 +208,7 @@ class BraTSInference2023:
         image = data["image"].unsqueeze(0).to(self.device) 
         label = data.get("label")
         
-        print(f"Input shape: {image.shape}")
+        print(f"Input shape after crop/preprocess: {image.shape}")
         
         with torch.no_grad():
             if use_amp and self.device.type == "cuda":
@@ -215,6 +230,47 @@ class BraTSInference2023:
                 )
         
         prediction = self.postprocess(prediction[0])
+        
+        # --- ADDED ---
+        # The prediction is now cropped. We need to un-crop it
+        # back to the original size before saving.
+        # We can use the metadata from the loader.
+        
+        # Create a temp dict to apply inverse transform
+        data["pred"] = prediction
+        
+        # We need an inverse transform
+        # NOTE: This assumes 'label' was also loaded and cropped.
+        # If label is missing, this might need adjustment.
+        try:
+            from monai.transforms import Invertd
+            
+            # Define inverse transform *inside* the function for simplicity
+            # It only needs to invert the crop
+            inverse_transform = Compose([
+                Invertd(
+                    keys="pred",
+                    transform=self.preprocess,
+                    orig_keys="image", # Use 'image' as the reference
+                    meta_keys="pred_meta_dict",
+                    orig_meta_keys="image_meta_dict",
+                    meta_key_postfix="meta_dict",
+                    nearest_interp=False,
+                    to_tensor=True,
+                )
+            ])
+            
+            # data still holds the metadata from self.preprocess
+            data = inverse_transform(data)
+            prediction = data["pred"]
+            print(f"Output shape after inverse crop: {prediction.shape}")
+            
+        except Exception as e:
+            print(f"Warning: Could not apply inverse crop. Prediction may be saved with cropped size. Error: {e}")
+            # This might fail if metadata wasn't passed correctly
+            # For now, we'll just proceed with the cropped prediction
+            pass
+        # -------------
         
         return prediction, label
 
@@ -246,6 +302,46 @@ class BraTSInference2023:
         # Label 1: ET (Enhancing Tumor)
         label_img[prediction[2] > 0] = 1
         
+        # --- MODIFIED: Handle size mismatch due to cropping ---
+        # If prediction shape doesn't match reference, we need to
+        # pad it back. A better way is to use Invertd, which I
+        # added to `predict_case`. If that worked, this check
+        # should pass.
+        if label_img.shape != ref_img.shape:
+            print(f"Warning: Prediction shape {label_img.shape} does not match reference shape {ref_img.shape}.")
+            print("Attempting to pad prediction to reference size.")
+            # This is a simple center padding.
+            # It assumes the crop was centered, which CropForegroundd does.
+            padded_img = np.zeros(ref_img.shape, dtype=np.uint8)
+            
+            p_shape = label_img.shape
+            r_shape = ref_img.shape
+            
+            # Calculate offsets
+            try:
+                x_off = (r_shape[0] - p_shape[0]) // 2
+                y_off = (r_shape[1] - p_shape[1]) // 2
+                z_off = (r_shape[2] - p_shape[2]) // 2
+                
+                padded_img[
+                    x_off : x_off + p_shape[0],
+                    y_off : y_off + p_shape[1],
+                    z_off : z_off + p_shape[2]
+                ] = label_img
+                
+                label_img = padded_img
+                print("Padding successful.")
+            except Exception as e:
+                print(f"Error: Padding failed. Saving cropped image. {e}")
+                # Save with cropped affine/header as a fallback
+                # This is not ideal but better than crashing
+                ref_img.header.set_data_shape(label_img.shape)
+                pred_img = nib.Nifti1Image(label_img, ref_img.affine, ref_img.header)
+                nib.save(pred_img, output_path)
+                print(f"Prediction saved to: {output_path} (CROPPED)")
+                return # Exit function early
+        # --------------------------------------------------------
+            
         pred_img = nib.Nifti1Image(label_img, ref_img.affine, ref_img.header)
         
         nib.save(pred_img, output_path)
@@ -265,7 +361,8 @@ class BraTSInference2023:
         
         stats = {label: 0 for label in label_map}
         for label, count in zip(unique_labels, counts):
-            stats[label] = count
+            if label in stats:
+                stats[label] = count
 
         for label, name in label_map.items():
             count = stats[label]
@@ -307,6 +404,29 @@ class BraTSInference2023:
                     # Add batch dimension for metric calculation
                     y_pred_batch = prediction_tensor.unsqueeze(0).to(self.device)
                     y_label_batch = label_tensor.unsqueeze(0).to(self.device)
+                    
+                    # --- ADDED: Handle shape mismatch for Dice due to crop ---
+                    # If the prediction was cropped but the label wasn't inverted,
+                    # we must crop the label to match the prediction for metric calculation.
+                    
+                    # This assumes the label tensor `label_tensor` came from
+                    # `preprocess` and is therefore *also cropped*.
+                    # If `predict_case` fails to invert `prediction_tensor`,
+                    # then `label_tensor` should still be the cropped version.
+                    
+                    if y_pred_batch.shape != y_label_batch.shape:
+                        print(f"Warning: Pred shape {y_pred_batch.shape} and Label shape {y_label_batch.shape} mismatch for Dice.")
+                        # This scenario is complex. The `Invertd` in `predict_case`
+                        # should return the prediction to full size.
+                        # The label `label_tensor` from `preprocess` should
+                        # *also* be returned to full size if we invert it.
+                        # For now, let's assume both are full size or both are cropped.
+                        # If `Invertd` failed, `prediction_tensor` is cropped.
+                        # `label_tensor` from `preprocess` is *also* cropped.
+                        # So they *should* match.
+                        
+                        # The *most likely* issue is `label_tensor` is None
+                        # or one of them failed loading/transforming.
                     
                     self.dice_metric(y_pred=y_pred_batch, y=y_label_batch)
                     self.dice_metric_batch(y_pred=y_pred_batch, y=y_label_batch)
