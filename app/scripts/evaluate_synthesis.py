@@ -23,9 +23,9 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
 def calculate_brats_metrics(gt_data, pred_data):
-    # ET = Enhancing Tumor (Label 3)
+    # ET = Enhancing Tumor (Label 3) #1?
     gt_et = (gt_data == 1)
-    pred_et = (pred_data == 1)
+    pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
     
     # TC = Tumor Core (Labels 2 + 3)
