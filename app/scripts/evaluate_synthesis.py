@@ -22,17 +22,16 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
 def calculate_brats_metrics(gt_data, pred_data):
-    # This function now works correctly because the input data
-    # has been remapped to 1=NT, 2=Edema, 3=ET.
+    # This function now expects remapped data: 1=NT, 2=Edema, 4=ET
     
-    # ET = Enhancing Tumor (Label 3)
-    gt_et = (gt_data == 3)
-    pred_et = (pred_data == 3)
+    # --- FIX 1: ET is Label 4 ---
+    gt_et = (gt_data == 4)
+    pred_et = (pred_data == 4)
     dice_et = dice_coefficient(gt_et, pred_et)
     
-    # TC = Tumor Core (Label 1 [NT] + Label 3 [ET])
-    gt_tc = np.logical_or(gt_data == 1, gt_data == 3)
-    pred_tc = np.logical_or(pred_data == 1, pred_data == 3)
+    # --- FIX 2: TC is Label 1 (NT) + Label 4 (ET) ---
+    gt_tc = np.logical_or(gt_data == 1, gt_data == 4)
+    pred_tc = np.logical_or(pred_data == 1, pred_data == 4)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
     # WT = Whole Tumor (All labels > 0)
@@ -51,21 +50,21 @@ def fix_floating_point_labels(segmentation):
     fixed_seg = np.clip(fixed_seg, 0, 4)
     return fixed_seg
 
-# --- 1 of 2: ADDED THIS NEW FUNCTION ---
+# --- FIX 3: ADDED THIS NEW REMAP FUNCTION ---
 def remap_brats_labels(segmentation):
     """
     Remaps labels from (1=Edema, 2=NT) to (1=NT, 2=Edema).
+    Leaves 4 (ET) unchanged.
     This fixes both metrics and visualization downstream.
     """
     seg_copy = segmentation.copy()
     
-    # Use a temporary value (e.g., 99) to safely swap
-    is_1 = (seg_copy == 1) # Edema
-    is_2 = (seg_copy == 2) # NT
+    is_1 = (seg_copy == 1) # Original Edema
+    is_2 = (seg_copy == 2) # Original NT
     
     seg_copy[is_1] = 99 # Edema (1) -> Temp (99)
     seg_copy[is_2] = 1  # NT (2) -> 1
-    seg_copy[seg_copy == 99] = 2 # Temp (99) -> 2
+    seg_copy[seg_copy == 99] = 2 # Temp (99) -> 2 (Edema)
     
     return seg_copy
 # --- END OF FIX ---
@@ -78,8 +77,7 @@ def find_best_slice(seg1, seg2):
     return np.argmax(slice_scores)
 
 def log_wandb_visualization(gt_data, pred_data, file_name):
-    # This function now works correctly because the input data
-    # has already been remapped.
+    # This function now receives remapped data: 1=NT, 2=Edema, 4=ET
     try:
         best_slice = find_best_slice(gt_data, pred_data)
         
@@ -88,11 +86,12 @@ def log_wandb_visualization(gt_data, pred_data, file_name):
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
         
-        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=3)
+        # --- FIX 4: Set vmax=4 to correctly display ET (Label 4) ---
+        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=4)
         ax1.set_title(f"Ground Truth\n{file_name}")
         ax1.axis('off')
         
-        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=3)
+        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=4)
         ax2.set_title(f"Prediction\n{file_name}")
         ax2.axis('off')
         
@@ -132,7 +131,7 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 result_data_fixed = fix_floating_point_labels(result_data_raw)
                 gt_data_fixed = fix_floating_point_labels(gt_data_raw)
 
-                # --- 2 of 2: ADDED THIS REMAPPING STEP ---
+                # --- FIX 5: ADDED THIS REMAPPING STEP ---
                 # Remap from (1=Edema, 2=NT) to (1=NT, 2=Edema)
                 result_data = remap_brats_labels(result_data_fixed)
                 gt_data = remap_brats_labels(gt_data_fixed)
@@ -406,7 +405,7 @@ def main():
                 return
             
             if not run_nnunet_prediction(dataset_dir_to_use, args.output_dir):
-                print("❌ nnUNet prediction failed")
+                print("❌ nnU-Net prediction failed")
                 if run: run.finish(exit_code=1)
                 return
         
