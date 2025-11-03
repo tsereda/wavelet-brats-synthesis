@@ -1,7 +1,7 @@
 """
 Complete evaluation pipeline for synthesis models.
 Runs nnUNet segmentation and calculates Dice scores.
-(MODIFIED TO USE LOCAL nnUNet v1 MODEL AND CORRECT ENV VARS)
+(MODIFIED TO USE LOCAL nnUNet v1 MODEL AND CORRECT ENV VARS + PATHS)
 """
 
 import os
@@ -67,26 +67,27 @@ def calculate_dice_scores(results_folder, ground_truth_folder):
         print("No valid segmentation files found for comparison.")
         return None, None, {}
 
-# --- MODIFIED FUNCTION ---
+# --- MODIFIED FUNCTION (v3) ---
 def setup_nnunet_environment(local_model_path="3d_fullres"):
     """Setup nnUNet environment variables and move local model."""
     local_root = "./nnunet_data" 
     
-    # --- CHANGED: Use the exact variable names nnUNet v1 expects ---
     os.environ["nnUNet_raw_data_base"] = os.path.abspath(f"{local_root}/raw")
     os.environ["nnUNet_preprocessed"] = os.path.abspath(f"{local_root}/preprocessed") 
     os.environ["RESULTS_FOLDER"] = os.path.abspath(f"{local_root}/results")
     
-    # Create directories
-    # --- CHANGED: Use the correct variable names ---
     for path_key in ["nnUNet_raw_data_base", "nnUNet_preprocessed", "RESULTS_FOLDER"]: 
         path = os.environ[path_key]
         os.makedirs(path, exist_ok=True)
     
-    # Move the unzipped model into the new RESULTS_FOLDER
+    # --- CHANGED: Create the .../results/nnUNet/ directory ---
+    # nnUNet v1 expects models to be in $RESULTS_FOLDER/nnUNet/
+    nnunet_models_dir = Path(os.environ["RESULTS_FOLDER"]) / "nnUNet"
+    os.makedirs(nnunet_models_dir, exist_ok=True)
+    
     local_model_src = Path(local_model_path)
-    # --- CHANGED: Use RESULTS_FOLDER ---
-    local_model_dest = Path(os.environ["RESULTS_FOLDER"]) / local_model_src.name
+    # --- CHANGED: Destination is now INSIDE the nnUNet_models_dir ---
+    local_model_dest = nnunet_models_dir / local_model_src.name # -> .../results/nnUNet/3d_fullres
 
     if local_model_src.exists() and local_model_src.is_dir():
         try:
@@ -107,19 +108,18 @@ def setup_nnunet_environment(local_model_path="3d_fullres"):
         print("   Make sure you unzipped 'bratscp.zip' in the same directory as this script.")
 
     print("nnUNet environment variables set:")
-    # --- CHANGED: Print the correct variable names ---
     print(f"nnUNet_raw_data_base: {os.environ['nnUNet_raw_data_base']}")
     print(f"nnUNet_preprocessed: {os.environ['nnUNet_preprocessed']}")
     print(f"RESULTS_FOLDER: {os.environ['RESULTS_FOLDER']}")
 
 
-# --- MODIFIED FUNCTION ---
+# --- UNCHANGED FUNCTION ---
 def download_nnunet_weights():
     """Bypassed: Using local nnUNet v1 model."""
     print("✅ Using local nnUNet v1 model. Skipping download.")
     return True
 
-# --- MODIFIED FUNCTION ---
+# --- UNCHANGED FUNCTION ---
 def run_nnunet_prediction(dataset_dir, output_dir):
     """Run nnUNet (v1) prediction on the dataset."""
     
@@ -143,7 +143,6 @@ def run_nnunet_prediction(dataset_dir, output_dir):
     
     try:
         print(f"Running command: {' '.join(cmd)}")
-        # --- CHANGED: Pass the current environment to the subprocess ---
         result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=os.environ.copy()) 
         
         print("✅ nnUNet (v1) prediction completed successfully")
@@ -159,6 +158,7 @@ def run_nnunet_prediction(dataset_dir, output_dir):
         print("   Make sure nnUNet v1 (pip install nnunet) is installed and in your PATH.")
         return False
 
+# --- UNCHANGED FUNCTION ---
 def main():
     parser = argparse.ArgumentParser(description="Evaluate synthesis models using segmentation performance")
     parser.add_argument("--dataset_dir", default="./Dataset137_BraTS21_Completed",
@@ -170,30 +170,24 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup nnUNet environment (this will now also move your local model)
     setup_nnunet_environment()
     
-    # Check if dataset exists
     if not os.path.exists(args.dataset_dir):
         print(f"❌ Dataset directory not found: {args.dataset_dir}")
         print("Run prepare_nnunet_dataset.py first!")
         return
     
-    # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
     
     if not args.skip_segmentation:
-        # Download nnUNet weights if needed (this is now bypassed)
         if not download_nnunet_weights():
             print("❌ Failed to setup nnUNet weights")
             return
         
-        # Run nnUNet prediction (this now runs the v1 command)
         if not run_nnunet_prediction(args.dataset_dir, args.output_dir):
             print("❌ nnUNet prediction failed")
             return
     
-    # Calculate Dice scores
     ground_truth_dir = f"{args.dataset_dir}/labelsTr"
     
     if not os.path.exists(ground_truth_dir):
@@ -207,7 +201,6 @@ def main():
     print(f"\n🔍 Calculating Dice scores...")
     avg_dice, std_dice, case_results = calculate_dice_scores(args.output_dir, ground_truth_dir)
     
-    # Save results
     if avg_dice is not None:
         results_file = "synthesis_evaluation_results.txt"
         with open(results_file, "w") as f:
@@ -223,7 +216,6 @@ def main():
         
         print(f"\n📄 Results saved to: {results_file}")
         
-        # Summary
         print(f"\n🎯 FINAL RESULTS:")
         print(f"Your CWDM synthesis models achieved:")
         print(f"Average Dice Score: {avg_dice:.4f} ± {std_dice:.4f}")
