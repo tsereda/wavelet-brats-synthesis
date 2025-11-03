@@ -32,19 +32,30 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
 def calculate_brats_metrics(gt_data, pred_data):
     """
     Calculate BraTS region-specific Dice scores (ET, TC, WT).
-    Assumes labels are: 1: Edema, 2: Necrosis, 3: Enhancing Tumor
+    
+    CORRECT (Standard nnUNet/BraTS) Labels:
+    - 1: Necrotic/Non-Enhancing Core (NCR/NET)
+    - 2: Peritumoral Edema (ED)
+    - 3: Enhancing Tumor (ET)
+    
+    Evaluation Regions:
+    - Enhancing Tumor (ET) = Label 3
+    - Tumor Core (TC)      = Label 1 + Label 3
+    - Whole Tumor (WT)     = Label 1 + Label 2 + Label 3
     """
+    
     # Enhancing Tumor (ET) - Label 3
     gt_et = (gt_data == 3)
     pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
     
-    # Tumor Core (TC) - Labels 2 + 3
-    gt_tc = np.logical_or(gt_data == 2, gt_data == 3)
-    pred_tc = np.logical_or(pred_data == 2, pred_data == 3)
+    # Tumor Core (TC) - Labels 1 + 3  <-- THIS IS THE FIX
+    gt_tc = np.logical_or(gt_data == 1, gt_data == 3)
+    pred_tc = np.logical_or(pred_data == 1, pred_data == 3)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
     # Whole Tumor (WT) - Labels 1 + 2 + 3
+    # (gt_data > 0) is a safe shortcut for (1 | 2 | 3)
     gt_wt = (gt_data > 0)
     pred_wt = (pred_data > 0)
     dice_wt = dice_coefficient(gt_wt, pred_wt)
