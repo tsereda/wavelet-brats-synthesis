@@ -3,7 +3,7 @@
 Complete evaluation pipeline for synthesis models.
 Runs nnUNet segmentation and calculates Dice scores.
 
-(MODIFIED TO INCLUDE WEIGHTS & BIASES LOGGING + VISUALIZATION)
+(MODIFIED TO INCLUDE WEIGHTS & BIASES LOGGING + VISUALIZATION + SUBSETTING)
 """
 
 import os
@@ -15,6 +15,8 @@ from pathlib import Path
 import shutil
 import wandb  # <-- ADDED
 import matplotlib.pyplot as plt  # <-- ADDED
+import tempfile  # <-- ADDED
+import glob      # <-- ADDED
 
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     """Calculate Dice coefficient between two boolean masks."""
@@ -120,7 +122,7 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
     case_results = {}
     viz_counter = 0 # Counter for logging samples
 
-    prediction_files = [f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')]
+    prediction_files = sorted([f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')])
     
     if not prediction_files:
         print(f"No segmentation files found in {results_folder}")
@@ -151,19 +153,21 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 all_scores["dice_tc"].append(metrics["dice_tc"])
                 all_scores["dice_wt"].append(metrics["dice_wt"])
                 
-                print(f"  {file_name}: ET={metrics['dice_et']:.4f}, TC={metrics['dice_tc']:.4f}, WT={metrics['dice_wt']:.4f}")
+                # --- MODIFIED PRINT ---
+                # Added flush=True to ensure it prints immediately
+                print(f"  {file_name}: ET={metrics['dice_et']:.4f}, TC={metrics['dice_tc']:.4f}, WT={metrics['dice_wt']:.4f}", flush=True)
 
                 # --- W&B VISUALIZATION LOGIC ---
                 if wandb.run and viz_counter < num_viz_samples:
-                    print(f"  [W&B] Logging visualization for {file_name}...")
+                    print(f"  [W&B] Logging visualization for {file_name}...", flush=True)
                     log_wandb_visualization(gt_data, result_data, file_name)
                     viz_counter += 1
                 # --- END W&B VISUALIZATION ---
 
             except Exception as e:
-                print(f"Error processing {file_name}: {e}")
+                print(f"Error processing {file_name}: {e}", flush=True)
         else:
-            print(f"Ground truth for {file_name} not found! (Looked for {gt_path})")
+            print(f"Ground truth for {file_name} not found! (Looked for {gt_path})", flush=True)
 
     if all_scores["dice_wt"]: 
         summary_stats = {}
@@ -237,7 +241,7 @@ def download_nnunet_weights():
     print("✅ Using local nnUNet v1 model. Skipping download.")
     return True
 
-# --- UNCHANGED FUNCTION ---
+# --- MODIFIED FUNCTION ---
 def run_nnunet_prediction(dataset_dir, output_dir):
     """Run nnUNet (v1) prediction on the dataset."""
     
@@ -261,20 +265,92 @@ def run_nnunet_prediction(dataset_dir, output_dir):
     
     try:
         print(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=os.environ.copy()) 
+        # --- MODIFICATION ---
+        # Removed 'capture_output=True' to allow nnUNet_predict to
+        # stream its output (like "preprocessing case X...") to the console.
+        result = subprocess.run(cmd, check=True, text=True, env=os.environ.copy()) 
+        # --- END MODIFICATION ---
         
         print("✅ nnUNet (v1) prediction completed successfully")
         return True
     except subprocess.CalledProcessError as e:
         print(f"❌ nnUNet (v1) prediction failed:")
         print(f"Return code: {e.returncode}")
-        print(f"STDOUT: {e.stdout}")
-        print(f"STDERR: {e.stderr}")
+        # Since output wasn't captured, stdout/stderr will be None. 
+        # The error will have been printed to the console already.
+        # print(f"STDOUT: {e.stdout}") # This will be None
+        # print(f"STDERR: {e.stderr}") # This will be None
         return False
     except FileNotFoundError:
         print(f"❌ 'nnUNet_predict' command not found.")
         print("   Make sure nnUNet v1 (pip install nnunet) is installed and in your PATH.")
         return False
+
+# --- NEW FUNCTION ---
+def setup_subset_directory(original_dataset_dir, num_files):
+    """
+    Creates a temporary directory and symlinks a subset of files into it
+    for nnUNet prediction.
+    """
+    try:
+        # Create a persistent temporary directory
+        temp_dir_obj = tempfile.TemporaryDirectory(prefix="nnunet_subset_")
+        temp_dir_path = temp_dir_obj.name
+        
+        print(f"Creating temporary subset directory for {num_files} files at: {temp_dir_path}")
+        
+        # Create nnUNet structure
+        temp_images_tr = os.path.join(temp_dir_path, "imagesTr")
+        temp_labels_tr = os.path.join(temp_dir_path, "labelsTr")
+        os.makedirs(temp_images_tr, exist_ok=True)
+        os.makedirs(temp_labels_tr, exist_ok=True)
+        
+        # Get source files (images)
+        source_images = sorted(glob.glob(f"{original_dataset_dir}/imagesTr/*.nii*"))
+        
+        if not source_images:
+            raise FileNotFoundError(f"No images found in {original_dataset_dir}/imagesTr")
+            
+        # Get the subset
+        files_to_link = source_images[:num_files]
+        print(f"Linking {len(files_to_link)} files...")
+        
+        count = 0
+        for img_path in files_to_link:
+            file_name = os.path.basename(img_path)
+            
+            # Find matching label. Handles .nii or .nii.gz
+            label_name = file_name.replace("_0000.nii.gz", ".nii.gz").replace("_0000.nii", ".nii")
+            label_path = os.path.join(original_dataset_dir, "labelsTr", label_name)
+
+            if not os.path.exists(label_path):
+                # Try finding the exact same filename in labelsTr (for BraTS 2021+ format)
+                label_path_alt = os.path.join(original_dataset_dir, "labelsTr", file_name)
+                if os.path.exists(label_path_alt):
+                    label_path = label_path_alt
+                else:
+                    print(f"  [Warning] No label found for {file_name}. (Looked for {label_path})")
+                    continue
+            
+            # Create symlinks
+            # Use os.path.abspath to ensure symlinks are absolute
+            os.symlink(os.path.abspath(img_path), os.path.join(temp_images_tr, file_name))
+            os.symlink(os.path.abspath(label_path), os.path.join(temp_labels_tr, file_name)) # Use same name for label
+            count += 1
+
+        print(f"✅ Successfully linked {count} image/label pairs.")
+        
+        if count == 0:
+            raise RuntimeError("Failed to link any files. Check paths and file names.")
+            
+        return temp_dir_path, temp_dir_obj
+        
+    except Exception as e:
+        print(f"❌ Error creating subset directory: {e}")
+        if 'temp_dir_obj' in locals():
+            temp_dir_obj.cleanup()
+        return None, None
+
 
 # --- MODIFIED FUNCTION ---
 def main():
@@ -293,7 +369,11 @@ def main():
                         help="W&B run name (defaults to auto-generated)")
     parser.add_argument("--num_viz_samples", type=int, default=10,
                         help="Number of segmentation samples to log to W&B")
-    # --- END W&B ARGUMENTS ---
+    
+    # --- NEW SUBSET ARGUMENT ---
+    parser.add_argument("--num_test_files", type=int, default=None,
+                        help="Run evaluation on a subset of N files (default: all)")
+    # --- END NEW ARGUMENTS ---
 
     args = parser.parse_args()
 
@@ -311,104 +391,138 @@ def main():
         run = None # Set run to None to skip logging
     # --- END W&B INIT ---
 
-    setup_nnunet_environment()
+    # --- MODIFIED: SUBSET LOGIC ---
+    dataset_dir_to_use = args.dataset_dir
+    temp_dir_obj = None # To hold the temporary directory object for cleanup
     
-    if not os.path.exists(args.dataset_dir):
-        print(f"❌ Dataset directory not found: {args.dataset_dir}")
-        if run: run.finish(exit_code=1) # <-- ADDED
-        return
-    
-    os.makedirs(args.output_dir, exist_ok=True)
-    
-    if not args.skip_segmentation:
-        if not download_nnunet_weights():
-            print("❌ Failed to setup nnUNet weights")
-            if run: run.finish(exit_code=1) # <-- ADDED
-            return
+    try:
+        if args.num_test_files:
+            # Create a temporary subset directory
+            dataset_dir_to_use, temp_dir_obj = setup_subset_directory(
+                args.dataset_dir, 
+                args.num_test_files
+            )
+            if dataset_dir_to_use is None:
+                raise RuntimeError("Failed to create temporary subset directory.")
         
-        if not run_nnunet_prediction(args.dataset_dir, args.output_dir):
-            print("❌ nnUNet prediction failed")
-            if run: run.finish(exit_code=1) # <-- ADDED
-            return
-    
-    ground_truth_dir = f"{args.dataset_dir}/labelsTr"
-    
-    if not os.path.exists(ground_truth_dir):
-        print(f"❌ Ground truth directory not found: {ground_truth_dir}")
-        if run: run.finish(exit_code=1) # <-- ADDED
-        return
-    
-    if not os.listdir(args.output_dir):
-        print(f"❌ No segmentation results found in {args.output_dir}")
-        if run: run.finish(exit_code=1) # <-- ADDED
-        return
-    
-    print(f"\n🔍 Calculating Dice scores...")
-    summary_stats, case_results = calculate_dice_scores(
-        args.output_dir, 
-        ground_truth_dir,
-        args.num_viz_samples # Pass the new arg
-    )
-    
-    # Save results
-    if summary_stats: # Check if we have results
-        results_file = "synthesis_evaluation_results.txt"
-        with open(results_file, "w") as f:
-            f.write("Synthesis Model Evaluation Results (Per-Region)\n")
-            f.write("==================================================\n\n")
-            f.write("Summary Statistics:\n")
-            for region, stats in summary_stats.items():
-                f.write(f"  {region.upper()} Avg: {stats['mean']:.4f} ± {stats['std']:.4f}\n")
-                f.write(f"  {region.upper()} Min: {stats['min']:.4f}, Max: {stats['max']:.4f}\n")
-            
-            f.write(f"\nNumber of cases: {len(case_results)}\n")
-            f.write("==================================================\n")
-            f.write("\nPer-case results (Filename: ET, TC, WT):\n")
-            for case, metrics in sorted(case_results.items()):
-                f.write(f"  {case}: {metrics['dice_et']:.4f}, {metrics['dice_tc']:.4f}, {metrics['dice_wt']:.4f}\n")
-        
-        print(f"\n📄 Results saved to: {results_file}")
-        
-        # Summary
-        print(f"\n🎯 FINAL RESULTS:")
-        print(f"Your CWDM synthesis models achieved:")
-        for region, stats in summary_stats.items():
-            print(f"  Average {region.upper()} Dice: {stats['mean']:.4f} ± {stats['std']:.4f}")
-        print(f"\nThis measures how well synthesized modalities preserve")
-        print(f"segmentation-relevant information!")
-        
-        # --- W&B LOGGING ---
-        if run:
-            print("\n[W&B] Logging results to Weights & Biases...")
-            
-            # 1. Log summary statistics (flattened for easier plotting)
-            summary_log = {}
-            for region, stats in summary_stats.items():
-                summary_log[f"avg_{region}_dice"] = stats['mean']
-                summary_log[f"std_{region}_dice"] = stats['std']
-                summary_log[f"min_{region}_dice"] = stats['min']
-                summary_log[f"max_{region}_dice"] = stats['max']
-            
-            wandb.summary.update(summary_log)
-            print("  [W&B] Logged summary statistics.")
+        # --- END SUBSET LOGIC ---
 
-            # 2. Log per-case results as a W&B Table
-            table_columns = ["Filename", "DICE_ET", "DICE_TC", "DICE_WT"]
-            table = wandb.Table(columns=table_columns)
-            for case, metrics in sorted(case_results.items()):
-                table.add_data(
-                    case, 
-                    metrics['dice_et'], 
-                    metrics['dice_tc'], 
-                    metrics['dice_wt']
-                )
-            run.log({"dice_results_per_case": table})
-            print("  [W&B] Logged per-case results table.")
+        setup_nnunet_environment()
+        
+        # Use 'dataset_dir_to_use' which points to either the original or temp dir
+        if not os.path.exists(dataset_dir_to_use):
+            print(f"❌ Dataset directory not found: {dataset_dir_to_use}")
+            if run: run.finish(exit_code=1)
+            return
+        
+        os.makedirs(args.output_dir, exist_ok=True)
+        
+        if not args.skip_segmentation:
+            if not download_nnunet_weights():
+                print("❌ Failed to setup nnUNet weights")
+                if run: run.finish(exit_code=1)
+                return
             
-            # 3. Finish the run
-            print(f"✅ W&B Run finished: {run.url}")
-            run.finish()
-        # --- END W&B LOGGING ---
+            # Use 'dataset_dir_to_use'
+            if not run_nnunet_prediction(dataset_dir_to_use, args.output_dir):
+                print("❌ nnUNet prediction failed")
+                if run: run.finish(exit_code=1)
+                return
+        
+        # Use 'dataset_dir_to_use'
+        ground_truth_dir = f"{dataset_dir_to_use}/labelsTr"
+        
+        if not os.path.exists(ground_truth_dir):
+            print(f"❌ Ground truth directory not found: {ground_truth_dir}")
+            if run: run.finish(exit_code=1)
+            return
+        
+        if not os.listdir(args.output_dir):
+            print(f"❌ No segmentation results found in {args.output_dir}")
+            if run: run.finish(exit_code=1)
+            return
+        
+        print(f"\n🔍 Calculating Dice scores...")
+        summary_stats, case_results = calculate_dice_scores(
+            args.output_dir, 
+            ground_truth_dir,
+            args.num_viz_samples # Pass the new arg
+        )
+        
+        # Save results
+        if summary_stats: # Check if we have results
+            results_file = "synthesis_evaluation_results.txt"
+            with open(results_file, "w") as f:
+                f.write("Synthesis Model Evaluation Results (Per-Region)\n")
+                f.write("==================================================\n\n")
+                f.write("Summary Statistics:\n")
+                for region, stats in summary_stats.items():
+                    f.write(f"  {region.upper()} Avg: {stats['mean']:.4f} ± {stats['std']:.4f}\n")
+                    f.write(f"  {region.upper()} Min: {stats['min']:.4f}, Max: {stats['max']:.4f}\n")
+                
+                f.write(f"\nNumber of cases: {len(case_results)}\n")
+                f.write("==================================================\n")
+                f.write("\nPer-case results (Filename: ET, TC, WT):\n")
+                for case, metrics in sorted(case_results.items()):
+                    f.write(f"  {case}: {metrics['dice_et']:.4f}, {metrics['dice_tc']:.4f}, {metrics['dice_wt']:.4f}\n")
+            
+            print(f"\n📄 Results saved to: {results_file}")
+            
+            # Summary
+            print(f"\n🎯 FINAL RESULTS:")
+            print(f"Your CWDM synthesis models achieved:")
+            for region, stats in summary_stats.items():
+                print(f"  Average {region.upper()} Dice: {stats['mean']:.4f} ± {stats['std']:.4f}")
+            print(f"\nThis measures how well synthesized modalities preserve")
+            print(f"segmentation-relevant information!")
+            
+            # --- W&B LOGGING ---
+            if run:
+                print("\n[W&B] Logging results to Weights & Biases...")
+                
+                # 1. Log summary statistics (flattened for easier plotting)
+                summary_log = {}
+                for region, stats in summary_stats.items():
+                    summary_log[f"avg_{region}_dice"] = stats['mean']
+                    summary_log[f"std_{region}_dice"] = stats['std']
+                    summary_log[f"min_{region}_dice"] = stats['min']
+                    summary_log[f"max_{region}_dice"] = stats['max']
+                
+                wandb.summary.update(summary_log)
+                print("  [W&B] Logged summary statistics.")
+
+                # 2. Log per-case results as a W&B Table
+                table_columns = ["Filename", "DICE_ET", "DICE_TC", "DICE_WT"]
+                table = wandb.Table(columns=table_columns)
+                for case, metrics in sorted(case_results.items()):
+                    table.add_data(
+                        case, 
+                        metrics['dice_et'], 
+                        metrics['dice_tc'], 
+                        metrics['dice_wt']
+                    )
+                run.log({"dice_results_per_case": table})
+                print("  [W&B] Logged per-case results table.")
+                
+                # 3. Finish the run
+                print(f"✅ W&B Run finished: {run.url}")
+                run.finish()
+            # --- END W&B LOGGING ---
+            
+    except Exception as e:
+        print(f"\n--- SCRIPT FAILED ---")
+        print(f"An error occurred: {e}")
+        import traceback
+        traceback.print_exc()
+        if run:
+            print("Finishing W&B run with exit code 1...")
+            run.finish(exit_code=1)
+    finally:
+        # --- CLEANUP ---
+        if temp_dir_obj:
+            print(f"\nCleaning up temporary subset directory: {temp_dir_obj.name}")
+            temp_dir_obj.cleanup()
+            print("✅ Cleanup complete.")
 
 if __name__ == "__main__":
     main()
