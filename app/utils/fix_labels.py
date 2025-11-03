@@ -6,6 +6,7 @@ from pathlib import Path
 import glob
 import random
 import argparse
+import time  # <-- ADDED for safety countdown
 
 def load_nifti(path):
     """Load and return nifti data and the nifti object"""
@@ -67,7 +68,8 @@ def create_comparison_grid(file_examples, input_dir_name):
         # Original (top row)
         orig_slice = orig_fixed[:, :, best_slice]
         axes[0, col].imshow(orig_slice, cmap='jet', vmin=0, vmax=4)
-        axes[0, col].set_title(f'{filename}\n(Original)', fontsize=8)
+        # Use filename (without .nii.gz) for title
+        axes[0, col].set_title(f'{Path(filename).name}\n(Original)', fontsize=8)
         axes[0, col].axis('off')
         
         # Swapped (bottom row)
@@ -76,7 +78,7 @@ def create_comparison_grid(file_examples, input_dir_name):
         axes[1, col].set_title('After 1↔2 Swap', fontsize=8)
         axes[1, col].axis('off')
     
-    plt.suptitle(f'Random Sample from "{input_dir_name}": Label 1↔2 Swap Preview (10 Examples)', fontsize=16)
+    plt.suptitle(f'Random Sample from "{input_dir_name}" (Recursive): Label 1↔2 Swap Preview', fontsize=16)
     plt.tight_layout()
     
     # Save the grid
@@ -117,30 +119,37 @@ def main():
     print("🎲 Label 1↔2 Swap Preview Tool (Floating Point Fixed)")
     print("=" * 60)
     
-    # Find all segmentation files
-    pred_files = glob.glob(f"{input_dir}/*.nii.gz")
+    # Find all segmentation files RECURSIVELY
+    search_pattern = f"{input_dir}/**/*.nii.gz" # <-- CHANGED
+    print(f"🔍 Searching recursively for .nii.gz files in: {input_dir}")
+    pred_files = glob.glob(search_pattern, recursive=True) # <-- CHANGED
     
     if not pred_files:
-        print(f"❌ No .nii.gz files found in {input_dir}/")
+        print(f"❌ No .nii.gz files found in {input_dir}/ or its subdirectories")
         return
     
-    print(f"Found {len(pred_files)} total files")
+    print(f"✅ Found {len(pred_files)} total files recursively")
     
     # Randomly select 10 files
     if len(pred_files) < 10:
         selected_files = pred_files
-        print(f"Using all {len(pred_files)} available files")
+        print(f"Using all {len(pred_files)} available files for preview")
     else:
         selected_files = random.sample(pred_files, 10)
         print(f"Randomly selected 10 files for preview")
     
-    print("\n🔄 Processing selected files...")
+    print("\n🔄 Processing selected files for preview...")
     
     file_examples = []
     
     for i, seg_file in enumerate(selected_files):
-        filename = Path(seg_file).stem  # Remove .nii.gz extension
-        print(f"  {i+1}/{len(selected_files)}: {filename}")
+        # Get relative path for cleaner display
+        try:
+            display_name = Path(seg_file).relative_to(input_dir)
+        except ValueError:
+            display_name = Path(seg_file).name # Fallback if not relative
+            
+        print(f"  {i+1}/{len(selected_files)}: {display_name}")
         
         try:
             # Load segmentation
@@ -151,17 +160,17 @@ def main():
             
             # Show analysis if requested
             if args.show_analysis:
-                analyze_file_before_after(seg_data, swapped_seg, filename)
+                analyze_file_before_after(seg_data, swapped_seg, display_name)
             
             # Store for visualization
-            file_examples.append((filename, seg_data, swapped_seg))
+            file_examples.append((display_name, seg_data, swapped_seg))
             
         except Exception as e:
-            print(f"    ❌ Error loading {filename}: {e}")
+            print(f"    ❌ Error loading {display_name}: {e}")
             continue
     
     if not file_examples:
-        print("❌ No files could be processed!")
+        print("❌ No files could be processed for preview!")
         return
     
     print(f"\n📊 Creating comparison grid with {len(file_examples)} examples...")
@@ -182,25 +191,48 @@ def main():
     response = input(f"\nIf the preview looks good, run the full batch on all {len(pred_files)} files? (y/n): ")
     
     if response.lower() == 'y':
-        print(f"\n🚀 Processing all {len(pred_files)} files...")
         
-        # Create output directory
-        output_dir = Path("fixed_nii_gz_files")
-        output_dir.mkdir(exist_ok=True)
+        # --- NEW WARNING BLOCK ---
+        print("\n" + "!"*60)
+        print("🚨🚨🚨    W A R N I N G    🚨🚨🚨")
+        print(" This will OVERWRITE all {len(pred_files)} original files IN-PLACE.")
+        print(" This operation CANNOT BE UNDONE. Make sure you have a backup.")
+        print(" Press Ctrl+C in the next 3 seconds to cancel.")
+        print("!"*60)
+        try:
+            print("Starting in 3...", flush=True)
+            time.sleep(1)
+            print("Starting in 2...", flush=True)
+            time.sleep(1)
+            print("Starting in 1...", flush=True)
+            time.sleep(1)
+        except KeyboardInterrupt:
+            print("\n❌ Operation CANCELED by user. No files were changed.")
+            return
+        # --- END WARNING BLOCK ---
+            
+        print(f"\n🚀 Processing all {len(pred_files)} files IN-PLACE...")
+        
+        # --- REMOVED output_dir CREATION ---
         
         successful = 0
         total_files_analyzed = 0
         
         for i, seg_file in enumerate(pred_files):
-            filename = Path(seg_file).name
-            print(f"Processing {i+1}/{len(pred_files)}: {filename}", end=" ... ")
+            # Get relative path for cleaner display
+            try:
+                display_name = Path(seg_file).relative_to(input_dir)
+            except ValueError:
+                display_name = Path(seg_file).name
+                
+            print(f"Processing {i+1}/{len(pred_files)}: {display_name}", end=" ... ")
             
             try:
                 # Load, swap, save
                 seg_data, nii_obj = load_nifti(seg_file)
-                fixed_seg = swap_labels_1_2(seg_data)  # This now includes floating point fix
+                fixed_seg = swap_labels_1_2(seg_data)
                 
-                output_path = output_dir / filename
+                output_path = seg_file  # <-- CHANGED: Overwrite original file
                 
                 # Save as int16 to ensure clean integer labels
                 fixed_nii = nib.Nifti1Image(fixed_seg.astype(np.int16), 
@@ -218,9 +250,10 @@ def main():
                 total_files_analyzed += 1
         
         print(f"\n🎉 Batch processing complete! {successful}/{total_files_analyzed} files processed")
-        print(f"📁 Fixed files saved to: {output_dir}/")
+        print(f"📁 All files were modified IN-PLACE.") # <-- CHANGED
         print("💡 All files now have clean integer labels AND 1↔2 swap applied!")
-        print(f"🔍 Test with: python app/utils/check_single_seg.py {output_dir}/<filename>")
+        # <-- CHANGED test command
+        print(f"🔍 Test with: python app/utils/check_single_seg.py {input_dir}/[...]/<filename>")
     else:
         print("👋 Preview only - no batch processing performed")
 
