@@ -22,19 +22,21 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
 def calculate_brats_metrics(gt_data, pred_data):
-    # This function now correctly assumes 1=NT, 2=Edema, 4=ET
+    # Data is 1=Edema, 2=NT, 3=ET
     
-    # --- FIX 1: ET is Label 4 ---
-    gt_et = (gt_data == 4)
-    pred_et = (pred_data == 4)
+    # ET = Enhancing Tumor (Label 3)
+    gt_et = (gt_data == 3)
+    pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
     
-    # --- FIX 2: TC is Label 1 (NT) + Label 4 (ET) ---
-    gt_tc = np.logical_or(gt_data == 1, gt_data == 4)
-    pred_tc = np.logical_or(pred_data == 1, pred_data == 4)
+    # --- FIX 1: METRIC FIX ---
+    # TC = Tumor Core (Label 2 [NT] + Label 3 [ET])
+    gt_tc = np.logical_or(gt_data == 2, gt_data == 3)
+    pred_tc = np.logical_or(pred_data == 2, pred_data == 3)
+    # --- END OF FIX ---
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
-    # WT = Whole Tumor (All labels > 0, which is 1, 2, or 4)
+    # WT = Whole Tumor (All labels > 0)
     gt_wt = (gt_data > 0)
     pred_wt = (pred_data > 0)
     dice_wt = dice_coefficient(gt_wt, pred_wt)
@@ -50,8 +52,6 @@ def fix_floating_point_labels(segmentation):
     fixed_seg = np.clip(fixed_seg, 0, 4)
     return fixed_seg
 
-# --- FIX 3: REMOVED the remap_brats_labels function ---
-
 def find_best_slice(seg1, seg2):
     combined_seg = np.logical_or(seg1 > 0, seg2 > 0)
     slice_scores = np.sum(combined_seg, axis=(0, 1))
@@ -60,21 +60,41 @@ def find_best_slice(seg1, seg2):
     return np.argmax(slice_scores)
 
 def log_wandb_visualization(gt_data, pred_data, file_name):
-    # This function now correctly assumes 1=NT, 2=Edema, 4=ET
+    # Data is 1=Edema, 2=NT, 3=ET
     try:
         best_slice = find_best_slice(gt_data, pred_data)
         
-        gt_slice = gt_data[:, :, best_slice]
-        pred_slice = pred_data[:, :, best_slice]
+        gt_slice_raw = gt_data[:, :, best_slice]
+        pred_slice_raw = pred_data[:, :, best_slice]
+        
+        # --- FIX 2: VISUALIZATION FIX ---
+        # Create copies and remap labels just for plotting
+        # This swaps 1 (Edema) and 2 (NT) to match visual expectation
+        
+        # Copy Ground Truth
+        gt_slice_viz = gt_slice_raw.copy()
+        gt_is_1 = (gt_slice_viz == 1) # Find Edema
+        gt_is_2 = (gt_slice_viz == 2) # Find NT
+        gt_slice_viz[gt_is_1] = 2     # Set Edema to 2 (yellow)
+        gt_slice_viz[gt_is_2] = 1     # Set NT to 1 (blue/green)
+        
+        # Copy Prediction
+        pred_slice_viz = pred_slice_raw.copy()
+        pred_is_1 = (pred_slice_viz == 1) # Find Edema
+        pred_is_2 = (pred_slice_viz == 2) # Find NT
+        pred_slice_viz[pred_is_1] = 2     # Set Edema to 2 (yellow)
+        pred_slice_viz[pred_is_2] = 1     # Set NT to 1 (blue/green)
+        # --- End of Fix ---
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
         
-        # --- FIX 4: Set vmax=4 to correctly display ET (Label 4) ---
-        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=4)
+        # Plot the remapped slices
+        ax1.imshow(gt_slice_viz, cmap='jet', vmin=0, vmax=3) 
         ax1.set_title(f"Ground Truth\n{file_name}")
         ax1.axis('off')
         
-        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=4)
+        # Plot the remapped slices
+        ax2.imshow(pred_slice_viz, cmap='jet', vmin=0, vmax=3)
         ax2.set_title(f"Prediction\n{file_name}")
         ax2.axis('off')
         
@@ -111,35 +131,14 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 result_data_raw = result_img.get_fdata()
                 gt_data_raw = gt_img.get_fdata()
 
-                result_data_fixed = fix_floating_point_labels(result_data_raw)
-                gt_data_fixed = fix_floating_point_labels(gt_data_raw)
+                result_data = fix_floating_point_labels(result_data_raw)
+                gt_data = fix_floating_point_labels(gt_data_raw)
+                
+                # --- REMEMBER TO REMOVE THE DEBUG PROBE ---
+                # Your debug probe code would be here. Delete it.
+                # ---
 
-                # --- START DEBUG PROBE ---
-                print("\n" + "="*50)
-                print(f"DEBUGGING FILE: {file_name}")
-
-                gt_labels = np.unique(gt_data_fixed)
-                pred_labels = np.unique(result_data_fixed)
-
-                print(f"  Ground Truth - Unique Labels Found: {gt_labels}")
-                print(f"  Prediction   - Unique Labels Found: {pred_labels}")
-                print("="*50 + "\n")
-
-                # Only stop if this file actually has a tumor, otherwise check the next one
-                if np.sum(gt_data_fixed) > 0:
-                    print(">>> File has a tumor. Stopping script for analysis.")
-                    print(">>> Please paste the debug output above.")
-                    exit()
-                else:
-                    print("... File has no tumor, checking next file...")
-                # --- END DEBUG PROBE ---
-
-                # --- FIX 5: REMOVED the remapping step ---
-                # The data is now 1=NT, 2=Edema, 4=ET, which is correct.
-                result_data = result_data_fixed
-                gt_data = gt_data_fixed
-                # --- END OF FIX ---
-
+                # We pass the raw data (1=Edema, 2=NT) to the functions
                 metrics = calculate_brats_metrics(gt_data, result_data)
                 
                 case_results[file_name] = metrics
@@ -152,6 +151,7 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
 
                 if wandb.run and viz_counter < num_viz_samples:
                     print(f"  [W&B] Logging visualization for {file_name}...", flush=True)
+                    # The viz function handles its own remapping
                     log_wandb_visualization(gt_data, result_data, file_name)
                     viz_counter += 1
 
@@ -240,7 +240,7 @@ def run_nnunet_prediction(dataset_dir, output_dir):
         "nnUNet_predict",
         "-i", input_dir_abs,
         "-o", output_dir_abs,
-        "-t", "Task082_BraTS2020", # This task uses 1=NT, 2=Edema, 4=ET
+        "-t", "Task082_BraTS2020",
         "-m", "3d_fullres",
         "-f", "0",
         "-tr", "nnUNetTrainerV2"
