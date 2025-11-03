@@ -278,7 +278,8 @@ def setup_subset_directory(original_dataset_dir, num_cases):
         for base_img_path in cases_to_link:
             base_file_name = os.path.basename(base_img_path)
             
-            case_.id = base_file_name.replace("_0000.nii.gz", "")
+            # --- TYPO FIX 1 ---
+            case_id = base_file_name.replace("_0000.nii.gz", "")
             
             label_name = f"{case_id}.nii.gz"
             label_path = os.path.join(original_dataset_dir, "labelsTr", label_name)
@@ -352,7 +353,8 @@ def main():
         print("   Skipping W&B logging. Did you run 'wandb login'?")
         run = None
 
-    dataset_dir_to_use = args.dataset_Ddir
+    # --- TYPO FIX 2 ---
+    dataset_dir_to_use = args.dataset_dir
     temp_dir_obj = None
     
     try:
@@ -443,7 +445,7 @@ def main():
                     summary_log[f"max_{region}_dice"] = stats['max']
                 
                 wandb.summary.update(summary_log)
-                print("  [W&B] Logged summary statistics.")
+                print("  [WB] Logged summary statistics.")
 
                 table_columns = ["Filename", "DICE_ET", "DICE_TC", "DICE_WT"]
                 table = wandb.Table(columns=table_columns)
