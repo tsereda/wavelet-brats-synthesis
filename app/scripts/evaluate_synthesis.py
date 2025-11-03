@@ -15,6 +15,7 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     y_true = y_true.astype(bool)
     y_pred = y_pred.astype(bool)
     
+    # Handle empty ground truth and empty prediction
     if not np.any(y_true) and not np.any(y_pred):
         return 1.0
     
@@ -22,25 +23,36 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
 def calculate_brats_metrics(gt_data, pred_data):
+    """
+    Calculates all 4 BraTS metrics: ET, TC, WT, and the diagnostic NCR.
+    """
+    
     # ET = Enhancing Tumor (Label 3)
     gt_et = (gt_data == 3)
     pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
-
-    # TC = Tumor Core (Labels 1 + 3)
+    
+    # TC = Tumor Core (Label 1 + Label 3)
     gt_tc = np.logical_or(gt_data == 1, gt_data == 3)
     pred_tc = np.logical_or(pred_data == 1, pred_data == 3)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
-    # WT = Whole Tumor (All labels > 0, i.e., 1 + 2 + 3)
+    # WT = Whole Tumor (All labels > 0)
     gt_wt = (gt_data > 0)
     pred_wt = (pred_data > 0)
     dice_wt = dice_coefficient(gt_wt, pred_wt)
     
+    # --- DIAGNOSTIC METRIC ---
+    # NCR = Necrotic/Non-Enhancing Core (Label 1)
+    gt_ncr = (gt_data == 1)
+    pred_ncr = (pred_data == 1)
+    dice_ncr = dice_coefficient(gt_ncr, pred_ncr)
+    
     return {
         "dice_et": float(dice_et),
         "dice_tc": float(dice_tc),
-        "dice_wt": float(dice_wt)
+        "dice_wt": float(dice_wt),
+        "dice_ncr": float(dice_ncr)  # <-- New metric
     }
 
 def fix_floating_point_labels(segmentation):
@@ -49,120 +61,50 @@ def fix_floating_point_labels(segmentation):
     return fixed_seg
 
 def find_best_slice(seg1, seg2):
-    combined_seg = np.logical_or(seg1 > 0, seg2 > 0)
+    combined_seg = np.logical_or(seg1, seg2) # Assumes masks are boolean
     slice_scores = np.sum(combined_seg, axis=(0, 1))
     if np.sum(slice_scores) == 0:
         return seg1.shape[2] // 2
     return np.argmax(slice_scores)
 
 def log_wandb_visualization(gt_data, pred_data, file_name):
-    # This function is back to its original state.
-    # It correctly plots 1=Edema (blue/green), 2=NT (yellow), 3=ET (red)
+    """
+    --- UPDATED VISUALIZATION ---
+    Logs a side-by-side of the TUMOR CORE (TC) mask to isolate the failure.
+    """
     try:
-        best_slice = find_best_slice(gt_data, pred_data)
+        # Create TC masks (Label 1 + Label 3)
+        gt_tc_mask = np.logical_or(gt_data == 1, gt_data == 3)
+        pred_tc_mask = np.logical_or(pred_data == 1, pred_data == 3)
         
-        gt_slice = gt_data[:, :, best_slice]
-        pred_slice = pred_data[:, :, best_slice]
+        best_slice = find_best_slice(gt_tc_mask, pred_tc_mask)
+        
+        gt_slice = gt_tc_mask[:, :, best_slice]
+        pred_slice = pred_tc_mask[:, :, best_slice]
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
         
-        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=3)
-        ax1.set_title(f"Ground Truth\n{file_name}")
+        # Use grayscale cmap for a binary mask
+        ax1.imshow(gt_slice, cmap='gray', vmin=0, vmax=1)
+        ax1.set_title(f"Ground Truth (Tumor Core)\n{file_name}")
         ax1.axis('off')
         
-        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=3)
-        ax2.set_title(f"Prediction\n{file_name}")
+        ax2.imshow(pred_slice, cmap='gray', vmin=0, vmax=1)
+        ax2.set_title(f"Prediction (Tumor Core)\n{file_name}")
         ax2.axis('off')
         
         plt.tight_layout()
         
-        wandb.log({f"samples/{Path(file_name).stem}": wandb.Image(fig)})
+        # Log to a new W&B key to avoid confusion
+        wandb.log({f"samples_TC_Mask/{Path(file_name).stem}": wandb.Image(fig)})
         
         plt.close(fig)
     except Exception as e:
         print(f"  [W&B] Error creating visualization for {file_name}: {e}")
 
-
-def check_label_proportions(results_folder, ground_truth_folder):
-    """
-    Loads the first sample from GT and Pred folders to check
-    label proportions for debugging.
-    """
-    print("\n--- 🔬 LABEL PROPORTION PRE-CHECK ---")
-    try:
-        prediction_files = sorted([f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')])
-        if not prediction_files:
-            print("  [Warning] No prediction files found to check.")
-            return
-
-        first_file = prediction_files[0]
-        pred_path = os.path.join(results_folder, first_file)
-        gt_path = os.path.join(ground_truth_folder, first_file)
-
-        if not os.path.exists(gt_path):
-            print(f"  [Warning] Ground truth not found for first file: {gt_path}")
-            return
-
-        print(f"  Checking first file: {first_file}")
-
-        # Load images
-        pred_img = nib.load(pred_path)
-        gt_img = nib.load(gt_path)
-
-        # Get and fix data using the same logic as the main script
-        pred_data = fix_floating_point_labels(pred_img.get_fdata())
-        gt_data = fix_floating_point_labels(gt_img.get_fdata())
-
-        total_voxels = gt_data.size
-        if total_voxels == 0:
-            print("  [Warning] Loaded empty image.")
-            return
-
-        # Calculate proportions
-        gt_counts = {label: 0 for label in range(5)} # Check 0,1,2,3,4
-        pred_counts = {label: 0 for label in range(5)}
-
-        gt_labels, gt_cts = np.unique(gt_data, return_counts=True)
-        for label, count in zip(gt_labels, gt_cts):
-            if label in gt_counts:
-                gt_counts[label] = count
-
-        pred_labels, pred_cts = np.unique(pred_data, return_counts=True)
-        for label, count in zip(pred_labels, pred_cts):
-            if label in pred_counts:
-                pred_counts[label] = count
-
-        # Print report
-        print("  Label Proportions (% of total voxels):")
-        print("  Label | Ground Truth | Prediction   | Description (BraTS 2021/23)")
-        print("  ------------------------------------------------------------------")
-        
-        labels_desc = {
-            0: "Background",
-            1: "Label 1 (NCR/NET)",
-            2: "Label 2 (Edema)",
-            3: "Label 3 (ET)",
-            4: "Label 4 (Legacy ET - SHOULD BE 0%)" 
-        }
-
-        for i in range(5): # Check 0, 1, 2, 3, 4
-            gt_prop = (gt_counts[i] / total_voxels) * 100
-            pred_prop = (pred_counts[i] / total_voxels) * 100
-            print(f"    {i}   | {gt_prop:10.6f}% | {pred_prop:10.6f}% | {labels_desc.get(i, 'Unknown')}")
-        
-        print("  ------------------------------------------------------------------")
-        
-        if gt_counts[4] > 0 or pred_counts[4] > 0:
-             print("  [ALERT] Label '4' detected! This script expects ET=3.")
-        else:
-             print("  [INFO] No Label '4' detected. Labeling seems correct (ET=3).")
-        print("--- END PRE-CHECK ---\n")
-
-    except Exception as e:
-        print(f"  [Error] Failed to run label proportion check: {e}")
-
 def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=10):
-    all_scores = {"dice_et": [], "dice_tc": [], "dice_wt": []}
+    # Add 'dice_ncr' to the metrics to track
+    all_scores = {"dice_et": [], "dice_tc": [], "dice_wt": [], "dice_ncr": []}
     case_results = {}
     viz_counter = 0
 
@@ -188,21 +130,22 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
 
                 result_data = fix_floating_point_labels(result_data_raw)
                 gt_data = fix_floating_point_labels(gt_data_raw)
-
-                # --- Make sure to remove the debug probe ---
                 
                 metrics = calculate_brats_metrics(gt_data, result_data)
                 
                 case_results[file_name] = metrics
                 
+                # Append all metrics
                 all_scores["dice_et"].append(metrics["dice_et"])
                 all_scores["dice_tc"].append(metrics["dice_tc"])
                 all_scores["dice_wt"].append(metrics["dice_wt"])
+                all_scores["dice_ncr"].append(metrics["dice_ncr"])
                 
-                print(f"  {file_name}: ET={metrics['dice_et']:.4f}, TC={metrics['dice_tc']:.4f}, WT={metrics['dice_wt']:.4f}", flush=True)
+                print(f"  {file_name}: ET={metrics['dice_et']:.4f}, TC={metrics['dice_tc']:.4f}, WT={metrics['dice_wt']:.4f}, NCR={metrics['dice_ncr']:.4f}", flush=True)
 
                 if wandb.run and viz_counter < num_viz_samples:
                     print(f"  [W&B] Logging visualization for {file_name}...", flush=True)
+                    # Pass the full data, the function will create the masks
                     log_wandb_visualization(gt_data, result_data, file_name)
                     viz_counter += 1
 
@@ -328,11 +271,6 @@ def setup_subset_directory(original_dataset_dir, num_cases):
         
         if not base_image_files:
             print("[Warning] No '*_0000.nii.gz' files found. Trying to glob all '*.nii*'...")
-            base_image_files = sorted(glob.glob(f"{original_dataset_dir}/imagesTr/*.nii*"))
-            case_ids = sorted(list(set([f.split(os.sep)[-1].split('_')[0] for f in base_image_files])))
-            base_image_files = [os.path.join(original_dataset_dir, "imagesTr", f"{cid}_0000.nii.gz") for cid in case_ids]
-            
-            print("Trying robust fallback: globbing labels and finding matching images.")
             all_labels = sorted(glob.glob(f"{original_dataset_dir}/labelsTr/*.nii*"))
             base_image_files = []
             for label_path in all_labels:
@@ -352,8 +290,6 @@ def setup_subset_directory(original_dataset_dir, num_cases):
         count = 0
         for base_img_path in cases_to_link:
             base_file_name = os.path.basename(base_img_path)
-            
-            # --- TYPO FIX 1 ---
             case_id = base_file_name.replace("_0000.nii.gz", "")
             
             label_name = f"{case_id}.nii.gz"
@@ -428,7 +364,6 @@ def main():
         print("   Skipping W&B logging. Did you run 'wandb login'?")
         run = None
 
-    # --- TYPO FIX 2 ---
     dataset_dir_to_use = args.dataset_dir
     temp_dir_obj = None
     
@@ -477,13 +412,6 @@ def main():
             if run: run.finish(exit_code=1)
             return
         
-        # --- RUN LABEL PROPORTION PRE-CHECK ---
-        try:
-            check_label_proportions(args.output_dir, ground_truth_dir)
-        except Exception as _:
-            # Don't fail evaluation for pre-check errors; just warn and continue
-            print("[Warning] Label proportion pre-check failed. Continuing to Dice calculation.")
-
         print(f"\n🔍 Calculating Dice scores...")
         summary_stats, case_results = calculate_dice_scores(
             args.output_dir, 
@@ -494,7 +422,7 @@ def main():
         if summary_stats:
             results_file = "synthesis_evaluation_results.txt"
             with open(results_file, "w") as f:
-                f.write("Synthesis Model Evaluation Results (Per-Region)\n")
+                f.write("Baseline Model Evaluation Results (Per-Region)\n")
                 f.write("==================================================\n\n")
                 f.write("Summary Statistics:\n")
                 for region, stats in summary_stats.items():
@@ -503,18 +431,18 @@ def main():
                 
                 f.write(f"\nNumber of cases: {len(case_results)}\n")
                 f.write("==================================================\n")
-                f.write("\nPer-case results (Filename: ET, TC, WT):\n")
+                f.write("\nPer-case results (Filename: ET, TC, WT, NCR):\n")
                 for case, metrics in sorted(case_results.items()):
-                    f.write(f"  {case}: {metrics['dice_et']:.4f}, {metrics['dice_tc']:.4f}, {metrics['dice_wt']:.4f}\n")
+                    f.write(f"  {case}: {metrics['dice_et']:.4f}, {metrics['dice_tc']:.4f}, {metrics['dice_wt']:.4f}, {metrics['dice_ncr']:.4f}\n")
             
             print(f"\n📄 Results saved to: {results_file}")
             
-            print(f"\n🎯 FINAL RESULTS:")
-            print(f"Your CWDM synthesis models achieved:")
+            print(f"\n🎯 FINAL BASELINE RESULTS:")
+            print(f"The pre-trained nnUNet model achieved:")
             for region, stats in summary_stats.items():
                 print(f"  Average {region.upper()} Dice: {stats['mean']:.4f} ± {stats['std']:.4f}")
-            print(f"\nThis measures how well synthesized modalities preserve")
-            print(f"segmentation-relevant information!")
+            print(f"\nThis is your BASELINE. Your synthesized data should aim")
+            print(f"to meet or exceed these scores.")
             
             if run:
                 print("\n[W&B] Logging results to Weights & Biases...")
@@ -529,14 +457,16 @@ def main():
                 wandb.summary.update(summary_log)
                 print("  [WB] Logged summary statistics.")
 
-                table_columns = ["Filename", "DICE_ET", "DICE_TC", "DICE_WT"]
+                # Update table columns to include NCR
+                table_columns = ["Filename", "DICE_ET", "DICE_TC", "DICE_WT", "DICE_NCR"]
                 table = wandb.Table(columns=table_columns)
                 for case, metrics in sorted(case_results.items()):
                     table.add_data(
                         case, 
                         metrics['dice_et'], 
                         metrics['dice_tc'], 
-                        metrics['dice_wt']
+                        metrics['dice_wt'],
+                        metrics['dice_ncr'] # Add new metric
                     )
                 run.log({"dice_results_per_case": table})
                 print("  [W&B] Logged per-case results table.")
