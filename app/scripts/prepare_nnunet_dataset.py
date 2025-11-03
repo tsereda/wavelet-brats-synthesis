@@ -165,7 +165,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="Convert completed dataset to nnUNet format")
-    parser.add_argument("--input_dir", default="app/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData",
+    parser.add_argument("--input_dir", default="../app/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData",
                        help="Directory containing completed pseudo-validation data")
     parser.add_argument("--output_dir", default="./Dataset137_BraTS21_Completed", 
                        help="Output directory for nnUNet format dataset")
