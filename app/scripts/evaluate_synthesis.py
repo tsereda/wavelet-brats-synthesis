@@ -22,14 +22,20 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
 def calculate_brats_metrics(gt_data, pred_data):
+    # This function now works correctly because the input data
+    # has been remapped to 1=NT, 2=Edema, 3=ET.
+    
+    # ET = Enhancing Tumor (Label 3)
     gt_et = (gt_data == 3)
     pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
     
+    # TC = Tumor Core (Label 1 [NT] + Label 3 [ET])
     gt_tc = np.logical_or(gt_data == 1, gt_data == 3)
     pred_tc = np.logical_or(pred_data == 1, pred_data == 3)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
+    # WT = Whole Tumor (All labels > 0)
     gt_wt = (gt_data > 0)
     pred_wt = (pred_data > 0)
     dice_wt = dice_coefficient(gt_wt, pred_wt)
@@ -45,6 +51,25 @@ def fix_floating_point_labels(segmentation):
     fixed_seg = np.clip(fixed_seg, 0, 4)
     return fixed_seg
 
+# --- 1 of 2: ADDED THIS NEW FUNCTION ---
+def remap_brats_labels(segmentation):
+    """
+    Remaps labels from (1=Edema, 2=NT) to (1=NT, 2=Edema).
+    This fixes both metrics and visualization downstream.
+    """
+    seg_copy = segmentation.copy()
+    
+    # Use a temporary value (e.g., 99) to safely swap
+    is_1 = (seg_copy == 1) # Edema
+    is_2 = (seg_copy == 2) # NT
+    
+    seg_copy[is_1] = 99 # Edema (1) -> Temp (99)
+    seg_copy[is_2] = 1  # NT (2) -> 1
+    seg_copy[seg_copy == 99] = 2 # Temp (99) -> 2
+    
+    return seg_copy
+# --- END OF FIX ---
+
 def find_best_slice(seg1, seg2):
     combined_seg = np.logical_or(seg1 > 0, seg2 > 0)
     slice_scores = np.sum(combined_seg, axis=(0, 1))
@@ -53,6 +78,8 @@ def find_best_slice(seg1, seg2):
     return np.argmax(slice_scores)
 
 def log_wandb_visualization(gt_data, pred_data, file_name):
+    # This function now works correctly because the input data
+    # has already been remapped.
     try:
         best_slice = find_best_slice(gt_data, pred_data)
         
@@ -102,8 +129,14 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 result_data_raw = result_img.get_fdata()
                 gt_data_raw = gt_img.get_fdata()
 
-                result_data = fix_floating_point_labels(result_data_raw)
-                gt_data = fix_floating_point_labels(gt_data_raw)
+                result_data_fixed = fix_floating_point_labels(result_data_raw)
+                gt_data_fixed = fix_floating_point_labels(gt_data_raw)
+
+                # --- 2 of 2: ADDED THIS REMAPPING STEP ---
+                # Remap from (1=Edema, 2=NT) to (1=NT, 2=Edema)
+                result_data = remap_brats_labels(result_data_fixed)
+                gt_data = remap_brats_labels(gt_data_fixed)
+                # --- END OF FIX ---
 
                 metrics = calculate_brats_metrics(gt_data, result_data)
                 
@@ -312,7 +345,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate synthesis models using segmentation performance")
     parser.add_argument("--dataset_dir", default="./Dataset137_BraTS21_Completed",
                        help="nnUNet format dataset directory")
-    parser.add_argument("--output_dir", default="./segmentation_outputs",
+    parser.addargument("--output_dir", default="./segmentation_outputs",
                        help="Output directory for segmentation results")
     parser.add_argument("--skip_segmentation", action="store_true",
                        help="Skip segmentation and only calculate Dice scores")
