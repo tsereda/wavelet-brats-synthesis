@@ -345,7 +345,7 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate synthesis models using segmentation performance")
     parser.add_argument("--dataset_dir", default="./Dataset137_BraTS21_Completed",
                        help="nnUNet format dataset directory")
-    parser.addargument("--output_dir", default="./segmentation_outputs",
+    parser.add_argument("--output_dir", default="./segmentation_outputs",
                        help="Output directory for segmentation results")
     parser.add_argument("--skip_segmentation", action="store_true",
                        help="Skip segmentation and only calculate Dice scores")
