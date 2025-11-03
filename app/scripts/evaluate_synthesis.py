@@ -105,11 +105,13 @@ def log_wandb_visualization(gt_data, pred_data, file_name):
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
         
-        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=3)
+        # --- FIX IS HERE (vmax=4) ---
+        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=4) 
         ax1.set_title(f"Ground Truth\n{file_name}")
         ax1.axis('off')
         
-        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=3)
+        # --- FIX IS HERE (vmax=4) ---
+        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=4)
         ax2.set_title(f"Prediction\n{file_name}")
         ax2.axis('off')
         
