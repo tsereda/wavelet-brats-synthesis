@@ -13,23 +13,32 @@ import os
 
 def copy_BraTS_segmentation_and_convert_labels_to_nnUNet(in_file: str, out_file: str) -> None:
     """
-    Convert BraTS segmentation labels to nnUNet format.
-    BraTS: 0, 1, 2, 4 -> nnUNet: 0, 1, 2, 3
+    Convert BraTS segmentation labels to the correct nnUNet format.
+    - BraTS 1 (NCR) -> nnUNet 1 (NCR)
+    - BraTS 2 (ED)  -> nnUNet 2 (ED)
+    - BraTS 4 (ET)  -> nnUNet 3 (ET)
+    - Also handles source files that are *already* in nnUNet format (1, 2, 3).
     """
     img = sitk.ReadImage(in_file)
     img_npy = sitk.GetArrayFromImage(img)
 
     uniques = np.unique(img_npy)
     for u in uniques:
-        if u not in [0, 1, 2, 4]:
+        # Allow 0, 1, 2, 3 (nnUNet) and 4 (BraTS ET)
+        if u not in [0, 1, 2, 3, 4]: 
             print(f"Warning: unexpected label {u} in {in_file}")
 
     seg_new = np.zeros_like(img_npy)
-    seg_new[img_npy == 4] = 3  # enhancing tumor
-    seg_new[img_npy == 2] = 1  # edema 
-    seg_new[img_npy == 1] = 2  # non-enhancing tumor core
     
-    img_corr = sitk.GetImageFromArray(seg_new)
+    # Standard nnUNet mapping:
+    seg_new[img_npy == 1] = 1  # NCR/NET (Necrosis)
+    seg_new[img_npy == 2] = 2  # Edema
+    
+    # Handle both 3 (from correct nnUNet source) and 4 (from old BraTS source)
+    seg_new[img_npy == 3] = 3  # Enhancing Tumor
+    seg_new[img_npy == 4] = 3  # Enhancing Tumor
+
+    img_corr = sitk.GetImageFromArray(seg_new.astype(np.uint8))
     img_corr.CopyInformation(img)
     sitk.WriteImage(img_corr, out_file)
 
@@ -133,8 +142,9 @@ def generate_dataset_json(output_base_dir, num_cases):
         },
         "labels": {
             "background": 0,
+            # nnUNet standard: 1=NCR, 2=ED, 3=ET
             "whole tumor": [1, 2, 3],
-            "tumor core": [2, 3], 
+            "tumor core": [1, 3],  # <-- THE FIX (NCR + ET)
             "enhancing tumor": [3]
         },
         "numTraining": num_cases,
