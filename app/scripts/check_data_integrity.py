@@ -56,7 +56,7 @@ def check_dataset_integrity(data_dir):
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Check BRATS dataset integrity")
-    parser.add_argument("--data_dir", default="./datasets/BRATS2023/training", 
+    parser.add_argument("--data_dir", default="app/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData", 
                        help="Directory to check")
     
     args = parser.parse_args()
