@@ -3,7 +3,7 @@
 Complete evaluation pipeline for synthesis models.
 Runs nnUNet segmentation and calculates Dice scores.
 
-(MODIFIED TO INCLUDE WEIGHTS & BIASES LOGGING + VISUALIZATION + SUBSETTING)
+(MODIFIED TO INCLUDE WEIGHTS & BIASES LOGGING + VISUALIZATION + SUBSETTING v2)
 """
 
 import os
@@ -286,18 +286,20 @@ def run_nnunet_prediction(dataset_dir, output_dir):
         print("   Make sure nnUNet v1 (pip install nnunet) is installed and in your PATH.")
         return False
 
-# --- NEW FUNCTION ---
-def setup_subset_directory(original_dataset_dir, num_files):
+# --- ###################################################### ---
+# --- THIS IS THE FIXED FUNCTION ---
+# --- ###################################################### ---
+def setup_subset_directory(original_dataset_dir, num_cases):
     """
-    Creates a temporary directory and symlinks a subset of files into it
-    for nnUNet prediction.
+    Creates a temporary directory and symlinks a subset of cases into it
+    for nnUNet prediction. This is now "case-aware" for BraTS.
     """
     try:
         # Create a persistent temporary directory
         temp_dir_obj = tempfile.TemporaryDirectory(prefix="nnunet_subset_")
         temp_dir_path = temp_dir_obj.name
         
-        print(f"Creating temporary subset directory for {num_files} files at: {temp_dir_path}")
+        print(f"Creating temporary subset directory for {num_cases} cases at: {temp_dir_path}")
         
         # Create nnUNet structure
         temp_images_tr = os.path.join(temp_dir_path, "imagesTr")
@@ -305,40 +307,80 @@ def setup_subset_directory(original_dataset_dir, num_files):
         os.makedirs(temp_images_tr, exist_ok=True)
         os.makedirs(temp_labels_tr, exist_ok=True)
         
-        # Get source files (images)
-        source_images = sorted(glob.glob(f"{original_dataset_dir}/imagesTr/*.nii*"))
+        # Get source files (images) - We glob for _0000.nii.gz to get case IDs
+        # This assumes BraTS format (CASEID_0000.nii.gz, CASEID_0001.nii.gz, etc.)
+        base_image_files = sorted(glob.glob(f"{original_dataset_dir}/imagesTr/*_0000.nii.gz"))
         
-        if not source_images:
-            raise FileNotFoundError(f"No images found in {original_dataset_dir}/imagesTr")
+        if not base_image_files:
+            # Fallback for different naming (e.g., if files are just CASEID.nii.gz)
+            print("[Warning] No '*_0000.nii.gz' files found. Trying to glob all '*.nii*'...")
+            base_image_files = sorted(glob.glob(f"{original_dataset_dir}/imagesTr/*.nii*"))
+            # This is tricky, we might get _0000, _0001, etc. all as "base" files.
+            # Let's filter them to get unique case IDs.
+            case_ids = sorted(list(set([f.split(os.sep)[-1].split('_')[0] for f in base_image_files])))
+            base_image_files = [os.path.join(original_dataset_dir, "imagesTr", f"{cid}_0000.nii.gz") for cid in case_ids]
+            # This is still not robust, let's try finding the label first.
             
-        # Get the subset
-        files_to_link = source_images[:num_files]
-        print(f"Linking {len(files_to_link)} files...")
+            # --- Robust Fallback ---
+            print("Trying robust fallback: globbing labels and finding matching images.")
+            all_labels = sorted(glob.glob(f"{original_dataset_dir}/labelsTr/*.nii*"))
+            base_image_files = []
+            for label_path in all_labels:
+                label_name = os.path.basename(label_path)
+                # Assuming image modality _0000 has the corresponding name
+                # e.g., label 'BraTS-001.nii.gz' -> image 'BraTS-001_0000.nii.gz'
+                img_name = label_name.replace(".nii.gz", "_0000.nii.gz")
+                img_path = os.path.join(original_dataset_dir, "imagesTr", img_name)
+                if os.path.exists(img_path):
+                    base_image_files.append(img_path)
+            
+            if not base_image_files:
+                raise FileNotFoundError(f"Could not determine base image files in {original_dataset_dir}/imagesTr")
+            print(f"Found {len(base_image_files)} base files via label matching.")
+
+
+        # Get the subset of cases
+        cases_to_link = base_image_files[:num_cases]
+        print(f"Linking {len(cases_to_link)} cases...")
         
         count = 0
-        for img_path in files_to_link:
-            file_name = os.path.basename(img_path)
+        for base_img_path in cases_to_link:
+            base_file_name = os.path.basename(base_img_path)
             
-            # Find matching label. Handles .nii or .nii.gz
-            label_name = file_name.replace("_0000.nii.gz", ".nii.gz").replace("_0000.nii", ".nii")
+            # Extract case ID (e.g., "BraTS-GLI-00000-000" from "BraTS-GLI-00000-000_0000.nii.gz")
+            case_id = base_file_name.replace("_0000.nii.gz", "")
+            
+            # Find matching label (e.g., "BraTS-GLI-00000-000.nii.gz")
+            label_name = f"{case_id}.nii.gz"
             label_path = os.path.join(original_dataset_dir, "labelsTr", label_name)
 
             if not os.path.exists(label_path):
-                # Try finding the exact same filename in labelsTr (for BraTS 2021+ format)
-                label_path_alt = os.path.join(original_dataset_dir, "labelsTr", file_name)
-                if os.path.exists(label_path_alt):
-                    label_path = label_path_alt
-                else:
-                    print(f"  [Warning] No label found for {file_name}. (Looked for {label_path})")
-                    continue
+                print(f"  [Warning] No label found for case {case_id}. (Looked for {label_path}). Skipping case.")
+                continue
             
-            # Create symlinks
-            # Use os.path.abspath to ensure symlinks are absolute
-            os.symlink(os.path.abspath(img_path), os.path.join(temp_images_tr, file_name))
-            os.symlink(os.path.abspath(label_path), os.path.join(temp_labels_tr, file_name)) # Use same name for label
-            count += 1
+            # 1. Link the label
+            os.symlink(os.path.abspath(label_path), os.path.join(temp_labels_tr, label_name))
+            
+            # 2. Link all 4 image modalities
+            modalities_found = 0
+            for i in range(4): # 0000, 0001, 0002, 0003
+                modality_file = f"{case_id}_000{i}.nii.gz"
+                modality_path = os.path.join(original_dataset_dir, "imagesTr", modality_file)
+                
+                if os.path.exists(modality_path):
+                    os.symlink(os.path.abspath(modality_path), os.path.join(temp_images_tr, modality_file))
+                    modalities_found += 1
+                else:
+                    print(f"  [Warning] Missing modality {modality_file} for case {case_id}")
+            
+            if modalities_found == 4:
+                count += 1
+            else:
+                print(f"  [Warning] Incomplete case {case_id}. Only found {modalities_found}/4 modalities. nnU-Net may fail.")
+                # We still increment, as some files were linked.
+                count += 1 
 
-        print(f"✅ Successfully linked {count} image/label pairs.")
+        print(f"✅ Successfully linked {count} cases.")
         
         if count == 0:
             raise RuntimeError("Failed to link any files. Check paths and file names.")
@@ -350,6 +392,9 @@ def setup_subset_directory(original_dataset_dir, num_files):
         if 'temp_dir_obj' in locals():
             temp_dir_obj.cleanup()
         return None, None
+# --- ###################################################### ---
+# --- END OF FIXED FUNCTION ---
+# --- ###################################################### ---
 
 
 # --- MODIFIED FUNCTION ---
