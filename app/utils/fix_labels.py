@@ -6,7 +6,7 @@ from pathlib import Path
 import glob
 import random
 import argparse
-import time  # <-- ADDED for safety countdown
+import time
 
 def load_nifti(path):
     """Load and return nifti data and the nifti object"""
@@ -120,15 +120,15 @@ def main():
     print("=" * 60)
     
     # Find all segmentation files RECURSIVELY
-    search_pattern = f"{input_dir}/**/*.nii.gz" # <-- CHANGED
-    print(f"🔍 Searching recursively for .nii.gz files in: {input_dir}")
-    pred_files = glob.glob(search_pattern, recursive=True) # <-- CHANGED
+    search_pattern = f"{input_dir}/**/*-seg.nii.gz" # <-- THE FIX IS HERE
+    print(f"🔍 Searching recursively for '*-seg.nii.gz' files in: {input_dir}") # <-- AND HERE
+    pred_files = glob.glob(search_pattern, recursive=True)
     
     if not pred_files:
-        print(f"❌ No .nii.gz files found in {input_dir}/ or its subdirectories")
+        print(f"❌ No '*-seg.nii.gz' files found in {input_dir}/ or its subdirectories")
         return
     
-    print(f"✅ Found {len(pred_files)} total files recursively")
+    print(f"✅ Found {len(pred_files)} total segmentation files recursively")
     
     # Randomly select 10 files
     if len(pred_files) < 10:
@@ -195,7 +195,7 @@ def main():
         # --- NEW WARNING BLOCK ---
         print("\n" + "!"*60)
         print("🚨🚨🚨    W A R N I N G    🚨🚨🚨")
-        print(" This will OVERWRITE all {len(pred_files)} original files IN-PLACE.")
+        print(f" This will OVERWRITE all {len(pred_files)} '*-seg.nii.gz' files IN-PLACE.")
         print(" This operation CANNOT BE UNDONE. Make sure you have a backup.")
         print(" Press Ctrl+C in the next 3 seconds to cancel.")
         print("!"*60)
@@ -212,8 +212,6 @@ def main():
         # --- END WARNING BLOCK ---
             
         print(f"\n🚀 Processing all {len(pred_files)} files IN-PLACE...")
-        
-        # --- REMOVED output_dir CREATION ---
         
         successful = 0
         total_files_analyzed = 0
@@ -232,7 +230,7 @@ def main():
                 seg_data, nii_obj = load_nifti(seg_file)
                 fixed_seg = swap_labels_1_2(seg_data)
                 
-                output_path = seg_file  # <-- CHANGED: Overwrite original file
+                output_path = seg_file  # Overwrite original file
                 
                 # Save as int16 to ensure clean integer labels
                 fixed_nii = nib.Nifti1Image(fixed_seg.astype(np.int16), 
@@ -250,9 +248,8 @@ def main():
                 total_files_analyzed += 1
         
         print(f"\n🎉 Batch processing complete! {successful}/{total_files_analyzed} files processed")
-        print(f"📁 All files were modified IN-PLACE.") # <-- CHANGED
+        print(f"📁 All '*-seg.nii.gz' files were modified IN-PLACE.")
         print("💡 All files now have clean integer labels AND 1↔2 swap applied!")
-        # <-- CHANGED test command
         print(f"🔍 Test with: python app/utils/check_single_seg.py {input_dir}/[...]/<filename>")
     else:
         print("👋 Preview only - no batch processing performed")
