@@ -94,6 +94,7 @@ spec:
 
         #nnUnet
         #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
+        #https://zenodo.org/record/4003545/files/Task001_BrainTumour.zip?download=1"
 
         tail -f /dev/null
    

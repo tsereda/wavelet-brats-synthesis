@@ -1,6 +1,7 @@
 """
 Complete evaluation pipeline for synthesis models.
 Runs nnUNet segmentation and calculates Dice scores.
+(MODIFIED TO USE LOCAL nnUNet v1 MODEL)
 """
 
 import os
@@ -9,6 +10,7 @@ import argparse
 import nibabel as nib
 import numpy as np
 from pathlib import Path
+import shutil  # <-- ADDED IMPORT
 
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     """Calculate Dice coefficient between two binary masks."""
@@ -40,7 +42,7 @@ def calculate_dice_scores(results_folder, ground_truth_folder):
                     result_data = result_img.get_fdata()
                     gt_data = gt_img.get_fdata()
 
-                    dice = dice_coef_multilabel(gt_data, result_data, 4)
+                    dice = dice_coef_multilabel(gt_data, result_data, 4) # 4 labels for BraTS
                     dice_scores.append(dice)
                     case_results[file_name] = dice
                     
@@ -65,9 +67,9 @@ def calculate_dice_scores(results_folder, ground_truth_folder):
         print("No valid segmentation files found for comparison.")
         return None, None, {}
 
-def setup_nnunet_environment():
-    """Setup nnUNet environment variables."""
-    # Use a local path instead of /app
+# --- MODIFIED FUNCTION ---
+def setup_nnunet_environment(local_model_path="3d_fullres"):
+    """Setup nnUNet environment variables and move local model."""
     local_root = "./nnunet_data" 
     
     os.environ["nnUNet_raw"] = os.path.abspath(f"{local_root}/raw")
@@ -79,87 +81,86 @@ def setup_nnunet_environment():
         path = os.environ[path_key]
         os.makedirs(path, exist_ok=True)
     
+    # --- NEW PART ---
+    # Move the unzipped model (3d_fullres) into the expected nnUNet_results directory
+    local_model_src = Path(local_model_path)
+    local_model_dest = Path(os.environ["nnUNet_results"]) / local_model_src.name
+
+    if local_model_src.exists() and local_model_src.is_dir():
+        try:
+            # If it already exists in the destination, remove it first
+            if local_model_dest.exists():
+                print(f"Found existing model at {local_model_dest}, removing first.")
+                shutil.rmtree(local_model_dest)
+            
+            print(f"Moving local model from {local_model_src} to {local_model_dest}...")
+            shutil.move(str(local_model_src), str(local_model_dest))
+            print(f"✅ Moved local model to {local_model_dest}")
+        except Exception as e:
+            print(f"⚠️  Could not move local model: {e}")
+            print(f"    Ensure '{local_model_src}' exists and '{local_model_dest}' is writable.")
+    elif local_model_dest.exists():
+        print(f"✅ Local model already in place at {local_model_dest}")
+    else:
+        print(f"❌ Local model path '{local_model_src}' not found.")
+        print("   Make sure you unzipped 'bratscp.zip' in the same directory as this script.")
+    # --- END NEW PART ---
+
     print("nnUNet environment variables set:")
     print(f"nnUNet_raw: {os.environ['nnUNet_raw']}")
     print(f"nnUNet_preprocessed: {os.environ['nnUNet_preprocessed']}")
     print(f"nnUNet_results: {os.environ['nnUNet_results']}")
 
+# --- MODIFIED FUNCTION ---
 def download_nnunet_weights():
-    """Download pre-trained nnUNet weights if not available."""
-    # Use the path from the environment variable
-    weights_dir = os.path.join(os.environ["nnUNet_results"], "Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/fold_5")
-    os.makedirs(weights_dir, exist_ok=True)
-    
-    checkpoint_path = os.path.join(weights_dir, "checkpoint_final.pth")
-    
-    if not os.path.exists(checkpoint_path):
-        print("Downloading nnUNet weights...")
-        try:
-            # Download using gdown (Google Drive)
-            import gdown
-            
-            # Download checkpoint
-            gdown.download("1n9dqT114udr9Qq8iYEKsJK347iHg9N88", "checkpoint_best.pth", quiet=False)
-            os.rename("checkpoint_best.pth", checkpoint_path)
-            
-            # Download dataset.json  
-            dataset_json_path = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/dataset.json"
-            gdown.download("1A_suxQwElucF3w1HEYg3wMo6dG9OxBHo", dataset_json_path, quiet=False)
-            
-            # Download plans.json
-            plans_json_path = "/app/nnunet/results/Dataset137_BraTS2021/nnUNetTrainer__nnUNetPlans__3d_fullres/plans.json"  
-            gdown.download("1U2b0BTNi8zrJACReoi_W08Fe-wM394wI", plans_json_path, quiet=False)
-            
-            print("✅ nnUNet weights downloaded successfully")
-            
-        except ImportError:
-            print("❌ gdown not installed. Install with: pip install gdown")
-            return False
-        except Exception as e:
-            print(f"❌ Error downloading weights: {e}")
-            return False
-    else:
-        print("✅ nnUNet weights already available")
-    
+    """Bypassed: Using local nnUNet v1 model."""
+    print("✅ Using local nnUNet v1 model. Skipping download.")
     return True
 
+# --- MODIFIED FUNCTION ---
 def run_nnunet_prediction(dataset_dir, output_dir):
-    """Run nnUNet prediction on the dataset."""
+    """Run nnUNet (v1) prediction on the dataset."""
     
-    print(f"Running nnUNet prediction...")
-    print(f"Input: {dataset_dir}/imagesTr")
-    print(f"Output: {output_dir}")
+    print(f"Running nnUNet (v1) prediction...")
     
-    # Create symlink in nnUNet_raw (using the env var)
-    raw_dataset_path = os.path.join(os.environ["nnUNet_raw"], "Dataset137_BraTS2021")
-    if os.path.lexists(raw_dataset_path): # Use lexists for symlinks
-        os.remove(raw_dataset_path)
-        
-    # Ensure dataset_dir is an absolute path for the symlink
-    abs_dataset_dir = os.path.abspath(dataset_dir)
-    os.symlink(abs_dataset_dir, raw_dataset_path)
-    print(f"Created symlink: {raw_dataset_path} -> {abs_dataset_dir}")
+    # Input directory (needs to be absolute)
+    input_dir_abs = os.path.abspath(f"{dataset_dir}/imagesTr")
+    # Output directory (needs to be absolute)
+    output_dir_abs = os.path.abspath(output_dir)
     
-    # Run nnUNet prediction
+    print(f"Input: {input_dir_abs}")
+    print(f"Output: {output_dir_abs}")
+    
+    # --- NOTE ---
+    # The v1 `nnUNet_predict` command takes -i and -o directly.
+    # No need to symlink into nnUNet_raw for prediction.
+
+    # Run nnUNet (v1) prediction
     cmd = [
-        "nnUNetv2_predict",
-        "-i", f"{abs_dataset_dir}/imagesTr",
-        "-o", os.path.abspath(output_dir),
-        "-d", "137",
-        "-c", "3d_fullres", 
-        "-f", "5"
+        "nnUNet_predict",
+        "-i", input_dir_abs,
+        "-o", output_dir_abs,
+        "-t", "Task082_BraTS2020",   # From your unzipped model
+        "-m", "3d_fullres",
+        "-f", "0",                    # From your unzipped model (fold_0)
+        "-tr", "nnUNetTrainerV2"     # From your unzipped model (nnUNetTrainerV2__...)
+        # "--disable_tta",            # Add this for faster prediction (optional)
     ]
     
     try:
         print(f"Running command: {' '.join(cmd)}")
         result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print("✅ nnUNet prediction completed successfully")
+        print("✅ nnUNet (v1) prediction completed successfully")
         return True
     except subprocess.CalledProcessError as e:
-        print(f"❌ nnUNet prediction failed:")
+        print(f"❌ nnUNet (v1) prediction failed:")
         print(f"Return code: {e.returncode}")
         print(f"STDOUT: {e.stdout}")
         print(f"STDERR: {e.stderr}")
+        return False
+    except FileNotFoundError:
+        print(f"❌ 'nnUNet_predict' command not found.")
+        print("   Make sure nnUNet v1 (pip install nnunet) is installed and in your PATH.")
         return False
 
 def main():
@@ -173,7 +174,7 @@ def main():
     
     args = parser.parse_args()
     
-    # Setup nnUNet environment
+    # Setup nnUNet environment (this will now also move your local model)
     setup_nnunet_environment()
     
     # Check if dataset exists
@@ -186,12 +187,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     if not args.skip_segmentation:
-        # Download nnUNet weights if needed
+        # Download nnUNet weights if needed (this is now bypassed)
         if not download_nnunet_weights():
             print("❌ Failed to setup nnUNet weights")
             return
         
-        # Run nnUNet prediction
+        # Run nnUNet prediction (this now runs the v1 command)
         if not run_nnunet_prediction(args.dataset_dir, args.output_dir):
             print("❌ nnUNet prediction failed")
             return
