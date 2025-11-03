@@ -51,6 +51,15 @@ def calculate_brats_metrics(gt_data, pred_data):
         "dice_wt": float(dice_wt)
     }
 
+
+def fix_floating_point_labels(segmentation):
+    """Fix floating point precision issues by rounding to nearest integers"""
+    # Round to nearest integer and clip to valid range [0, 4]
+    # BraTS labels are 0, 1, 2, 3. Clipping to 4 is safe.
+    fixed_seg = np.round(segmentation).astype(np.int16)
+    fixed_seg = np.clip(fixed_seg, 0, 4)
+    return fixed_seg
+
 def calculate_dice_scores(results_folder, ground_truth_folder):
     """Calculate Dice scores between predicted and ground truth segmentations."""
     # Use a dictionary to store lists of scores for each region
@@ -74,8 +83,12 @@ def calculate_dice_scores(results_folder, ground_truth_folder):
                 result_img = nib.load(result_path)
                 gt_img = nib.load(gt_path)
 
-                result_data = result_img.get_fdata()
-                gt_data = gt_img.get_fdata()
+                result_data_raw = result_img.get_fdata()
+                gt_data_raw = gt_img.get_fdata()
+
+                # NEW: Fix floating point precision issues
+                result_data = fix_floating_point_labels(result_data_raw)
+                gt_data = fix_floating_point_labels(gt_data_raw)
 
                 # NEW: Calculate region-specific metrics
                 metrics = calculate_brats_metrics(gt_data, result_data)
