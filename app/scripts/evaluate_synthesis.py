@@ -40,8 +40,8 @@ def calculate_brats_metrics(gt_data, pred_data):
     
     # --- DIAGNOSTIC METRIC ---
     # NCR = Necrotic/Non-Enhancing Core (Label 1)
-    gt_ncr = (gt_data == 1)
-    pred_ncr = (pred_data == 1)
+    gt_ncr = (gt_data == 2)
+    pred_ncr = (pred_data == 2)
     dice_ncr = dice_coefficient(gt_ncr, pred_ncr)
     
     return {
