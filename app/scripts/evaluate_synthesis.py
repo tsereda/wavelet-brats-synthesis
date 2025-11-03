@@ -30,7 +30,7 @@ def calculate_brats_metrics(gt_data, pred_data):
     
     # TC = Tumor Core (Labels 2 + 3)
     gt_tc = np.logical_or(gt_data == 3, gt_data == 2)
-    pred_tc = np.logical_or(pred_data == 3, pred_data == 2)
+    pred_tc = np.logical_or(pred_data == 3, pred_data == 1)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
     # WT = Whole Tumor (All labels > 0, i.e., 1 + 2 + 3)
