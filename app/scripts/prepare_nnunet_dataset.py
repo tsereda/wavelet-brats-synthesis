@@ -33,7 +33,7 @@ def copy_BraTS_segmentation_and_convert_labels_to_nnUNet(in_file: str, out_file:
     img_corr.CopyInformation(img)
     sitk.WriteImage(img_corr, out_file)
 
-def setup_nnunet_dataset(completed_data_dir, output_base_dir="./Dataset137_BraTS21_Completed"):
+def setup_nnunet_dataset(completed_data_dir, output_base_dir="app/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData"):
     """
     Convert completed pseudo-validation dataset to nnUNet format.
     """
