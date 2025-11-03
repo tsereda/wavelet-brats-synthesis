@@ -13,59 +13,113 @@ from pathlib import Path
 import shutil
 
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
-    """Calculate Dice coefficient between two binary masks."""
-    intersection = np.sum(y_true * y_pred)
+    """Calculate Dice coefficient between two boolean masks."""
+    # Ensure boolean
+    y_true = y_true.astype(bool)
+    y_pred = y_pred.astype(bool)
+    
+    # Handle empty cases
+    if not np.any(y_true) and not np.any(y_pred):
+        return 1.0  # Both are empty, perfect match
+    
+    intersection = np.sum(y_true & y_pred)
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
-def dice_coef_multilabel(y_true, y_pred, numLabels):
-    """Calculate average Dice coefficient across multiple labels."""
-    dice = 0
-    for index in range(numLabels):
-        dice += dice_coefficient(y_true == index, y_pred == index)
-    return dice / numLabels
+def calculate_brats_metrics(gt_data, pred_data):
+    """
+    Calculate BraTS region-specific Dice scores (ET, TC, WT).
+    Assumes labels are: 1: Edema, 2: Necrosis, 3: Enhancing Tumor
+    """
+    # Enhancing Tumor (ET) - Label 3
+    gt_et = (gt_data == 3)
+    pred_et = (pred_data == 3)
+    dice_et = dice_coefficient(gt_et, pred_et)
+    
+    # Tumor Core (TC) - Labels 2 + 3
+    gt_tc = np.logical_or(gt_data == 2, gt_data == 3)
+    pred_tc = np.logical_or(pred_data == 2, pred_data == 3)
+    dice_tc = dice_coefficient(gt_tc, pred_tc)
+    
+    # Whole Tumor (WT) - Labels 1 + 2 + 3
+    gt_wt = (gt_data > 0)
+    pred_wt = (pred_data > 0)
+    dice_wt = dice_coefficient(gt_wt, pred_wt)
+    
+    return {
+        "dice_et": float(dice_et),
+        "dice_tc": float(dice_tc),
+        "dice_wt": float(dice_wt)
+    }
 
 def calculate_dice_scores(results_folder, ground_truth_folder):
     """Calculate Dice scores between predicted and ground truth segmentations."""
-    dice_scores = []
+    # Use a dictionary to store lists of scores for each region
+    all_scores = {"dice_et": [], "dice_tc": [], "dice_wt": []}
     case_results = {}
 
-    for file_name in os.listdir(results_folder):
-        if file_name.endswith('.nii') or file_name.endswith('.nii.gz'):
-            result_path = os.path.join(results_folder, file_name)
-            gt_path = os.path.join(ground_truth_folder, file_name)
+    prediction_files = [f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')]
+    
+    if not prediction_files:
+        print(f"No segmentation files found in {results_folder}")
+        return None, {}
 
-            if os.path.exists(gt_path):
-                try:
-                    result_img = nib.load(result_path)
-                    gt_img = nib.load(gt_path)
+    print(f"Found {len(prediction_files)} prediction files. Comparing with {ground_truth_folder}...")
 
-                    result_data = result_img.get_fdata()
-                    gt_data = gt_img.get_fdata()
+    for file_name in prediction_files:
+        result_path = os.path.join(results_folder, file_name)
+        gt_path = os.path.join(ground_truth_folder, file_name)
 
-                    dice = dice_coef_multilabel(gt_data, result_data, 4) # 4 labels for BraTS
-                    dice_scores.append(dice)
-                    case_results[file_name] = dice
-                    
-                    print(f"{file_name}: Dice = {dice:.4f}")
-                    
-                except Exception as e:
-                    print(f"Error processing {file_name}: {e}")
+        if os.path.exists(gt_path):
+            try:
+                result_img = nib.load(result_path)
+                gt_img = nib.load(gt_path)
+
+                result_data = result_img.get_fdata()
+                gt_data = gt_img.get_fdata()
+
+                # NEW: Calculate region-specific metrics
+                metrics = calculate_brats_metrics(gt_data, result_data)
+                
+                # Store metrics for this case
+                case_results[file_name] = metrics
+                
+                # Append to lists for overall average
+                all_scores["dice_et"].append(metrics["dice_et"])
+                all_scores["dice_tc"].append(metrics["dice_tc"])
+                all_scores["dice_wt"].append(metrics["dice_wt"])
+                
+                # NEW: Updated print statement
+                print(f"  {file_name}: ET={metrics['dice_et']:.4f}, TC={metrics['dice_tc']:.4f}, WT={metrics['dice_wt']:.4f}")
+                
+            except Exception as e:
+                print(f"Error processing {file_name}: {e}")
+        else:
+            print(f"Ground truth for {file_name} not found! (Looked for {gt_path})")
+
+    if all_scores["dice_wt"]: # Check if we processed any files
+        # NEW: Calculate summary stats for each region
+        summary_stats = {}
+        for region, scores in all_scores.items():
+            if scores:
+                summary_stats[region] = {
+                    "mean": float(np.mean(scores)),
+                    "std": float(np.std(scores)),
+                    "min": float(np.min(scores)),
+                    "max": float(np.max(scores))
+                }
             else:
-                print(f"Ground truth for {file_name} not found!")
+                summary_stats[region] = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
 
-    if dice_scores:
-        avg_dice = np.mean(dice_scores)
-        std_dice = np.std(dice_scores)
+
         print(f"\n📊 EVALUATION RESULTS:")
-        print(f"Average Dice Coefficient: {avg_dice:.4f} ± {std_dice:.4f}")
-        print(f"Number of cases: {len(dice_scores)}")
-        print(f"Min Dice: {np.min(dice_scores):.4f}")
-        print(f"Max Dice: {np.max(dice_scores):.4f}")
+        for region, stats in summary_stats.items():
+            print(f"  {region.upper()} Avg: {stats['mean']:.4f} ± {stats['std']:.4f} (Min: {stats['min']:.4f}, Max: {stats['max']:.4f})")
+        print(f"Number of cases: {len(all_scores['dice_wt'])}")
         
-        return avg_dice, std_dice, case_results
+        return summary_stats, case_results
     else:
         print("No valid segmentation files found for comparison.")
-        return None, None, {}
+        return None, {}
 
 # --- MODIFIED FUNCTION (v3) ---
 def setup_nnunet_environment(local_model_path="3d_fullres"):
@@ -199,27 +253,34 @@ def main():
         return
     
     print(f"\n🔍 Calculating Dice scores...")
-    avg_dice, std_dice, case_results = calculate_dice_scores(args.output_dir, ground_truth_dir)
+    # NEW: Updated return values
+    summary_stats, case_results = calculate_dice_scores(args.output_dir, ground_truth_dir)
     
-    if avg_dice is not None:
+    # Save results
+    if summary_stats: # Check if we have results
         results_file = "synthesis_evaluation_results.txt"
         with open(results_file, "w") as f:
-            f.write("Synthesis Model Evaluation Results\n")
-            f.write("=====================================\n\n")
-            f.write(f"Average Dice Coefficient: {avg_dice:.4f} ± {std_dice:.4f}\n")
-            f.write(f"Number of cases: {len(case_results)}\n")
-            f.write(f"Min Dice: {min(case_results.values()):.4f}\n")
-            f.write(f"Max Dice: {max(case_results.values()):.4f}\n\n")
-            f.write("Per-case results:\n")
-            for case, dice in sorted(case_results.items()):
-                f.write(f"  {case}: {dice:.4f}\n")
+            f.write("Synthesis Model Evaluation Results (Per-Region)\n")
+            f.write("==================================================\n\n")
+            f.write("Summary Statistics:\n")
+            for region, stats in summary_stats.items():
+                f.write(f"  {region.upper()} Avg: {stats['mean']:.4f} ± {stats['std']:.4f}\n")
+                f.write(f"  {region.upper()} Min: {stats['min']:.4f}, Max: {stats['max']:.4f}\n")
+            
+            f.write(f"\nNumber of cases: {len(case_results)}\n")
+            f.write("==================================================\n")
+            f.write("\nPer-case results (Filename: ET, TC, WT):\n")
+            for case, metrics in sorted(case_results.items()):
+                f.write(f"  {case}: {metrics['dice_et']:.4f}, {metrics['dice_tc']:.4f}, {metrics['dice_wt']:.4f}\n")
         
         print(f"\n📄 Results saved to: {results_file}")
         
+        # Summary
         print(f"\n🎯 FINAL RESULTS:")
         print(f"Your CWDM synthesis models achieved:")
-        print(f"Average Dice Score: {avg_dice:.4f} ± {std_dice:.4f}")
-        print(f"This measures how well synthesized modalities preserve")
+        for region, stats in summary_stats.items():
+            print(f"  Average {region.upper()} Dice: {stats['mean']:.4f} ± {stats['std']:.4f}")
+        print(f"\nThis measures how well synthesized modalities preserve")
         print(f"segmentation-relevant information!")
 
 if __name__ == "__main__":
