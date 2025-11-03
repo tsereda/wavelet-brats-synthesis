@@ -114,6 +114,26 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 result_data_fixed = fix_floating_point_labels(result_data_raw)
                 gt_data_fixed = fix_floating_point_labels(gt_data_raw)
 
+                # --- START DEBUG PROBE ---
+                print("\n" + "="*50)
+                print(f"DEBUGGING FILE: {file_name}")
+
+                gt_labels = np.unique(gt_data_fixed)
+                pred_labels = np.unique(result_data_fixed)
+
+                print(f"  Ground Truth - Unique Labels Found: {gt_labels}")
+                print(f"  Prediction   - Unique Labels Found: {pred_labels}")
+                print("="*50 + "\n")
+
+                # Only stop if this file actually has a tumor, otherwise check the next one
+                if np.sum(gt_data_fixed) > 0:
+                    print(">>> File has a tumor. Stopping script for analysis.")
+                    print(">>> Please paste the debug output above.")
+                    exit()
+                else:
+                    print("... File has no tumor, checking next file...")
+                # --- END DEBUG PROBE ---
+
                 # --- FIX 5: REMOVED the remapping step ---
                 # The data is now 1=NT, 2=Edema, 4=ET, which is correct.
                 result_data = result_data_fixed
