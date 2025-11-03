@@ -263,7 +263,7 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
             else:
                 summary_stats[region] = {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0}
 
-        print(f"\n📊 EVALUATION RESULTS:")
+        print(f"\nEVALUATION RESULTS:")
         for region, stats in summary_stats.items():
             print(f"  {region.upper()} Avg: {stats['mean']:.4f} ± {stats['std']:.4f} (Min: {stats['min']:.4f}, Max: {stats['max']:.4f})")
         print(f"Number of cases: {len(all_scores['dice_wt'])}")
@@ -542,10 +542,9 @@ def main():
                 for case, metrics in sorted(case_results.items()):
                     f.write(f"  {case}: {metrics['dice_et']:.4f}, {metrics['dice_tc']:.4f}, {metrics['dice_wt']:.4f}, {metrics['dice_ncr']:.4f}\n")
             
-            print(f"\n📄 Results saved to: {results_file}")
+            print(f"\nResults saved to: {results_file}")
             
-            print(f"\n🎯 FINAL RESULTS:")
-            print(f"Your CWDM synthesis models achieved:")
+            print(f"\nFINAL RESULTS:")
             for region, stats in summary_stats.items():
                 print(f"  Average {region.upper()} Dice: {stats['mean']:.4f} ± {stats['std']:.4f}")
             print(f"\nThis measures how well synthesized modalities preserve")
