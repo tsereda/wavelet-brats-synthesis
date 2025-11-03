@@ -1,7 +1,7 @@
 """
 Complete evaluation pipeline for synthesis models.
 Runs nnUNet segmentation and calculates Dice scores.
-(MODIFIED TO USE LOCAL nnUNet v1 MODEL)
+(MODIFIED TO USE LOCAL nnUNet v1 MODEL AND CORRECT ENV VARS)
 """
 
 import os
@@ -10,7 +10,7 @@ import argparse
 import nibabel as nib
 import numpy as np
 from pathlib import Path
-import shutil  # <-- ADDED IMPORT
+import shutil
 
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     """Calculate Dice coefficient between two binary masks."""
@@ -72,23 +72,24 @@ def setup_nnunet_environment(local_model_path="3d_fullres"):
     """Setup nnUNet environment variables and move local model."""
     local_root = "./nnunet_data" 
     
-    os.environ["nnUNet_raw"] = os.path.abspath(f"{local_root}/raw")
+    # --- CHANGED: Use the exact variable names nnUNet v1 expects ---
+    os.environ["nnUNet_raw_data_base"] = os.path.abspath(f"{local_root}/raw")
     os.environ["nnUNet_preprocessed"] = os.path.abspath(f"{local_root}/preprocessed") 
-    os.environ["nnUNet_results"] = os.path.abspath(f"{local_root}/results")
+    os.environ["RESULTS_FOLDER"] = os.path.abspath(f"{local_root}/results")
     
     # Create directories
-    for path_key in ["nnUNet_raw", "nnUNet_preprocessed", "nnUNet_results"]:
+    # --- CHANGED: Use the correct variable names ---
+    for path_key in ["nnUNet_raw_data_base", "nnUNet_preprocessed", "RESULTS_FOLDER"]: 
         path = os.environ[path_key]
         os.makedirs(path, exist_ok=True)
     
-    # --- NEW PART ---
-    # Move the unzipped model (3d_fullres) into the expected nnUNet_results directory
+    # Move the unzipped model into the new RESULTS_FOLDER
     local_model_src = Path(local_model_path)
-    local_model_dest = Path(os.environ["nnUNet_results"]) / local_model_src.name
+    # --- CHANGED: Use RESULTS_FOLDER ---
+    local_model_dest = Path(os.environ["RESULTS_FOLDER"]) / local_model_src.name
 
     if local_model_src.exists() and local_model_src.is_dir():
         try:
-            # If it already exists in the destination, remove it first
             if local_model_dest.exists():
                 print(f"Found existing model at {local_model_dest}, removing first.")
                 shutil.rmtree(local_model_dest)
@@ -104,12 +105,13 @@ def setup_nnunet_environment(local_model_path="3d_fullres"):
     else:
         print(f"❌ Local model path '{local_model_src}' not found.")
         print("   Make sure you unzipped 'bratscp.zip' in the same directory as this script.")
-    # --- END NEW PART ---
 
     print("nnUNet environment variables set:")
-    print(f"nnUNet_raw: {os.environ['nnUNet_raw']}")
+    # --- CHANGED: Print the correct variable names ---
+    print(f"nnUNet_raw_data_base: {os.environ['nnUNet_raw_data_base']}")
     print(f"nnUNet_preprocessed: {os.environ['nnUNet_preprocessed']}")
-    print(f"nnUNet_results: {os.environ['nnUNet_results']}")
+    print(f"RESULTS_FOLDER: {os.environ['RESULTS_FOLDER']}")
+
 
 # --- MODIFIED FUNCTION ---
 def download_nnunet_weights():
@@ -123,33 +125,27 @@ def run_nnunet_prediction(dataset_dir, output_dir):
     
     print(f"Running nnUNet (v1) prediction...")
     
-    # Input directory (needs to be absolute)
     input_dir_abs = os.path.abspath(f"{dataset_dir}/imagesTr")
-    # Output directory (needs to be absolute)
     output_dir_abs = os.path.abspath(output_dir)
     
     print(f"Input: {input_dir_abs}")
     print(f"Output: {output_dir_abs}")
     
-    # --- NOTE ---
-    # The v1 `nnUNet_predict` command takes -i and -o directly.
-    # No need to symlink into nnUNet_raw for prediction.
-
-    # Run nnUNet (v1) prediction
     cmd = [
         "nnUNet_predict",
         "-i", input_dir_abs,
         "-o", output_dir_abs,
-        "-t", "Task082_BraTS2020",   # From your unzipped model
+        "-t", "Task082_BraTS2020",
         "-m", "3d_fullres",
-        "-f", "0",                    # From your unzipped model (fold_0)
-        "-tr", "nnUNetTrainerV2"     # From your unzipped model (nnUNetTrainerV2__...)
-        # "--disable_tta",            # Add this for faster prediction (optional)
+        "-f", "0",
+        "-tr", "nnUNetTrainerV2"
     ]
     
     try:
         print(f"Running command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        # --- CHANGED: Pass the current environment to the subprocess ---
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=os.environ.copy()) 
+        
         print("✅ nnUNet (v1) prediction completed successfully")
         return True
     except subprocess.CalledProcessError as e:
