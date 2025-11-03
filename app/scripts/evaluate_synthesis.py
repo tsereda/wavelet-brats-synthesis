@@ -29,7 +29,7 @@ def calculate_brats_metrics(gt_data, pred_data):
     pred_et = (pred_data == 3)
     dice_et = dice_coefficient(gt_et, pred_et)
     
-    # --- FIX 1: METRIC FIX ---
+    # --- THIS IS THE ONLY FIX ---
     # TC = Tumor Core (Label 2 [NT] + Label 3 [ET])
     gt_tc = np.logical_or(gt_data == 2, gt_data == 3)
     pred_tc = np.logical_or(pred_data == 2, pred_data == 3)
@@ -49,7 +49,7 @@ def calculate_brats_metrics(gt_data, pred_data):
 
 def fix_floating_point_labels(segmentation):
     fixed_seg = np.round(segmentation).astype(np.int16)
-    fixed_seg = np.clip(fixed_seg, 0, 4)
+    fixed_seg = np.clip(fixed_seg, 0, 4) # Clip to 4 just in case
     return fixed_seg
 
 def find_best_slice(seg1, seg2):
@@ -60,41 +60,21 @@ def find_best_slice(seg1, seg2):
     return np.argmax(slice_scores)
 
 def log_wandb_visualization(gt_data, pred_data, file_name):
-    # Data is 1=Edema, 2=NT, 3=ET
+    # This function is back to its original state.
+    # It correctly plots 1=Edema (blue/green), 2=NT (yellow), 3=ET (red)
     try:
         best_slice = find_best_slice(gt_data, pred_data)
         
-        gt_slice_raw = gt_data[:, :, best_slice]
-        pred_slice_raw = pred_data[:, :, best_slice]
-        
-        # --- FIX 2: VISUALIZATION FIX ---
-        # Create copies and remap labels just for plotting
-        # This swaps 1 (Edema) and 2 (NT) to match visual expectation
-        
-        # Copy Ground Truth
-        gt_slice_viz = gt_slice_raw.copy()
-        gt_is_1 = (gt_slice_viz == 1) # Find Edema
-        gt_is_2 = (gt_slice_viz == 2) # Find NT
-        gt_slice_viz[gt_is_1] = 2     # Set Edema to 2 (yellow)
-        gt_slice_viz[gt_is_2] = 1     # Set NT to 1 (blue/green)
-        
-        # Copy Prediction
-        pred_slice_viz = pred_slice_raw.copy()
-        pred_is_1 = (pred_slice_viz == 1) # Find Edema
-        pred_is_2 = (pred_slice_viz == 2) # Find NT
-        pred_slice_viz[pred_is_1] = 2     # Set Edema to 2 (yellow)
-        pred_slice_viz[pred_is_2] = 1     # Set NT to 1 (blue/green)
-        # --- End of Fix ---
+        gt_slice = gt_data[:, :, best_slice]
+        pred_slice = pred_data[:, :, best_slice]
         
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 6))
         
-        # Plot the remapped slices
-        ax1.imshow(gt_slice_viz, cmap='jet', vmin=0, vmax=3) 
+        ax1.imshow(gt_slice, cmap='jet', vmin=0, vmax=3)
         ax1.set_title(f"Ground Truth\n{file_name}")
         ax1.axis('off')
         
-        # Plot the remapped slices
-        ax2.imshow(pred_slice_viz, cmap='jet', vmin=0, vmax=3)
+        ax2.imshow(pred_slice, cmap='jet', vmin=0, vmax=3)
         ax2.set_title(f"Prediction\n{file_name}")
         ax2.axis('off')
         
@@ -133,12 +113,9 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
 
                 result_data = fix_floating_point_labels(result_data_raw)
                 gt_data = fix_floating_point_labels(gt_data_raw)
-                
-                # --- REMEMBER TO REMOVE THE DEBUG PROBE ---
-                # Your debug probe code would be here. Delete it.
-                # ---
 
-                # We pass the raw data (1=Edema, 2=NT) to the functions
+                # --- Make sure to remove the debug probe ---
+                
                 metrics = calculate_brats_metrics(gt_data, result_data)
                 
                 case_results[file_name] = metrics
@@ -151,7 +128,6 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
 
                 if wandb.run and viz_counter < num_viz_samples:
                     print(f"  [W&B] Logging visualization for {file_name}...", flush=True)
-                    # The viz function handles its own remapping
                     log_wandb_visualization(gt_data, result_data, file_name)
                     viz_counter += 1
 
@@ -302,7 +278,7 @@ def setup_subset_directory(original_dataset_dir, num_cases):
         for base_img_path in cases_to_link:
             base_file_name = os.path.basename(base_img_path)
             
-            case_id = base_file_name.replace("_0000.nii.gz", "")
+            case_.id = base_file_name.replace("_0000.nii.gz", "")
             
             label_name = f"{case_id}.nii.gz"
             label_path = os.path.join(original_dataset_dir, "labelsTr", label_name)
@@ -376,7 +352,7 @@ def main():
         print("   Skipping W&B logging. Did you run 'wandb login'?")
         run = None
 
-    dataset_dir_to_use = args.dataset_dir
+    dataset_dir_to_use = args.dataset_Ddir
     temp_dir_obj = None
     
     try:
