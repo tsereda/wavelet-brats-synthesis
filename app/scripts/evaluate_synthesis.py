@@ -22,7 +22,7 @@ def dice_coefficient(y_true, y_pred, smooth=1e-6):
     return (2. * intersection + smooth) / (np.sum(y_true) + np.sum(y_pred) + smooth)
 
 def calculate_brats_metrics(gt_data, pred_data):
-    # This function now expects remapped data: 1=NT, 2=Edema, 4=ET
+    # This function now correctly assumes 1=NT, 2=Edema, 4=ET
     
     # --- FIX 1: ET is Label 4 ---
     gt_et = (gt_data == 4)
@@ -34,7 +34,7 @@ def calculate_brats_metrics(gt_data, pred_data):
     pred_tc = np.logical_or(pred_data == 1, pred_data == 4)
     dice_tc = dice_coefficient(gt_tc, pred_tc)
     
-    # WT = Whole Tumor (All labels > 0)
+    # WT = Whole Tumor (All labels > 0, which is 1, 2, or 4)
     gt_wt = (gt_data > 0)
     pred_wt = (pred_data > 0)
     dice_wt = dice_coefficient(gt_wt, pred_wt)
@@ -50,24 +50,7 @@ def fix_floating_point_labels(segmentation):
     fixed_seg = np.clip(fixed_seg, 0, 4)
     return fixed_seg
 
-# --- FIX 3: ADDED THIS NEW REMAP FUNCTION ---
-def remap_brats_labels(segmentation):
-    """
-    Remaps labels from (1=Edema, 2=NT) to (1=NT, 2=Edema).
-    Leaves 4 (ET) unchanged.
-    This fixes both metrics and visualization downstream.
-    """
-    seg_copy = segmentation.copy()
-    
-    is_1 = (seg_copy == 1) # Original Edema
-    is_2 = (seg_copy == 2) # Original NT
-    
-    seg_copy[is_1] = 99 # Edema (1) -> Temp (99)
-    seg_copy[is_2] = 1  # NT (2) -> 1
-    seg_copy[seg_copy == 99] = 2 # Temp (99) -> 2 (Edema)
-    
-    return seg_copy
-# --- END OF FIX ---
+# --- FIX 3: REMOVED the remap_brats_labels function ---
 
 def find_best_slice(seg1, seg2):
     combined_seg = np.logical_or(seg1 > 0, seg2 > 0)
@@ -77,7 +60,7 @@ def find_best_slice(seg1, seg2):
     return np.argmax(slice_scores)
 
 def log_wandb_visualization(gt_data, pred_data, file_name):
-    # This function now receives remapped data: 1=NT, 2=Edema, 4=ET
+    # This function now correctly assumes 1=NT, 2=Edema, 4=ET
     try:
         best_slice = find_best_slice(gt_data, pred_data)
         
@@ -131,10 +114,10 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
                 result_data_fixed = fix_floating_point_labels(result_data_raw)
                 gt_data_fixed = fix_floating_point_labels(gt_data_raw)
 
-                # --- FIX 5: ADDED THIS REMAPPING STEP ---
-                # Remap from (1=Edema, 2=NT) to (1=NT, 2=Edema)
-                result_data = remap_brats_labels(result_data_fixed)
-                gt_data = remap_brats_labels(gt_data_fixed)
+                # --- FIX 5: REMOVED the remapping step ---
+                # The data is now 1=NT, 2=Edema, 4=ET, which is correct.
+                result_data = result_data_fixed
+                gt_data = gt_data_fixed
                 # --- END OF FIX ---
 
                 metrics = calculate_brats_metrics(gt_data, result_data)
@@ -237,7 +220,7 @@ def run_nnunet_prediction(dataset_dir, output_dir):
         "nnUNet_predict",
         "-i", input_dir_abs,
         "-o", output_dir_abs,
-        "-t", "Task082_BraTS2020",
+        "-t", "Task082_BraTS2020", # This task uses 1=NT, 2=Edema, 4=ET
         "-m", "3d_fullres",
         "-f", "0",
         "-tr", "nnUNetTrainerV2"
