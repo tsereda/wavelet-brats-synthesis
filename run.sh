@@ -123,15 +123,15 @@ if [ ! -d "datasets/BRATS2023/training" ] || [ -z "$(ls -A datasets/BRATS2023/tr
         echo "WARNING: Training data not found at /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz"
     fi
     
-    if [ -f "/data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz" ]; then
-        echo "Found validation data archive, extracting..."
-        7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -o.
-        7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
-        mv ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/* datasets/BRATS2023/validation/
-        rm -f ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar*
-    else
-        echo "WARNING: Validation data not found at /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz"
-    fi
+    # if [ -f "/data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz" ]; then
+    #     echo "Found validation data archive, extracting..."
+    #     7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -o.
+    #     7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
+    #     mv ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData/* datasets/BRATS2023/validation/
+    #     rm -f ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar*
+    # else
+    #     echo "WARNING: Validation data not found at /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz"
+    # fi
     
     # Clean hidden files
     find datasets/BRATS2023/training -name ".*" -delete 2>/dev/null || true
