@@ -153,7 +153,7 @@ def train_with_wandb_sweep():
         print(f"🔄 Resuming W&B run: {resume_run_id}")
         # Initialize with specific run ID to resume
         wandb.init(
-            project=os.getenv('WANDB_PROJECT', 'wavelet-brats-synthesis'),
+            project=os.getenv('WANDB_PROJECT', 'test-brats-3dsynth'),
             entity=os.getenv('WANDB_ENTITY', 'timgsereda'),
         )
     else:
