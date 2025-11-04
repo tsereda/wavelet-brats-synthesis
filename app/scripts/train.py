@@ -10,7 +10,7 @@ import os
 import sys
 import torch as th
 import wandb
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # ✅ CRITICAL FIX: Add the parent directory and app directory to Python path
 # This allows importing from guided_diffusion when running from app/scripts/
 current_dir = os.path.dirname(os.path.abspath(__file__))
