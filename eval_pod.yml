@@ -96,6 +96,8 @@ spec:
         #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
         wget "https://zenodo.org/record/4635763/files/Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1"
         unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
+        python scripts/prepare_nnunet_dataset.py
+        python scripts/evaluate_synthesis.py
 
         tail -f /dev/null
    
