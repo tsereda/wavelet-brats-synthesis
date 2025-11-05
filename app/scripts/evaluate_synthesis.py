@@ -10,6 +10,7 @@ import wandb
 import matplotlib.pyplot as plt
 import tempfile
 import glob
+import datetime
 
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     y_true = y_true.astype(bool)
@@ -434,6 +435,52 @@ def setup_subset_directory(original_dataset_dir, num_cases):
             temp_dir_obj.cleanup()
         return None, None
 
+def save_predictions_archive(output_dir, wandb_run_name=None, archive_dir="/data"):
+    """
+    Save predictions to a compressed archive in the specified directory
+    """
+    try:
+        # Generate archive name with timestamp
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        if wandb_run_name:
+            archive_name = f"predictions_{wandb_run_name}_{timestamp}"
+        else:
+            archive_name = f"predictions_{timestamp}"
+        
+        # Create archive directory if it doesn't exist
+        os.makedirs(archive_dir, exist_ok=True)
+        
+        archive_path = os.path.join(archive_dir, f"{archive_name}.tar.gz")
+        
+        # Create the tar.gz archive
+        print(f"\n📦 Creating predictions archive...")
+        print(f"   Source: {output_dir}")
+        print(f"   Destination: {archive_path}")
+        
+        # Use tar command for compression
+        tar_cmd = f"tar -czf {archive_path} -C {os.path.dirname(output_dir)} {os.path.basename(output_dir)}"
+        result = subprocess.run(tar_cmd, shell=True, check=True, capture_output=True, text=True)
+        
+        # Check if file was created
+        if os.path.exists(archive_path):
+            file_size = os.path.getsize(archive_path) / (1024 * 1024)  # Convert to MB
+            print(f"✅ Predictions archive created successfully!")
+            print(f"   Size: {file_size:.2f} MB")
+            print(f"   Path: {archive_path}")
+            return archive_path
+        else:
+            print(f"⚠️ Archive creation command succeeded but file not found at {archive_path}")
+            return None
+            
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Failed to create archive using tar command")
+        print(f"   Command: {tar_cmd}")
+        print(f"   Error: {e.stderr}")
+        return None
+    except Exception as e:
+        print(f"❌ Failed to create predictions archive: {e}")
+        return None
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate synthesis models using segmentation performance")
     parser.add_argument("--dataset_dir", default="./Dataset137_BraTS21_Completed",
@@ -442,6 +489,8 @@ def main():
                        help="Output directory for segmentation results")
     parser.add_argument("--skip_segmentation", action="store_true",
                        help="Skip segmentation and only calculate Dice scores")
+    parser.add_argument("--archive_dir", default="/data",
+                       help="Directory to save the predictions archive (default: /data)")
     
     parser.add_argument("--wandb_project", type=str, default="brats-synthesis-eval",
                         help="W&B project name")
@@ -550,6 +599,15 @@ def main():
             print(f"\nThis measures how well synthesized modalities preserve")
             print(f"segmentation-relevant information!")
             
+            # Save predictions archive if segmentation was run
+            archive_path = None
+            if not args.skip_segmentation:
+                archive_path = save_predictions_archive(
+                    args.output_dir,
+                    args.wandb_run_name,
+                    args.archive_dir
+                )
+            
             if run:
                 print("\n[W&B] Logging results to Weights & Biases...")
                 
@@ -559,6 +617,10 @@ def main():
                     summary_log[f"std_{region}_dice"] = stats['std']
                     summary_log[f"min_{region}_dice"] = stats['min']
                     summary_log[f"max_{region}_dice"] = stats['max']
+                
+                # Add archive path to summary if created
+                if archive_path:
+                    summary_log["predictions_archive"] = archive_path
                 
                 wandb.summary.update(summary_log)
                 print("  [WB] Logged summary statistics.")
