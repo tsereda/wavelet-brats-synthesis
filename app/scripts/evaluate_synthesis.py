@@ -121,6 +121,35 @@ def log_wandb_visualization(gt_data, pred_data, file_name):
     except Exception as e:
         print(f"  [W&B] Error creating visualization for {file_name}: {e}")
 
+def log_segmentation_only_visualization(pred_data, file_name):
+    """
+    Logs segmentation visualization when no ground truth is available
+    """
+    try:
+        # Find best slice based on prediction only
+        slice_scores = np.sum(pred_data > 0, axis=(0, 1))
+        if np.sum(slice_scores) == 0:
+            best_slice = pred_data.shape[2] // 2
+        else:
+            best_slice = np.argmax(slice_scores)
+        
+        pred_slice_full = pred_data[:, :, best_slice]
+        
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        
+        ax.imshow(pred_slice_full, cmap='jet', vmin=0, vmax=3)
+        ax.set_title(f"Segmentation Prediction\n{file_name}")
+        ax.axis('off')
+        
+        plt.tight_layout()
+        
+        # Log segmentation
+        wandb.log({f"segmentations/{Path(file_name).stem}": wandb.Image(fig)})
+        plt.close(fig)
+        
+    except Exception as e:
+        print(f"  [W&B] Error creating segmentation visualization for {file_name}: {e}")
+
 def check_label_proportions(results_folder, ground_truth_folder):
     """
     Loads the first sample from GT and Pred folders to check
@@ -198,6 +227,37 @@ def check_label_proportions(results_folder, ground_truth_folder):
 
     except Exception as e:
         print(f"  [Error] Failed to run label proportion check: {e}")
+
+def log_segmentation_summaries(results_folder, num_viz_samples=10):
+    """
+    Create visualizations of segmentation outputs when no ground truth is available
+    """
+    print("\n📊 Creating segmentation visualizations...")
+    
+    prediction_files = sorted([f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')])
+    
+    if not prediction_files:
+        print("No segmentation files found for visualization")
+        return
+    
+    viz_counter = 0
+    for file_name in prediction_files:
+        if viz_counter >= num_viz_samples:
+            break
+            
+        result_path = os.path.join(results_folder, file_name)
+        
+        try:
+            result_img = nib.load(result_path)
+            result_data = fix_floating_point_labels(result_img.get_fdata())
+            
+            if wandb.run:
+                log_segmentation_only_visualization(result_data, file_name)
+                print(f"  [W&B] Logged segmentation visualization for {file_name}")
+                viz_counter += 1
+                
+        except Exception as e:
+            print(f"Error processing {file_name} for visualization: {e}")
 
 def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=10):
     # Add 'dice_ncr' to the metrics to track
@@ -555,27 +615,53 @@ def main():
         
         ground_truth_dir = f"{dataset_dir_to_use}/labelsTr"
         
-        if not os.path.exists(ground_truth_dir):
-            print(f"❌ Ground truth directory not found: {ground_truth_dir}")
-            if run: run.finish(exit_code=1)
-            return
-        
         if not os.listdir(args.output_dir):
             print(f"❌ No segmentation results found in {args.output_dir}")
             if run: run.finish(exit_code=1)
             return
         
-        # --- NEW FUNCTION CALL ADDED HERE ---
-        check_label_proportions(args.output_dir, ground_truth_dir)
+        # Check if we have any ground truth files before attempting evaluation
+        gt_files = []
+        if os.path.exists(ground_truth_dir):
+            gt_files = [f for f in os.listdir(ground_truth_dir) if f.endswith('.nii') or f.endswith('.nii.gz')]
         
-        print(f"\n🔍 Calculating Dice scores...")
-        summary_stats, case_results = calculate_dice_scores(
-            args.output_dir, 
-            ground_truth_dir,
-            args.num_viz_samples
-        )
+        if gt_files:
+            # Run evaluation with ground truth
+            check_label_proportions(args.output_dir, ground_truth_dir)
+            
+            print(f"\n🔍 Calculating Dice scores...")
+            summary_stats, case_results = calculate_dice_scores(
+                args.output_dir, 
+                ground_truth_dir,
+                args.num_viz_samples
+            )
+        else:
+            # No ground truth available - just create visualizations and save outputs
+            print(f"\n⚠️ No ground truth files found in {ground_truth_dir}")
+            print("Skipping evaluation but will create visualizations and save segmentation outputs...")
+            summary_stats = None
+            case_results = {}
+            
+            # Create visualizations of segmentations without ground truth
+            if wandb.run:
+                log_segmentation_summaries(args.output_dir, args.num_viz_samples)
+        
+        # Save predictions archive regardless of evaluation results
+        archive_path = None
+        if not args.skip_segmentation:
+            archive_path = save_predictions_archive(
+                args.output_dir,
+                args.wandb_run_name,
+                args.archive_dir
+            )
+            
+            # Count and report segmentation files
+            seg_files = [f for f in os.listdir(args.output_dir) if f.endswith('.nii') or f.endswith('.nii.gz')]
+            print(f"\n✅ Saved {len(seg_files)} segmentation files to archive")
+            print(f"   Archive location: {archive_path}")
         
         if summary_stats:
+            # We have evaluation results - save them
             results_file = "synthesis_evaluation_results.txt"
             with open(results_file, "w") as f:
                 f.write("Synthesis Model Evaluation Results (Per-Region)\n")
@@ -599,15 +685,6 @@ def main():
             print(f"\nThis measures how well synthesized modalities preserve")
             print(f"segmentation-relevant information!")
             
-            # Save predictions archive if segmentation was run
-            archive_path = None
-            if not args.skip_segmentation:
-                archive_path = save_predictions_archive(
-                    args.output_dir,
-                    args.wandb_run_name,
-                    args.archive_dir
-                )
-            
             if run:
                 print("\n[W&B] Logging results to Weights & Biases...")
                 
@@ -623,7 +700,7 @@ def main():
                     summary_log["predictions_archive"] = archive_path
                 
                 wandb.summary.update(summary_log)
-                print("  [WB] Logged summary statistics.")
+                print("  [W&B] Logged summary statistics.")
 
                 # Include NCR in the table columns
                 table_columns = ["Filename", "DICE_ET", "DICE_TC", "DICE_WT", "DICE_NCR"]
@@ -638,10 +715,21 @@ def main():
                     )
                 run.log({"dice_results_per_case": table})
                 print("  [W&B] Logged per-case results table.")
-                print("  [W&B] Logged both visualization formats: 'samples/' and 'samples_TC_Mask/'")
-                
-                print(f"✅ W&B Run finished: {run.url}")
-                run.finish()
+                print("  [W&B] Logged visualization formats")
+        else:
+            # No evaluation results but we still have segmentations
+            print(f"\n✅ Segmentation completed without evaluation (no ground truth)")
+            
+            if run and archive_path:
+                # Log basic info to W&B even without evaluation
+                wandb.summary.update({"predictions_archive": archive_path})
+                seg_count = len([f for f in os.listdir(args.output_dir) if f.endswith('.nii') or f.endswith('.nii.gz')])
+                wandb.summary.update({"num_segmentations": seg_count})
+                print("  [W&B] Logged archive path and segmentation count.")
+        
+        if run:
+            print(f"✅ W&B Run finished: {run.url}")
+            run.finish()
             
     except Exception as e:
         print(f"\n--- SCRIPT FAILED ---")
