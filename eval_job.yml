@@ -27,7 +27,7 @@ spec:
         command: ["/bin/bash", "-c"]
         args:
           - |
-            sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+            sudo apt-get update && sudo apt-get install -y git wget p7zip-full zip
             pip install nibabel gdown einops SimpleITK batchgenerators nnunet
             
             # Clone repository
@@ -88,6 +88,8 @@ spec:
             python scripts/evaluate_synthesis.py
             zip -r GT.zip synthesis_outputs
             ls /data/
+            ls synthesis_outputs
+            ls /data/synthesis_outputs
 
             
         env:
