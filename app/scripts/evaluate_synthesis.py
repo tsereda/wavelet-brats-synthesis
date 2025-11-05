@@ -435,7 +435,7 @@ def setup_subset_directory(original_dataset_dir, num_cases):
             temp_dir_obj.cleanup()
         return None, None
 
-def save_predictions_archive(output_dir, wandb_run_name=None, archive_dir="/data"):
+def save_predictions_archive(output_dir, wandb_run_name=None, archive_dir="synthesis_outputs"):
     """
     Save predictions to a compressed archive in the specified directory
     """

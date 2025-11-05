@@ -84,7 +84,10 @@ spec:
             wget "https://zenodo.org/record/4635763/files/Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1"
             unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
             python scripts/prepare_nnunet_dataset.py
+            mkdir synthesis_outputs
             python scripts/evaluate_synthesis.py
+            zip -r GT.zip synthesis_outputs
+            ls /data/
 
             
         env:

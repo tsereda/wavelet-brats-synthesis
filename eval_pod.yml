@@ -98,6 +98,7 @@ spec:
         unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
         python scripts/prepare_nnunet_dataset.py
         python scripts/evaluate_synthesis.py
+        ls /data/
 
         tail -f /dev/null
    
