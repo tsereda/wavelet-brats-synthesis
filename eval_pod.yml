@@ -50,8 +50,8 @@ spec:
         
         # Run setup script
         echo "[3/5] Running setup script..."
-        7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
-        7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
+        7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+        7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
         mkdir checkpoints
         chmod +x checkpoints
         python setupeval.py \

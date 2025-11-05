@@ -37,8 +37,8 @@ spec:
             
             # Run setup script
             echo "[3/5] Running setup script..."
-            7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
-            7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
+            7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+            7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
             mkdir checkpoints
             chmod +x checkpoints
             python setupeval.py \
@@ -51,24 +51,24 @@ spec:
             sudo chmod +x /data/synthesis_outputs
             mkdir synthesis_outputs
 
-            7z x /data/400kCheckpoints.zip 
-            cp t1c/brats_t1c_349000_sampled_100.pt checkpoints/brats_t1c_349000_sampled_100.pt
+            # 7z x /data/400kCheckpoints.zip 
+            # cp t1c/brats_t1c_349000_sampled_100.pt checkpoints/brats_t1c_349000_sampled_100.pt
 
             # Run evaluation
-            echo "[4/5] Running evaluation..."
-            python scripts/complete_dataset.py \
-              --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
-              --output_dir ./synthesis_outputs \
-              --checkpoint_dir checkpoints \
-              --evaluation_mode \
-              --evaluate_metrics \
-              --target_modality t1c \
-              --diffusion_steps 100 \
-              --wandb_mode online \
-              --wandb_project brats-evaluation
+            # echo "[4/5] Running evaluation..."
+            # python scripts/complete_dataset.py \
+            #   --input_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
+            #   --output_dir ./synthesis_outputs \
+            #   --checkpoint_dir checkpoints \
+            #   --evaluation_mode \
+            #   --evaluate_metrics \
+            #   --target_modality t1c \
+            #   --diffusion_steps 100 \
+            #   --wandb_mode online \
+            #   --wandb_project brats-evaluation
 
-            tar -czf t1cdbk400k.tar.gz synthesis_outputs
-            cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
+            # tar -czf t1cdbk400k.tar.gz synthesis_outputs
+            # cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
             
             echo "[5/6] Synthesis Evaluation complete!"
             echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
