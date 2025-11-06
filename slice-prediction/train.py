@@ -158,7 +158,7 @@ def get_model(model_type, wavelet_name, img_size, device):
             spatial_dims=2,
             in_channels=8,
             out_channels=4,
-            features=(32, 64, 128, 256, 512),
+            features=(32, 32, 64, 128, 256, 32),
             act='ReLU',
             norm='batch',
             dropout=0.0
