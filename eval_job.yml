@@ -86,6 +86,20 @@ spec:
             python scripts/prepare_nnunet_dataset.py
             mkdir synthesis_outputs
             python scripts/evaluate_synthesis.py
+            # First, let's check what we have
+            ls -la ./segmentation_outputs/ | head -10
+
+            # Count the files
+            ls -1 ./segmentation_outputs/*.nii.gz | wc -l
+
+            # Create the archive with sudo permissions and save it to /data
+            sudo tar -czf /data/segmentation_results_$(date +%Y%m%d_%H%M%S).tar.gz -C . segmentation_outputs
+
+            # Check if it worked
+            sudo ls -la /data/segmentation_results_*.tar.gz
+
+            # Make it readable
+            sudo chmod 644 /data/segmentation_results_*.tar.gz
             zip -r GT.zip synthesis_outputs
             ls /data/
 
