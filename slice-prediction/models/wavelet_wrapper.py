@@ -70,7 +70,7 @@ class WaveletWrapper(nn.Module):
                 spatial_dims=2,
                 in_channels=wavelet_in_channels,
                 out_channels=wavelet_out_channels,
-                features=(32, 64, 128, 256, 512),
+                features=(32, 32, 64, 128, 256, 32),
                 act='ReLU',
                 norm='batch',
                 dropout=0.0
