@@ -152,7 +152,7 @@ def log_segmentation_only_visualization(pred_data, file_name):
     except Exception as e:
         print(f"  [W&B] Error creating segmentation visualization for {file_name}: {e}")
 
-def check_average_label_proportions(results_folder, ground_truth_folder, num_samples=NUM_CHECK_SAMPLES):
+def check_label_proportions(results_folder, ground_truth_folder, num_samples=NUM_CHECK_SAMPLES):
     """
     Loads the first N samples from GT and Pred folders to check
     average label proportions for debugging.
