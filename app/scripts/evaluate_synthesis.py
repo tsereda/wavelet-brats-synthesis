@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import tempfile
 import glob
 import datetime
+import cv2
 
 NUM_CHECK_SAMPLES = 10
 
@@ -66,14 +67,164 @@ def find_best_slice(seg1, seg2):
         return seg1.shape[2] // 2
     return np.argmax(slice_scores)
 
-def log_wandb_visualization(gt_data, pred_data, file_name):
+def find_best_slice_for_inputs(image_data):
+    """Find the slice with highest contrast/information content for input images"""
+    slice_scores = []
+    for slice_idx in range(image_data.shape[2]):
+        slice_data = image_data[:, :, slice_idx]
+        # Use standard deviation as a measure of contrast/information content
+        score = np.std(slice_data)
+        slice_scores.append(score)
+    
+    if len(slice_scores) == 0:
+        return image_data.shape[2] // 2
+    return np.argmax(slice_scores)
+
+def add_contrast_border(image_slice, border_width=3, border_intensity=None):
+    """
+    Add a contrasting border around the image slice
+    
+    Args:
+        image_slice: 2D numpy array
+        border_width: Width of the border in pixels
+        border_intensity: Intensity value for border (auto-calculated if None)
+    
+    Returns:
+        Image slice with border added
+    """
+    bordered_image = image_slice.copy()
+    
+    if border_intensity is None:
+        # Calculate contrasting intensity (use max if image is dark, min if bright)
+        img_mean = np.mean(image_slice)
+        img_max = np.max(image_slice)
+        img_min = np.min(image_slice)
+        
+        if img_mean < (img_max + img_min) / 2:
+            border_intensity = img_max  # Use bright border for dark image
+        else:
+            border_intensity = img_min  # Use dark border for bright image
+    
+    # Add border
+    bordered_image[:border_width, :] = border_intensity  # Top
+    bordered_image[-border_width:, :] = border_intensity  # Bottom
+    bordered_image[:, :border_width] = border_intensity  # Left
+    bordered_image[:, -border_width:] = border_intensity  # Right
+    
+    return bordered_image
+
+def log_input_images_wandb(dataset_dir, case_name, best_slice=None, contr_modality=None, num_modalities=4):
+    """
+    Log input images (T1, T1ce, T2, FLAIR) to W&B
+    
+    Args:
+        dataset_dir: Path to dataset directory
+        case_name: Case identifier (without modality suffix)
+        best_slice: Slice index to visualize (auto-calculated if None)
+        contr_modality: Specific modality to add border to ('t1', 't1c', 't2', 'flair')
+        num_modalities: Number of modalities to expect (default 4)
+    """
+    try:
+        modality_names = ['t1', 't1c', 't2', 'flair']
+        modality_display_names = ['T1', 'T1ce', 'T2', 'FLAIR']
+        modality_files = []
+        modality_data = []
+        
+        # Load all modalities
+        for i in range(num_modalities):
+            modality_file = f"{case_name}_{i:04d}.nii.gz"
+            modality_path = os.path.join(dataset_dir, "imagesTr", modality_file)
+            
+            if os.path.exists(modality_path):
+                try:
+                    img = nib.load(modality_path)
+                    data = img.get_fdata()
+                    modality_files.append(modality_file)
+                    modality_data.append(data)
+                except Exception as e:
+                    print(f"  [Warning] Could not load {modality_file}: {e}")
+                    modality_data.append(None)
+            else:
+                print(f"  [Warning] Modality file not found: {modality_path}")
+                modality_data.append(None)
+        
+        if not any(data is not None for data in modality_data):
+            print(f"  [Warning] No valid modalities found for case {case_name}")
+            return
+        
+        # Find best slice if not provided
+        if best_slice is None:
+            # Use the first valid modality to find the best slice
+            for data in modality_data:
+                if data is not None:
+                    best_slice = find_best_slice_for_inputs(data)
+                    break
+            if best_slice is None:
+                best_slice = modality_data[0].shape[2] // 2 if modality_data[0] is not None else 0
+        
+        # Create figure with all modalities
+        valid_modalities = [(i, data) for i, data in enumerate(modality_data) if data is not None]
+        if not valid_modalities:
+            return
+        
+        n_valid = len(valid_modalities)
+        fig, axes = plt.subplots(1, n_valid, figsize=(4*n_valid, 4))
+        if n_valid == 1:
+            axes = [axes]
+        
+        for plot_idx, (mod_idx, data) in enumerate(valid_modalities):
+            slice_data = data[:, :, best_slice]
+            
+            # Add border if this is the specified modality
+            should_add_border = (contr_modality is not None and 
+                                mod_idx < len(modality_names) and 
+                                modality_names[mod_idx] == contr_modality.lower())
+            
+            if should_add_border:
+                slice_data = add_contrast_border(slice_data, border_width=3)
+            
+            # Normalize for display
+            if np.max(slice_data) > np.min(slice_data):
+                slice_data_norm = (slice_data - np.min(slice_data)) / (np.max(slice_data) - np.min(slice_data))
+            else:
+                slice_data_norm = slice_data
+            
+            axes[plot_idx].imshow(slice_data_norm, cmap='gray')
+            title = modality_display_names[mod_idx] if mod_idx < len(modality_display_names) else f"Mod_{mod_idx}"
+            if should_add_border:
+                title += " (Synthetic)"
+            axes[plot_idx].set_title(title)
+            axes[plot_idx].axis('off')
+        
+        plt.tight_layout()
+        
+        # Log to W&B
+        log_key = f"input_images/{case_name}"
+        if contr_modality:
+            log_key += f"_contr_{contr_modality}"
+        
+        wandb.log({log_key: wandb.Image(fig)})
+        plt.close(fig)
+        
+        print(f"  [W&B] Logged input images for {case_name}")
+        
+    except Exception as e:
+        print(f"  [W&B] Error logging input images for {case_name}: {e}")
+
+def log_wandb_visualization(gt_data, pred_data, file_name, dataset_dir=None, contr_modality=None):
     """
     Logs BOTH visualization formats to W&B:
     1. Original full segmentation with all labels (jet colormap)
     2. Tumor Core (TC) binary masks for detailed analysis
+    3. Input images (always logged if dataset_dir provided)
     """
     try:
         best_slice = find_best_slice(gt_data, pred_data)
+        
+        # === Log input images first (always if dataset_dir provided) ===
+        if dataset_dir:
+            case_name = Path(file_name).stem
+            log_input_images_wandb(dataset_dir, case_name, best_slice, contr_modality)
         
         # === FORMAT 1: Original full segmentation visualization ===
         gt_slice_full = gt_data[:, :, best_slice]
@@ -123,9 +274,10 @@ def log_wandb_visualization(gt_data, pred_data, file_name):
     except Exception as e:
         print(f"  [W&B] Error creating visualization for {file_name}: {e}")
 
-def log_segmentation_only_visualization(pred_data, file_name):
+def log_segmentation_only_visualization(pred_data, file_name, dataset_dir=None, contr_modality=None):
     """
     Logs segmentation visualization when no ground truth is available
+    Also logs input images if dataset_dir provided
     """
     try:
         # Find best slice based on prediction only
@@ -134,6 +286,11 @@ def log_segmentation_only_visualization(pred_data, file_name):
             best_slice = pred_data.shape[2] // 2
         else:
             best_slice = np.argmax(slice_scores)
+        
+        # === Log input images first (always if dataset_dir provided) ===
+        if dataset_dir:
+            case_name = Path(file_name).stem
+            log_input_images_wandb(dataset_dir, case_name, best_slice, contr_modality)
         
         pred_slice_full = pred_data[:, :, best_slice]
         
@@ -255,7 +412,7 @@ def check_label_proportions(results_folder, ground_truth_folder, num_samples=NUM
     except Exception as e:
         print(f"  [Error] Failed to run label proportion check: {e}")
 
-def log_segmentation_summaries(results_folder, num_viz_samples=10):
+def log_segmentation_summaries(results_folder, dataset_dir=None, contr_modality=None, num_viz_samples=10):
     """
     Create visualizations of segmentation outputs when no ground truth is available
     """
@@ -279,14 +436,14 @@ def log_segmentation_summaries(results_folder, num_viz_samples=10):
             result_data = fix_floating_point_labels(result_img.get_fdata())
             
             if wandb.run:
-                log_segmentation_only_visualization(result_data, file_name)
+                log_segmentation_only_visualization(result_data, file_name, dataset_dir, contr_modality)
                 print(f"  [W&B] Logged segmentation visualization for {file_name}")
                 viz_counter += 1
                 
         except Exception as e:
             print(f"Error processing {file_name} for visualization: {e}")
 
-def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=10):
+def calculate_dice_scores(results_folder, ground_truth_folder, dataset_dir=None, contr_modality=None, num_viz_samples=10):
     # Add 'dice_ncr' to the metrics to track
     all_scores = {"dice_et": [], "dice_tc": [], "dice_wt": [], "dice_ncr": []}
     case_results = {}
@@ -329,8 +486,8 @@ def calculate_dice_scores(results_folder, ground_truth_folder, num_viz_samples=1
 
                 if wandb.run and viz_counter < num_viz_samples:
                     print(f"  [W&B] Logging both visualization formats for {file_name}...", flush=True)
-                    # This will log both formats to W&B
-                    log_wandb_visualization(gt_data, result_data, file_name)
+                    # This will log both formats to W&B, including input images
+                    log_wandb_visualization(gt_data, result_data, file_name, dataset_dir, contr_modality)
                     viz_counter += 1
 
             except Exception as e:
@@ -588,6 +745,10 @@ def main():
     
     parser.add_argument("--num_test_files", type=int, default=None,
                         help="Run evaluation on a subset of N files (default: all)")
+    
+    # NEW ARGUMENTS for contrast borders on specific modalities
+    parser.add_argument("--contr", type=str, choices=['t1', 't1c', 't2', 'flair'], default=None,
+                        help="Add contrast border to specific synthetic modality (t1, t1c, t2, or flair)")
 
     args = parser.parse_args()
 
@@ -652,6 +813,12 @@ def main():
         if os.path.exists(ground_truth_dir):
             gt_files = [f for f in os.listdir(ground_truth_dir) if f.endswith('.nii') or f.endswith('.nii.gz')]
         
+        # Always log input images (dataset directory always passed)
+        input_dataset_dir = dataset_dir_to_use
+        print(f"\n📸 Input image logging enabled - dataset dir: {input_dataset_dir}")
+        if args.contr:
+            print(f"   🖼️ Contrast border will be added to {args.contr.upper()} modality")
+        
         if gt_files:
             # Run evaluation with ground truth
             check_label_proportions(args.output_dir, ground_truth_dir)
@@ -660,7 +827,9 @@ def main():
             summary_stats, case_results = calculate_dice_scores(
                 args.output_dir, 
                 ground_truth_dir,
-                args.num_viz_samples
+                dataset_dir=input_dataset_dir,
+                contr_modality=args.contr,
+                num_viz_samples=args.num_viz_samples
             )
         else:
             # No ground truth available - just create visualizations and save outputs
@@ -671,7 +840,12 @@ def main():
             
             # Create visualizations of segmentations without ground truth
             if wandb.run:
-                log_segmentation_summaries(args.output_dir, args.num_viz_samples)
+                log_segmentation_summaries(
+                    args.output_dir, 
+                    dataset_dir=input_dataset_dir,
+                    contr_modality=args.contr,
+                    num_viz_samples=args.num_viz_samples
+                )
         
         # Save predictions archive regardless of evaluation results
         archive_path = None
@@ -743,6 +917,9 @@ def main():
                 run.log({"dice_results_per_case": table})
                 print("  [W&B] Logged per-case results table.")
                 print("  [W&B] Logged visualization formats")
+                print("  [W&B] Logged input images")
+                if args.contr:
+                    print(f"  [W&B] Added contrast borders to {args.contr.upper()} modality")
         else:
             # No evaluation results but we still have segmentations
             print(f"\n✅ Segmentation completed without evaluation (no ground truth)")
@@ -753,6 +930,9 @@ def main():
                 seg_count = len([f for f in os.listdir(args.output_dir) if f.endswith('.nii') or f.endswith('.nii.gz')])
                 wandb.summary.update({"num_segmentations": seg_count})
                 print("  [W&B] Logged archive path and segmentation count.")
+                print("  [W&B] Logged input images")
+                if args.contr:
+                    print(f"  [W&B] Added contrast borders to {args.contr.upper()} modality")
         
         if run:
             print(f"✅ W&B Run finished: {run.url}")
