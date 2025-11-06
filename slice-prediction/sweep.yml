@@ -5,41 +5,28 @@ metric:
   goal: maximize
 
 parameters:
+  # Test all model architectures
   model_type:
-    value: wavelet
+    values:
+      - swin
+      - unet
+      - unetr
   
+  # Test with and without wavelet
+  use_wavelet:
+    values:
+      - true
+      - false
+  
+  # Wavelet type (only used when use_wavelet is true)
+  # The sweep will test all combinations, but wavelet is ignored when use_wavelet=false
   wavelet:
     values:
-      # Haar
-      - haar
-      # Daubechies family
-      - db1
-      - db2
-      - db3
-      - db4
-      - db5
-      - db8
-      - db10
-      # Symlets
-      - sym2
-      - sym3
-      - sym4
-      - sym5
-      - sym8
-      # Coiflets
-      - coif1
-      - coif2
-      - coif3
-      - coif5
-      # Biorthogonal
-      - bior1.3
-      - bior2.2
-      - bior3.3
-      - bior4.4
-      # Reverse biorthogonal
-      - rbio1.3
-      - rbio2.2
-      - rbio3.3
+      - haar       # Simplest, fastest
+      - db2        # Good balance
+      - db4        # More complex
+      - sym3       # Symmetric
+      - coif2      # Coiflets
   
   data_dir:
     value: "BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
@@ -57,4 +44,13 @@ parameters:
     value: 256
   
   num_patients:
-    value: 50  # Use all patients
+    value: 50  # Use subset for faster testing
+
+# This will test combinations like:
+# - swin + no wavelet (baseline)
+# - swin + haar wavelet
+# - swin + db2 wavelet
+# - unet + no wavelet
+# - unet + haar wavelet
+# - etc.
+# Total: 3 models × (1 no-wavelet + 5 wavelets) = 18 unique runs

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# train.py - Complete training script with FIXED dataset loader for BraTS2020 + WAVELET VISUALIZATION + POST-TRAINING EVALUATION
+# train.py - Complete training script with UNET/UNETR support and enhanced dimension logging
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -11,7 +11,7 @@ from time import time
 import torch.multiprocessing
 import cv2
 import wandb
-from monai.networks.nets import SwinUNETR
+from monai.networks.nets import SwinUNETR, UNETR, BasicUNet
 from torch.nn import L1Loss, MSELoss
 from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
@@ -35,10 +35,6 @@ class BraTS2D5Dataset(Dataset):
         self.files = []
         for p in patient_dirs:
             patient_name = os.path.basename(p)
-            
-            # Try different naming patterns for BraTS2020
-            # Pattern 1: BraTS20_Training_001_t1.nii (no .gz)
-            # Pattern 2: BraTS20_Training_001_t1.nii.gz
             
             try:
                 patient_files = {}
@@ -116,10 +112,12 @@ def get_args():
     parser.add_argument('--data_dir', type=str, required=True)
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--model_type', type=str, default='swin', 
-                       choices=['swin', 'wavelet'],
+                       choices=['swin', 'unet', 'unetr'],
                        help='Model architecture to use')
+    parser.add_argument('--use_wavelet', action='store_true',
+                       help='Use wavelet transform (process in wavelet domain)')
     parser.add_argument('--wavelet', type=str, default='haar',
-                       help='Wavelet type (only for wavelet model)')
+                       help='Wavelet type if --use_wavelet is set (haar, db2, sym3, etc.)')
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -132,29 +130,94 @@ def get_args():
     return parser.parse_args()
 
 
-def get_model(model_type, wavelet_name, img_size, device):
-    """Load model based on type"""
+def get_model(model_type, use_wavelet, wavelet_name, img_size, device):
+    """Load model based on type, optionally with wavelet wrapper"""
+    
+    print("\n" + "="*60)
+    print(f"INITIALIZING MODEL: {model_type.upper()}")
+    if use_wavelet:
+        print(f"WITH WAVELET PROCESSING: {wavelet_name}")
+    print("="*60)
+    
+    # Create base model based on architecture type
     if model_type == 'swin':
-        model = SwinUNETR(
+        base_model = SwinUNETR(
             in_channels=8, 
             out_channels=4, 
             feature_size=24, 
             spatial_dims=2
-        ).to(device)
-        print("Loaded Swin-UNETR model")
+        )
+        print("Base Model: Swin-UNETR")
+        print(f"Input channels: 8 (4 modalities × 2 slices)")
+        print(f"Output channels: 4 (4 modalities)")
+        print(f"Feature size: 24")
+        print(f"Spatial dims: 2D")
     
-    elif model_type == 'wavelet':
-        from models.wavelet_diffusion import WaveletDiffusion
-        model = WaveletDiffusion(
-            wavelet_name=wavelet_name,
+    elif model_type == 'unet':
+        base_model = BasicUNet(
+            spatial_dims=2,
             in_channels=8,
             out_channels=4,
-            timesteps=100
-        ).to(device)
-        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
+            features=(32, 64, 128, 256, 512),
+            act='ReLU',
+            norm='batch',
+            dropout=0.0
+        )
+        print("Base Model: Basic U-Net")
+        print(f"Input channels: 8 (4 modalities × 2 slices)")
+        print(f"Output channels: 4 (4 modalities)")
+        print(f"Feature progression: [32, 64, 128, 256, 512]")
+        print(f"Activation: ReLU")
+        print(f"Normalization: BatchNorm")
+    
+    elif model_type == 'unetr':
+        base_model = UNETR(
+            in_channels=8,
+            out_channels=4,
+            img_size=(img_size, img_size),
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            proj_type='conv',
+            norm_name='instance',
+            res_block=True,
+            dropout_rate=0.0,
+            spatial_dims=2
+        )
+        print("Base Model: UNETR (Vision Transformer + CNN decoder)")
+        print(f"Input channels: 8 (4 modalities × 2 slices)")
+        print(f"Output channels: 4 (4 modalities)")
+        print(f"Input size: {img_size}×{img_size}")
+        print(f"Hidden size: 768")
+        print(f"MLP dimension: 3072")
+        print(f"Number of heads: 12")
+        print(f"Projection type: conv")
     
     else:
         raise ValueError(f"Unknown model type: {model_type}")
+    
+    # Apply wavelet wrapper if requested
+    if use_wavelet:
+        from models.wavelet_wrapper import WaveletWrapper
+        model = WaveletWrapper(
+            base_model=base_model,
+            wavelet_name=wavelet_name,
+            in_channels=8,
+            out_channels=4
+        ).to(device)
+        print(f"\n✓ Wavelet wrapper applied: Processing in {wavelet_name} wavelet domain")
+    else:
+        model = base_model.to(device)
+        print("\n✓ Standard spatial domain processing (no wavelet)")
+    
+    # Calculate and print model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\nModel Parameters:")
+    print(f"  Total: {total_params:,}")
+    print(f"  Trainable: {trainable_params:,}")
+    print("="*60 + "\n")
     
     return model
 
@@ -295,10 +358,18 @@ def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, ep
         # Get wavelet decomposition of ground truth (4 channels)
         target_wavelets = model.dwt2d_batch(targets[:1])
         
-        # Visualize the wavelet filter itself
-        filter_fig = visualize_wavelet_filters(wavelet_name)
-        wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_fig)})
-        plt.close(filter_fig)
+        # Print dimensions for debugging
+        print(f"\n>>> Wavelet Decomposition Dimensions (Epoch {epoch}):")
+        print(f"    Input shape: {inputs.shape} -> Wavelet shape: {input_wavelets.shape}")
+        print(f"    Output shape: {outputs.shape} -> Wavelet shape: {output_wavelets.shape}")
+        print(f"    Target shape: {targets.shape} -> Wavelet shape: {target_wavelets.shape}")
+        print(f"    (Each modality becomes 4 subbands: LL, LH, HL, HH)\n")
+        
+        # Visualize the wavelet filter itself (only once at epoch 0)
+        if epoch == 0:
+            filter_fig = visualize_wavelet_filters(wavelet_name)
+            wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_fig)})
+            plt.close(filter_fig)
         
         # Visualize input decomposition (show first 4 modalities = Z-1)
         input_fig = visualize_wavelet_decomposition(
@@ -326,16 +397,109 @@ def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, ep
         )
         wandb.log({f"wavelets/target_decomposition": wandb.Image(target_fig)})
         plt.close(target_fig)
+        
+        # Create a comparison figure showing sample coefficients
+        fig, axes = plt.subplots(3, 5, figsize=(15, 9))
+        
+        # Select T1ce modality (index 1) for detailed comparison
+        mod_idx = 1  # T1ce
+        start_idx = mod_idx * 4
+        
+        # Input coefficients (from Z-1)
+        input_ll = input_wavelets[0, start_idx].cpu().numpy()
+        input_lh = input_wavelets[0, start_idx + 1].cpu().numpy()
+        input_hl = input_wavelets[0, start_idx + 2].cpu().numpy()
+        input_hh = input_wavelets[0, start_idx + 3].cpu().numpy()
+        
+        # Output coefficients
+        output_ll = output_wavelets[0, start_idx].cpu().numpy()
+        output_lh = output_wavelets[0, start_idx + 1].cpu().numpy()
+        output_hl = output_wavelets[0, start_idx + 2].cpu().numpy()
+        output_hh = output_wavelets[0, start_idx + 3].cpu().numpy()
+        
+        # Target coefficients
+        target_ll = target_wavelets[0, start_idx].cpu().numpy()
+        target_lh = target_wavelets[0, start_idx + 1].cpu().numpy()
+        target_hl = target_wavelets[0, start_idx + 2].cpu().numpy()
+        target_hh = target_wavelets[0, start_idx + 3].cpu().numpy()
+        
+        # Row 0: Input
+        axes[0, 0].imshow(inputs[0, mod_idx].cpu().numpy(), cmap='gray')
+        axes[0, 0].set_title('Input (Z-1) T1ce')
+        axes[0, 0].axis('off')
+        
+        axes[0, 1].imshow(input_ll, cmap='gray')
+        axes[0, 1].set_title('Input LL')
+        axes[0, 1].axis('off')
+        
+        axes[0, 2].imshow(input_lh, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[0, 2].set_title('Input LH')
+        axes[0, 2].axis('off')
+        
+        axes[0, 3].imshow(input_hl, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[0, 3].set_title('Input HL')
+        axes[0, 3].axis('off')
+        
+        axes[0, 4].imshow(input_hh, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[0, 4].set_title('Input HH')
+        axes[0, 4].axis('off')
+        
+        # Row 1: Output (Predicted)
+        axes[1, 0].imshow(outputs[0, mod_idx].cpu().numpy(), cmap='gray')
+        axes[1, 0].set_title('Predicted T1ce')
+        axes[1, 0].axis('off')
+        
+        axes[1, 1].imshow(output_ll, cmap='gray')
+        axes[1, 1].set_title('Output LL')
+        axes[1, 1].axis('off')
+        
+        axes[1, 2].imshow(output_lh, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[1, 2].set_title('Output LH')
+        axes[1, 2].axis('off')
+        
+        axes[1, 3].imshow(output_hl, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[1, 3].set_title('Output HL')
+        axes[1, 3].axis('off')
+        
+        axes[1, 4].imshow(output_hh, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[1, 4].set_title('Output HH')
+        axes[1, 4].axis('off')
+        
+        # Row 2: Target (Ground Truth)
+        axes[2, 0].imshow(targets[0, mod_idx].cpu().numpy(), cmap='gray')
+        axes[2, 0].set_title('Target T1ce')
+        axes[2, 0].axis('off')
+        
+        axes[2, 1].imshow(target_ll, cmap='gray')
+        axes[2, 1].set_title('Target LL')
+        axes[2, 1].axis('off')
+        
+        axes[2, 2].imshow(target_lh, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[2, 2].set_title('Target LH')
+        axes[2, 2].axis('off')
+        
+        axes[2, 3].imshow(target_hl, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[2, 3].set_title('Target HL')
+        axes[2, 3].axis('off')
+        
+        axes[2, 4].imshow(target_hh, cmap='RdBu_r', vmin=-0.5, vmax=0.5)
+        axes[2, 4].set_title('Target HH')
+        axes[2, 4].axis('off')
+        
+        plt.suptitle(f'T1ce Wavelet Coefficients Comparison - Epoch {epoch}', fontsize=14)
+        plt.tight_layout()
+        wandb.log({"wavelets/t1ce_comparison": wandb.Image(fig)})
+        plt.close(fig)
 
 
 def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
     
-    # Create run name with wavelet type
-    if args.model_type == 'wavelet':
-        run_name = f"wavelet_{args.wavelet}_{int(time())}"
+    # Create run name with model type and wavelet info
+    if args.use_wavelet:
+        run_name = f"{args.model_type}_wavelet_{args.wavelet}_{int(time())}"
     else:
-        run_name = f"{args.model_type}_reconstruction_{int(time())}"
+        run_name = f"{args.model_type}_baseline_{int(time())}"
     
     wandb.init(project="brats-middleslice-wavelet-sweep", config=vars(args), name=run_name)
     
@@ -354,24 +518,29 @@ def main(args):
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
     # Load model
-    model = get_model(args.model_type, args.wavelet, args.img_size, device)
+    model = get_model(args.model_type, args.use_wavelet, args.wavelet, args.img_size, device)
     wandb.watch(model, log="all", log_freq=100)
     
     # Loss function
-    if args.model_type == 'swin':
+    if args.use_wavelet:
+        loss_function = MSELoss()
+        print("Using MSE loss (for wavelet domain processing)")
+    else:
         loss_function = L1Loss()
         print("Using L1 loss (MAE)")
-    else:
-        loss_function = MSELoss()
-        print("Using MSE loss (for diffusion)")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
-    print(f"Starting training for {args.model_type} ({args.wavelet if args.model_type == 'wavelet' else 'N/A'})...")
+    print(f"\nStarting training for {args.model_type.upper()}{' with ' + args.wavelet + ' wavelet' if args.use_wavelet else ' (no wavelet)'}...")
+    print(f"Dataset: {len(dataset)} slices")
+    print(f"Batch size: {args.batch_size}")
+    print(f"Learning rate: {args.lr}")
+    print(f"Epochs: {args.epochs}\n")
+    
     best_loss = float('inf')
     
     # Log wavelet filter visualization once at the start (for wavelet models)
-    if args.model_type == 'wavelet':
+    if args.use_wavelet:
         filter_fig = visualize_wavelet_filters(args.wavelet)
         wandb.log({"wavelet_filter_kernels": wandb.Image(filter_fig)})
         plt.close(filter_fig)
@@ -384,13 +553,26 @@ def main(args):
         for i, (inputs, targets, slice_indices) in enumerate(data_loader):
             inputs, targets = inputs.to(device), targets.to(device)
             
+            # Print dimensions on first batch of first epoch
+            if epoch == 0 and i == 0:
+                print(f"\n>>> Data Dimensions:")
+                print(f"    Input: {inputs.shape} (batch, channels, height, width)")
+                print(f"    Target: {targets.shape}")
+                print(f"    Batch contains slices: {slice_indices.tolist()[:5]}...\n")
+            
             optimizer.zero_grad()
             
             # Forward pass
-            if args.model_type == 'swin':
-                outputs = model(inputs)
-            else:
-                outputs = model(inputs, t=None)
+            outputs = model(inputs)
+                
+            # Print wavelet dimensions on first batch if using wavelet
+            if epoch == 0 and i == 0 and args.use_wavelet and hasattr(model, 'dwt2d_batch'):
+                with torch.no_grad():
+                    test_wavelets = model.dwt2d_batch(inputs)
+                    print(f">>> Wavelet Transform Dimensions:")
+                    print(f"    Input: {inputs.shape} -> Wavelets: {test_wavelets.shape}")
+                    print(f"    (Each of 8 input channels becomes 4 subbands)")
+                    print(f"    Total wavelet channels: {test_wavelets.shape[1]} = 8 × 4\n")
             
             loss = loss_function(outputs, targets)
             loss.backward()
@@ -417,7 +599,7 @@ def main(args):
                     wandb.log({"reconstruction_preview": wandb.Image(panel)})
                 
                 # Log wavelet decompositions (only for wavelet models, only first batch of epoch)
-                if i == 0 and args.model_type == 'wavelet':
+                if i == 0 and args.use_wavelet:
                     log_wavelet_visualizations(
                         model, inputs, outputs, targets, args.wavelet, epoch
                     )
@@ -434,7 +616,10 @@ def main(args):
         # Save best checkpoint
         if avg_epoch_loss < best_loss:
             best_loss = avg_epoch_loss
-            checkpoint_name = f"{args.model_type}_{args.wavelet if args.model_type == 'wavelet' else 'baseline'}_best.pth"
+            if args.use_wavelet:
+                checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
+            else:
+                checkpoint_name = f"{args.model_type}_baseline_best.pth"
             checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
             torch.save({
                 'epoch': epoch,
@@ -457,7 +642,10 @@ def main(args):
         print("="*60)
         
         # Reload best checkpoint
-        checkpoint_name = f"{args.model_type}_{args.wavelet if args.model_type == 'wavelet' else 'baseline'}_best.pth"
+        if args.use_wavelet:
+            checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
+        else:
+            checkpoint_name = f"{args.model_type}_baseline_best.pth"
         checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
         
         print(f"Loading best checkpoint from {checkpoint_path}...")
@@ -476,8 +664,8 @@ def main(args):
         from evaluate import run_evaluation
         
         # Determine output directory for results
-        if args.model_type == 'wavelet':
-            results_dir = f"./results/{args.model_type}_{args.wavelet}"
+        if args.use_wavelet:
+            results_dir = f"./results/{args.model_type}_wavelet_{args.wavelet}"
         else:
             results_dir = f"./results/{args.model_type}_baseline"
         

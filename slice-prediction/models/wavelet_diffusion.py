@@ -22,13 +22,21 @@ class WaveletDiffusion(nn.Module):
             raise ValueError(f"Invalid wavelet: {wavelet_name}")
         
         print(f"Using wavelet: {self.wavelet.name} (family: {self.wavelet.family_name})")
+        print(f"Filter lengths - Low: {len(self.wavelet.dec_lo)}, High: {len(self.wavelet.dec_hi)}")
         
         # Pre-compute and register wavelet filter coefficients as buffers
         self._init_wavelet_filters()
         
+        # Calculate wavelet space dimensions
+        wavelet_channels = in_channels * 4  # Each input channel becomes 4 subbands
+        print(f"\nWavelet space configuration:")
+        print(f"  Input: {in_channels} channels -> {wavelet_channels} wavelet channels")
+        print(f"  Output: {out_channels} channels -> {out_channels * 4} wavelet channels")
+        print(f"  Spatial reduction: H×W -> (H/2)×(W/2)")
+        
         # U-Net for processing in wavelet space
         self.encoder = nn.Sequential(
-            nn.Conv2d(in_channels * 4, base_channels, 3, padding=1),
+            nn.Conv2d(wavelet_channels, base_channels, 3, padding=1),
             nn.GroupNorm(8, base_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(base_channels, base_channels*2, 3, stride=2, padding=1),
@@ -48,6 +56,9 @@ class WaveletDiffusion(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(base_channels, out_channels * 4, 3, padding=1),
         )
+        
+        print(f"  Encoder: {wavelet_channels} -> {base_channels} -> {base_channels*2} -> {base_channels*4}")
+        print(f"  Decoder: {base_channels*4} -> {base_channels*2} -> {base_channels} -> {out_channels*4}")
     
     def _init_wavelet_filters(self):
         """Initialize wavelet filters as conv kernels for differentiable operations"""
@@ -96,7 +107,15 @@ class WaveletDiffusion(nn.Module):
             coeffs.append(torch.cat([ll, lh, hl, hh], dim=1))
         
         # Concatenate all channels: [B, C*4, H/2, W/2]
-        return torch.cat(coeffs, dim=1)
+        result = torch.cat(coeffs, dim=1)
+        
+        # Print dimensions on first call (training mode only)
+        if self.training and not hasattr(self, '_dims_printed'):
+            print(f"\nDWT Transform: Input {x.shape} -> Wavelet coeffs {result.shape}")
+            print(f"  Each channel split into 4 subbands (LL, LH, HL, HH)")
+            self._dims_printed = True
+        
+        return result
     
     def idwt2d_batch(self, coeffs, target_shape):
         """
@@ -131,6 +150,11 @@ class WaveletDiffusion(nn.Module):
         # Ensure correct output size (handle odd dimensions)
         if result.shape[2:] != target_shape:
             result = F.interpolate(result, size=target_shape, mode='bilinear', align_corners=False)
+        
+        # Print dimensions on first call (training mode only)
+        if self.training and not hasattr(self, '_idwt_dims_printed'):
+            print(f"IDWT Transform: Wavelet coeffs {coeffs.shape} -> Output {result.shape}")
+            self._idwt_dims_printed = True
         
         return result
     
