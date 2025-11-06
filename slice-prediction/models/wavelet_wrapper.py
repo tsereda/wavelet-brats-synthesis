@@ -40,95 +40,66 @@ class WaveletWrapper(nn.Module):
         print(f"    Output transform: {wavelet_out_channels} wavelet channels -> {out_channels} channels")
         print(f"    Spatial reduction: H×W -> (H/2)×(W/2) in wavelet domain")
         
-        # Store the base model with modified channels
-        self.base_model = self._modify_model_channels(base_model, wavelet_in_channels, wavelet_out_channels)
+        # Store the base model - we'll modify it for wavelet space
+        self.base_model = self._create_wavelet_model(base_model, wavelet_in_channels, wavelet_out_channels)
         
         print(f"    Base model adapted for wavelet processing")
     
-    def _modify_model_channels(self, model, new_in_channels, new_out_channels):
+    def _create_wavelet_model(self, original_model, wavelet_in_channels, wavelet_out_channels):
         """
-        Modify the first and last layers of the model to handle wavelet channels
+        Create a new instance of the same model type with wavelet channel counts.
+        This is more reliable than trying to modify existing layers.
         """
-        # Find and replace first conv layer (input layer)
-        for name, module in model.named_children():
-            if isinstance(module, nn.Conv2d):
-                # Found first conv layer, replace it
-                old_conv = module
-                new_conv = nn.Conv2d(
-                    new_in_channels, 
-                    old_conv.out_channels,
-                    kernel_size=old_conv.kernel_size,
-                    stride=old_conv.stride,
-                    padding=old_conv.padding,
-                    dilation=old_conv.dilation,
-                    groups=1,  # Reset groups for new channel count
-                    bias=old_conv.bias is not None
-                )
-                setattr(model, name, new_conv)
-                print(f"    Modified input layer: {name} ({old_conv.in_channels} -> {new_in_channels} channels)")
-                break
-            elif len(list(module.children())) > 0:
-                # Recursively search in submodules
-                self._modify_first_conv(module, new_in_channels)
-                break
+        model_type = type(original_model).__name__
         
-        # Find and replace last conv layer (output layer)
-        self._modify_last_conv(model, new_out_channels)
-        
-        return model
-    
-    def _modify_first_conv(self, module, new_in_channels):
-        """Recursively find and modify the first conv layer"""
-        for name, submodule in module.named_children():
-            if isinstance(submodule, nn.Conv2d):
-                old_conv = submodule
-                new_conv = nn.Conv2d(
-                    new_in_channels,
-                    old_conv.out_channels,
-                    kernel_size=old_conv.kernel_size,
-                    stride=old_conv.stride,
-                    padding=old_conv.padding,
-                    dilation=old_conv.dilation,
-                    groups=1,
-                    bias=old_conv.bias is not None
-                )
-                setattr(module, name, new_conv)
-                return True
-            elif len(list(submodule.children())) > 0:
-                if self._modify_first_conv(submodule, new_in_channels):
-                    return True
-        return False
-    
-    def _modify_last_conv(self, module, new_out_channels):
-        """Find and modify the last conv layer (output layer)"""
-        last_conv_name = None
-        last_conv_parent = None
-        
-        def find_last_conv(module, parent=None, name=None):
-            nonlocal last_conv_name, last_conv_parent
-            for child_name, child in module.named_children():
-                if isinstance(child, nn.Conv2d):
-                    last_conv_name = child_name
-                    last_conv_parent = module
-                elif len(list(child.children())) > 0:
-                    find_last_conv(child, module, child_name)
-        
-        find_last_conv(module)
-        
-        if last_conv_parent and last_conv_name:
-            old_conv = getattr(last_conv_parent, last_conv_name)
-            new_conv = nn.Conv2d(
-                old_conv.in_channels,
-                new_out_channels,
-                kernel_size=old_conv.kernel_size,
-                stride=old_conv.stride,
-                padding=old_conv.padding,
-                dilation=old_conv.dilation,
-                groups=1,
-                bias=old_conv.bias is not None
+        if 'SwinUNETR' in model_type:
+            from monai.networks.nets import SwinUNETR
+            # Create new SwinUNETR with wavelet channels
+            new_model = SwinUNETR(
+                in_channels=wavelet_in_channels,
+                out_channels=wavelet_out_channels,
+                feature_size=24,  # Same as original
+                spatial_dims=2
             )
-            setattr(last_conv_parent, last_conv_name, new_conv)
-            print(f"    Modified output layer: {last_conv_name} ({old_conv.out_channels} -> {new_out_channels} channels)")
+            print(f"    Created new SwinUNETR for wavelet processing")
+            
+        elif 'BasicUNet' in model_type:
+            from monai.networks.nets import BasicUNet
+            # Create new UNet with wavelet channels
+            new_model = BasicUNet(
+                spatial_dims=2,
+                in_channels=wavelet_in_channels,
+                out_channels=wavelet_out_channels,
+                features=(32, 64, 128, 256, 512),
+                act='ReLU',
+                norm='batch',
+                dropout=0.0
+            )
+            print(f"    Created new BasicUNet for wavelet processing")
+            
+        elif 'UNETR' in model_type:
+            from monai.networks.nets import UNETR
+            # For UNETR, we need to handle the smaller spatial size in wavelet domain
+            # The model expects (H/2, W/2) due to wavelet transform
+            new_model = UNETR(
+                in_channels=wavelet_in_channels,
+                out_channels=wavelet_out_channels,
+                img_size=(128, 128),  # Half of 256 due to wavelet downsampling
+                feature_size=16,
+                hidden_size=768,
+                mlp_dim=3072,
+                num_heads=12,
+                proj_type='conv',
+                norm_name='instance',
+                res_block=True,
+                dropout_rate=0.0,
+                spatial_dims=2
+            )
+            print(f"    Created new UNETR for wavelet processing (128x128 wavelet domain)")
+        else:
+            raise NotImplementedError(f"Model type {model_type} not supported for wavelet wrapper")
+        
+        return new_model
     
     def _init_wavelet_filters(self):
         """Initialize wavelet filters as conv kernels for differentiable operations"""

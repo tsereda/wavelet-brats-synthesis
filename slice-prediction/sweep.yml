@@ -12,21 +12,15 @@ parameters:
       - unet
       - unetr
   
-  # Test with and without wavelet
-  use_wavelet:
-    values:
-      - true
-      - false
-  
-  # Wavelet type (only used when use_wavelet is true)
-  # The sweep will test all combinations, but wavelet is ignored when use_wavelet=false
+  # Wavelet type - 'none' means no wavelet processing
   wavelet:
     values:
-      - haar       # Simplest, fastest
-      - db2        # Good balance
-      - db4        # More complex
-      - sym3       # Symmetric
-      - coif2      # Coiflets
+      - none        # No wavelet (baseline)
+      - haar        # Simplest, fastest
+      - db2         # Good balance
+      - db4         # More complex
+      - sym3        # Symmetric
+      - coif2       # Coiflets
   
   data_dir:
     value: "BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
@@ -47,10 +41,10 @@ parameters:
     value: 50  # Use subset for faster testing
 
 # This will test combinations like:
-# - swin + no wavelet (baseline)
+# - swin + none (baseline)
 # - swin + haar wavelet
 # - swin + db2 wavelet
-# - unet + no wavelet
+# - unet + none (baseline) 
 # - unet + haar wavelet
 # - etc.
-# Total: 3 models × (1 no-wavelet + 5 wavelets) = 18 unique runs
+# Total: 3 models × 6 wavelet options = 18 unique runs
