@@ -86,25 +86,66 @@ spec:
           --wandb_mode online \
           --wandb_project brats-evaluation
 
-        # tar -czf t1cdbk400k.tar.gz synthesis_outputs
-        # cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
+        tar -czf t1cdbk400k.tar.gz synthesis_outputs
+        cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
         
-        # echo "[5/6] Synthesis Evaluation complete!"
-        # echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
-        # echo "Outputs saved to: /data/synthesis_outputs"
-        
-        # #Seg evaluation
-        # #SwinUNETR
-        # #https://github.com/Project-MONAI/research-contributions/tree/main/SwinUNETR/BRATS21
-        # #wget https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/fold0_f48_ep300_4gpu_dice0_8854.zip
+        echo "[5/6] Synthesis Evaluation complete!"
+        echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
+        echo "Outputs saved to: /data/synthesis_outputs"
 
-        # #nnUnet
-        # #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
-        # wget "https://zenodo.org/record/4635763/files/Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1"
-        # unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
-        # python scripts/prepare_nnunet_dataset.py
-        # python scripts/evaluate_synthesis.py
-        # ls /data/
+        echo "1/2: Copying segmentation *predictions* into synthesis_outputs with -seg suffix..."
+
+        # Set variables for clarity
+        ORIGINAL_DATA_DIR="ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData"
+        AUGMENTED_DATA_DIR="synthesis_outputs"
+
+        # Loop through all case directories in the augmented set
+        for CASE_DIR in $(ls -d "${AUGMENTED_DATA_DIR}"/*); do
+            CASE_NAME=$(basename "${CASE_DIR}")
+            
+            # Source is the model's prediction file
+            SRC_PRED_FILE="segmentation_outputs/${CASE_NAME}.nii.gz"
+            
+            # Destination uses the required -seg.nii.gz suffix (to satisfy nnUNet conversion)
+            DST_SEG_FILE="${AUGMENTED_DATA_DIR}/${CASE_NAME}/${CASE_NAME}-seg.nii.gz"
+
+            # Check if the source prediction file exists and copy it
+            if [ -f "$SRC_PRED_FILE" ]; then
+                cp "$SRC_PRED_FILE" "$DST_SEG_FILE"
+                # echo "Copied prediction for ${CASE_NAME} as ${CASE_NAME}-seg.nii.gz"
+            else
+                echo "⚠️ Warning: Prediction file not found for ${CASE_NAME} at ${SRC_PRED_FILE}. Skipping copy."
+            fi
+        done
+        
+        #Seg evaluation
+        #SwinUNETR
+        #https://github.com/Project-MONAI/research-contributions/tree/main/SwinUNETR/BRATS21
+        #wget https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/fold0_f48_ep300_4gpu_dice0_8854.zip
+
+        #nnUnet
+        #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
+        wget "https://zenodo.org/record/4635763/files/Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1"
+        unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
+
+
+        echo "2/2: Converting augmented dataset to nnUNet format..."
+
+        # Define the output directory based on your script default
+        NNUNET_OUTPUT_DIR="./Dataset137_BraTS21_Completed"
+
+        # Ensure the conversion script is in the correct location (scripts/prepare_nnunet_dataset.py)
+        python scripts/prepare_nnunet_dataset.py \
+          --input_dir "${AUGMENTED_DATA_DIR}" \
+          --output_dir "${NNUNET_OUTPUT_DIR}"
+
+        echo "---"
+        echo "🎉 NNUNet conversion complete!"
+        echo "Your augmented and converted dataset is ready at: ${NNUNET_OUTPUT_DIR}"
+
+
+        python scripts/evaluate_synthesis.py
+        ls /data/
 
         tail -f /dev/null
    
