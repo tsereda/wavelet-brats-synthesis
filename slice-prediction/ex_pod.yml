@@ -4,7 +4,7 @@ metadata:
   name: midslice-5
   namespace: gai-lina-group
   labels:
-    app: wandb-sweep
+    app: tim.wandb-sweep
 spec:
   nodeSelector:
     nautilus.io/linstor: "true"
@@ -42,7 +42,6 @@ spec:
       - |
         sudo apt-get update && sudo apt-get install -y git wget p7zip-full
         pip install wandb monai
-        # Install nibabel explicitly first
         pip install nibabel>=5.0.0
 
         # Reinstall monai with nibabel support
@@ -57,7 +56,7 @@ spec:
 
         unzip /data/brats20-dataset-training-validation.zip
         pip install PyWavelets
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/d8iroxxv
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/xe3chyhn
 
         tail -f /dev/null
    
