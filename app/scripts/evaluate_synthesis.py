@@ -12,6 +12,8 @@ import tempfile
 import glob
 import datetime
 
+NUM_CHECK_SAMPLES = 10
+
 def dice_coefficient(y_true, y_pred, smooth=1e-6):
     y_true = y_true.astype(bool)
     y_pred = y_pred.astype(bool)
@@ -150,57 +152,79 @@ def log_segmentation_only_visualization(pred_data, file_name):
     except Exception as e:
         print(f"  [W&B] Error creating segmentation visualization for {file_name}: {e}")
 
-def check_label_proportions(results_folder, ground_truth_folder):
+def check_average_label_proportions(results_folder, ground_truth_folder, num_samples=NUM_CHECK_SAMPLES):
     """
-    Loads the first sample from GT and Pred folders to check
-    label proportions for debugging.
+    Loads the first N samples from GT and Pred folders to check
+    average label proportions for debugging.
     """
-    print("\n--- 🔬 LABEL PROPORTION PRE-CHECK ---")
+    print(f"\n--- 🔬 AVERAGE LABEL PROPORTION PRE-CHECK (N={num_samples}) ---")
+    
+    total_gt_counts = {label: 0 for label in range(5)}
+    total_pred_counts = {label: 0 for label in range(5)}
+    total_voxels_sum = 0
+    checked_files = 0
+    
     try:
         prediction_files = sorted([f for f in os.listdir(results_folder) if f.endswith('.nii') or f.endswith('.nii.gz')])
         if not prediction_files:
             print("  [Warning] No prediction files found to check.")
             return
 
-        first_file = prediction_files[0]
-        pred_path = os.path.join(results_folder, first_file)
-        gt_path = os.path.join(ground_truth_folder, first_file)
+        print(f"  Checking the first {min(num_samples, len(prediction_files))} files...")
+        
+        for file_name in prediction_files:
+            if checked_files >= num_samples:
+                break
+                
+            pred_path = os.path.join(results_folder, file_name)
+            gt_path = os.path.join(ground_truth_folder, file_name)
 
-        if not os.path.exists(gt_path):
-            print(f"  [Warning] Ground truth not found for first file: {gt_path}")
+            if not os.path.exists(gt_path):
+                # print(f"  [Warning] Ground truth not found for {file_name}. Skipping.")
+                continue
+
+            # Load images
+            pred_img = nib.load(pred_path)
+            gt_img = nib.load(gt_path)
+
+            # Get and fix data
+            pred_data = fix_floating_point_labels(pred_img.get_fdata())
+            gt_data = fix_floating_point_labels(gt_img.get_fdata())
+
+            total_voxels = gt_data.size
+            if total_voxels == 0:
+                # print(f"  [Warning] Loaded empty image for {file_name}. Skipping.")
+                continue
+
+            # Calculate proportions for this case
+            gt_labels, gt_cts = np.unique(gt_data, return_counts=True)
+            pred_labels, pred_cts = np.unique(pred_data, return_counts=True)
+
+            # Accumulate counts
+            for label, count in zip(gt_labels, gt_cts):
+                if label in total_gt_counts:
+                    total_gt_counts[label] += count
+                    
+            for label, count in zip(pred_labels, pred_cts):
+                if label in total_pred_counts:
+                    total_pred_counts[label] += count
+
+            total_voxels_sum += total_voxels
+            checked_files += 1
+
+        if checked_files == 0:
+            print("  [Warning] No matching Ground Truth files found for prediction files.")
             return
 
-        print(f"  Checking first file: {first_file}")
-
-        # Load images
-        pred_img = nib.load(pred_path)
-        gt_img = nib.load(gt_path)
-
-        # Get and fix data using the same logic as the main script
-        pred_data = fix_floating_point_labels(pred_img.get_fdata())
-        gt_data = fix_floating_point_labels(gt_img.get_fdata())
-
-        total_voxels = gt_data.size
-        if total_voxels == 0:
-            print("  [Warning] Loaded empty image.")
+        # Calculate average proportions
+        if total_voxels_sum == 0:
+            print("  [Warning] Total voxel count is zero.")
             return
-
-        # Calculate proportions
-        gt_counts = {label: 0 for label in range(5)} # Check 0,1,2,3,4
-        pred_counts = {label: 0 for label in range(5)}
-
-        gt_labels, gt_cts = np.unique(gt_data, return_counts=True)
-        for label, count in zip(gt_labels, gt_cts):
-            if label in gt_counts:
-                gt_counts[label] = count
-
-        pred_labels, pred_cts = np.unique(pred_data, return_counts=True)
-        for label, count in zip(pred_labels, pred_cts):
-            if label in pred_counts:
-                pred_counts[label] = count
+            
+        print(f"  Averaging across {checked_files} files...")
 
         # Print report
-        print("  Label Proportions (% of total voxels):")
+        print("  Average Label Proportions (% of total voxels):")
         print("  Label | Ground Truth | Prediction   | Description (BraTS 2021/23)")
         print("  ------------------------------------------------------------------")
         
@@ -212,14 +236,17 @@ def check_label_proportions(results_folder, ground_truth_folder):
             4: "Label 4 (Legacy ET - SHOULD BE 0%)" 
         }
 
+        has_label_4 = False
         for i in range(5): # Check 0, 1, 2, 3, 4
-            gt_prop = (gt_counts[i] / total_voxels) * 100
-            pred_prop = (pred_counts[i] / total_voxels) * 100
+            gt_prop = (total_gt_counts[i] / total_voxels_sum) * 100
+            pred_prop = (total_pred_counts[i] / total_voxels_sum) * 100
             print(f"    {i}   | {gt_prop:10.6f}% | {pred_prop:10.6f}% | {labels_desc.get(i, 'Unknown')}")
-        
+            if i == 4 and (total_gt_counts[4] > 0 or total_pred_counts[4] > 0):
+                has_label_4 = True
+
         print("  ------------------------------------------------------------------")
         
-        if gt_counts[4] > 0 or pred_counts[4] > 0:
+        if has_label_4:
              print("  [ALERT] Label '4' detected! This script expects ET=3.")
         else:
              print("  [INFO] No Label '4' detected. Labeling seems correct (ET=3).")
