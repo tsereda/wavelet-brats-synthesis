@@ -67,6 +67,12 @@ spec:
         7z x /data/400kCheckpoints.zip 
         cp t1c/brats_t1c_349000_sampled_100.pt checkpoints/brats_t1c_349000_sampled_100.pt
 
+        7z x /data/segmentation_results_20251106_022352.tar.gz -o.
+        7z x segmentation_results_20251106_022352.tar -o.
+        ls 
+        ls segmentation_results_20251106_022352
+        ls 
+
         # Run evaluation
         echo "[4/5] Running evaluation..."
         python scripts/complete_dataset.py \
@@ -80,25 +86,25 @@ spec:
           --wandb_mode online \
           --wandb_project brats-evaluation
 
-        tar -czf t1cdbk400k.tar.gz synthesis_outputs
-        cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
+        # tar -czf t1cdbk400k.tar.gz synthesis_outputs
+        # cp t1cdbk400k.tar.gz /data/synthesis_outputs/t1cdbk400k.tar.gz
         
-        echo "[5/6] Synthesis Evaluation complete!"
-        echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
-        echo "Outputs saved to: /data/synthesis_outputs"
+        # echo "[5/6] Synthesis Evaluation complete!"
+        # echo "Check W&B for results: https://wandb.ai/timgsereda/brats-evaluation"
+        # echo "Outputs saved to: /data/synthesis_outputs"
         
-        #Seg evaluation
-        #SwinUNETR
-        #https://github.com/Project-MONAI/research-contributions/tree/main/SwinUNETR/BRATS21
-        #wget https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/fold0_f48_ep300_4gpu_dice0_8854.zip
+        # #Seg evaluation
+        # #SwinUNETR
+        # #https://github.com/Project-MONAI/research-contributions/tree/main/SwinUNETR/BRATS21
+        # #wget https://github.com/Project-MONAI/MONAI-extra-test-data/releases/download/0.8.1/fold0_f48_ep300_4gpu_dice0_8854.zip
 
-        #nnUnet
-        #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
-        wget "https://zenodo.org/record/4635763/files/Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1"
-        unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
-        python scripts/prepare_nnunet_dataset.py
-        python scripts/evaluate_synthesis.py
-        ls /data/
+        # #nnUnet
+        # #https://github.com/MIC-DKFZ/nnUNet/blob/nnunetv1/nnunet/inference/pretrained_models/download_pretrained_model.py
+        # wget "https://zenodo.org/record/4635763/files/Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1"
+        # unzip 'Task082_nnUNetTrainerV2__nnUNetPlansv2.1_5fold.zip?download=1' 
+        # python scripts/prepare_nnunet_dataset.py
+        # python scripts/evaluate_synthesis.py
+        # ls /data/
 
         tail -f /dev/null
    
