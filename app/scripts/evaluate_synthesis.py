@@ -97,7 +97,7 @@ def log_wandb_visualization(gt_data, pred_data, file_name):
         
         # === FORMAT 2: Tumor Core (TC) binary masks ===
         # Create TC masks (Label 1 + Label 3)
-        gt_tc_mask = np.logical_or(gt_data == 2, gt_data == 3)
+        gt_tc_mask = np.logical_or(gt_data == 1, gt_data == 3)
         pred_tc_mask = np.logical_or(pred_data == 1, pred_data == 3)
         
         gt_slice_tc = gt_tc_mask[:, :, best_slice]
