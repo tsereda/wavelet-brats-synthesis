@@ -27,7 +27,7 @@ spec:
         command: ["/bin/bash", "-c"]
         args:
           - |
-            sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+            sudo apt-get update && sudo apt-get install -y git wget p7zip-full zip
             pip install nibabel gdown einops SimpleITK batchgenerators nnunet
             
             # Clone repository
@@ -102,6 +102,8 @@ spec:
             sudo chmod 644 /data/segmentation_results_*.tar.gz
             zip -r GT.zip synthesis_outputs
             ls /data/
+            ls synthesis_outputs
+            ls /data/synthesis_outputs
 
             
         env:
