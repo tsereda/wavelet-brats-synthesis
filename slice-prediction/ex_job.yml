@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-5
+  name: midslice-6
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -39,7 +39,7 @@ spec:
 
             unzip /data/brats20-dataset-training-validation.zip
             pip install PyWavelets
-            wandb agent timgsereda/wavelet-brats-synthesis/10nhil6s
+            wandb agent timgsereda/wavelet-brats-synthesis/mdbmk76v
 
             tail -f /dev/null
       
@@ -72,7 +72,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-5
+          claimName: brats2025-6
       - name: shm
         emptyDir:
           medium: Memory
