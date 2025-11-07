@@ -2,7 +2,7 @@
 """
 Evaluation script for middleslice reconstruction
 Calculates MSE and SSIM for model predictions
-WITH FIXED SSIM CALCULATION AND PER-MODALITY WANDB LOGGING!
+WITH FIXED SSIM CALCULATION, COMPLETE WAVELET VISUALIZATION, AND TIMING STATS!
 """
 
 import torch
@@ -17,14 +17,62 @@ import csv
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import wandb
+from time import perf_counter
 
 from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
 
 
+# Timing stats tracker for evaluation
+class EvaluationTimingStats:
+    def __init__(self):
+        self.reset()
+    
+    def reset(self):
+        self.forward_times = []
+        self.data_load_times = []
+        self.metric_calculation_times = []
+        self.wavelet_transform_times = []
+        self.total_samples = 0
+        
+    def add_forward_time(self, elapsed):
+        self.forward_times.append(elapsed)
+        
+    def add_data_load_time(self, elapsed):
+        self.data_load_times.append(elapsed)
+        
+    def add_metric_time(self, elapsed):
+        self.metric_calculation_times.append(elapsed)
+        
+    def add_wavelet_time(self, elapsed):
+        self.wavelet_transform_times.append(elapsed)
+        
+    def add_samples(self, count):
+        self.total_samples += count
+    
+    def get_stats(self):
+        total_forward_time = sum(self.forward_times)
+        total_data_time = sum(self.data_load_times)
+        total_metric_time = sum(self.metric_calculation_times)
+        total_wavelet_time = sum(self.wavelet_transform_times)
+        
+        return {
+            'avg_forward_time_ms': np.mean(self.forward_times) * 1000 if self.forward_times else 0,
+            'avg_data_load_time_ms': np.mean(self.data_load_times) * 1000 if self.data_load_times else 0,
+            'avg_metric_time_ms': np.mean(self.metric_calculation_times) * 1000 if self.metric_calculation_times else 0,
+            'avg_wavelet_time_ms': np.mean(self.wavelet_transform_times) * 1000 if self.wavelet_transform_times else 0,
+            'total_forward_time_s': total_forward_time,
+            'total_data_time_s': total_data_time,
+            'total_metric_time_s': total_metric_time,
+            'total_wavelet_time_s': total_wavelet_time,
+            'samples_per_second': self.total_samples / total_forward_time if total_forward_time > 0 else 0,
+            'total_samples': self.total_samples
+        }
+
+
 def visualize_wavelet_decomposition(coeffs, title, output_path):
     """
-    Visualize wavelet decomposition coefficients
+    Visualize wavelet decomposition coefficients - FIXED FOR ALL INPUT COMPONENTS
     
     Args:
         coeffs: torch.Tensor [C*4, H/2, W/2] - wavelet coefficients (LL, LH, HL, HH for each channel)
@@ -43,13 +91,18 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
     # Debug print
     print(f"  Debug: coeffs.shape = {coeffs.shape}, C = {C}, total_channels = {total_channels}")
     
-    # For input (8 modalities), only show first 4
-    if C > 4:
-        print(f"  Warning: Expected 4 modalities but got C={C} (total_channels={total_channels})")
-        print(f"  Will only visualize first 4 modalities")
-        C = 4
-    
-    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+    # Determine labels based on number of channels
+    if C == 8:  # Input with Z-1 and Z+1 slices
+        modalities = [
+            'T1(Z-1)', 'T1ce(Z-1)', 'T2(Z-1)', 'FLAIR(Z-1)',  # First 4: Z-1 slices
+            'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)'   # Next 4: Z+1 slices
+        ]
+        C = min(C, 8)  # Show all 8
+        print(f"  Visualizing ALL 8 input channels (Z-1 and Z+1 slices)")
+    else:  # Output/target with 4 modalities
+        modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+        C = min(C, 4)  # Show first 4 only
+        print(f"  Visualizing 4 output/target channels")
     
     fig = plt.figure(figsize=(16, 4*C))
     gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
@@ -156,7 +209,7 @@ def calculate_metrics(prediction, ground_truth):
 
 def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     """
-    Evaluate model on entire dataset
+    Evaluate model on entire dataset WITH COMPLETE TIMING STATS
     
     Args:
         model: trained model
@@ -174,6 +227,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     predictions_dir = Path(output_dir) / 'predictions'
     predictions_dir.mkdir(parents=True, exist_ok=True)
     
+    # Initialize timing stats
+    timing_stats = EvaluationTimingStats()
+    
     # Create wavelet directories if needed
     if save_wavelets:
         wavelet_dir = Path(output_dir) / 'wavelets'
@@ -183,6 +239,7 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
         print("Will save wavelet coefficients and visualizations")
     
     print(f"Evaluating on {len(data_loader)} batches...")
+    print(f"Measuring detailed timing statistics...")
     
     # For logging sample predictions to wandb
     sample_logged = False
@@ -192,18 +249,36 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     running_ssim_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
     
     with torch.no_grad():
-        for batch_idx, (inputs, targets, slice_indices) in enumerate(tqdm(data_loader)):
+        for batch_idx, batch_data in enumerate(tqdm(data_loader)):
+            # Time data loading (approximate)
+            data_start = perf_counter()
+            
+            inputs, targets, slice_indices = batch_data
             inputs = inputs.to(device)
             targets = targets.to(device)
+            
+            data_time = perf_counter() - data_start
+            timing_stats.add_data_load_time(data_time)
+            
+            # Time forward pass
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            forward_start = perf_counter()
             
             # Forward pass
             outputs = model(inputs)
             
-            # Save wavelet coefficients if this is a wavelet model
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            forward_time = perf_counter() - forward_start
+            timing_stats.add_forward_time(forward_time)
+            timing_stats.add_samples(inputs.shape[0])
+            
+            # Time wavelet transforms if this is a wavelet model
             if save_wavelets and hasattr(model, 'dwt2d_batch'):
-                # Only save for first 10 batches to avoid too much storage
+                # Only time for first 10 batches to avoid overhead
                 if batch_idx < 10:
-                    # Get wavelet decomposition of input
+                    wavelet_start = perf_counter()
+                    
+                    # Get wavelet decomposition of input (ALL 8 CHANNELS)
                     input_wavelets = model.dwt2d_batch(inputs)
                     
                     # Get wavelet decomposition of output
@@ -211,6 +286,10 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     
                     # Get wavelet decomposition of ground truth
                     target_wavelets = model.dwt2d_batch(targets)
+                    
+                    torch.cuda.synchronize() if device.type == 'cuda' else None
+                    wavelet_time = perf_counter() - wavelet_start
+                    timing_stats.add_wavelet_time(wavelet_time)
                     
                     # Save first sample in batch
                     sample_idx = 0
@@ -229,11 +308,11 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                         target_wavelets[sample_idx].cpu().numpy()
                     )
                     
-                    # Create visualizations
+                    # Create visualizations - NOW SHOWING ALL INPUT COMPONENTS
                     visualize_wavelet_decomposition(
                         input_wavelets[sample_idx],
-                        f'Input Wavelet Decomposition (Batch {batch_idx})',
-                        wavelet_viz_dir / f'batch{batch_idx}_input_wavelets.png'
+                        f'Input Wavelet Decomposition (Batch {batch_idx}) - ALL 8 Channels',
+                        wavelet_viz_dir / f'batch{batch_idx}_input_wavelets_ALL8.png'
                     )
                     visualize_wavelet_decomposition(
                         output_wavelets[sample_idx],
@@ -245,6 +324,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                         f'Target Wavelet Decomposition (Batch {batch_idx})',
                         wavelet_viz_dir / f'batch{batch_idx}_target_wavelets.png'
                     )
+            
+            # Time metric calculation
+            metric_start = perf_counter()
             
             # Calculate metrics for each sample in batch
             batch_size = inputs.shape[0]
@@ -308,8 +390,12 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     
                     sample_logged = True
             
+            metric_time = perf_counter() - metric_start
+            timing_stats.add_metric_time(metric_time)
+            
             # Log running metrics every 10 batches
             if batch_idx % 10 == 0 and batch_idx > 0:
+                current_timing = timing_stats.get_stats()
                 wandb.log({
                     "eval/running_mse_t1": np.mean(running_mse_per_mod['t1']),
                     "eval/running_mse_t1ce": np.mean(running_mse_per_mod['t1ce']),
@@ -319,8 +405,42 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     "eval/running_ssim_t1ce": np.mean(running_ssim_per_mod['t1ce']),
                     "eval/running_ssim_t2": np.mean(running_ssim_per_mod['t2']),
                     "eval/running_ssim_flair": np.mean(running_ssim_per_mod['flair']),
-                    "eval/progress": batch_idx / len(data_loader)
+                    "eval/progress": batch_idx / len(data_loader),
+                    "eval/timing/avg_forward_time_ms": current_timing['avg_forward_time_ms'],
+                    "eval/timing/samples_per_second": current_timing['samples_per_second']
                 })
+    
+    # Get final timing statistics
+    final_timing = timing_stats.get_stats()
+    
+    print(f"\n" + "="*60)
+    print("EVALUATION TIMING STATISTICS")
+    print("="*60)
+    print(f"Total samples evaluated: {final_timing['total_samples']}")
+    print(f"Average forward time: {final_timing['avg_forward_time_ms']:.2f}ms per batch")
+    print(f"Average data load time: {final_timing['avg_data_load_time_ms']:.2f}ms per batch")
+    print(f"Average metric calc time: {final_timing['avg_metric_time_ms']:.2f}ms per batch")
+    if final_timing['avg_wavelet_time_ms'] > 0:
+        print(f"Average wavelet time: {final_timing['avg_wavelet_time_ms']:.2f}ms per batch")
+    print(f"Evaluation throughput: {final_timing['samples_per_second']:.1f} samples/second")
+    print(f"Total evaluation time: {final_timing['total_forward_time_s']:.1f} seconds")
+    print("="*60)
+    
+    # Log final timing to wandb
+    wandb.log({
+        "eval/final_timing/avg_forward_time_ms": final_timing['avg_forward_time_ms'],
+        "eval/final_timing/avg_data_load_time_ms": final_timing['avg_data_load_time_ms'],
+        "eval/final_timing/avg_metric_time_ms": final_timing['avg_metric_time_ms'],
+        "eval/final_timing/samples_per_second": final_timing['samples_per_second'],
+        "eval/final_timing/total_evaluation_time_s": final_timing['total_forward_time_s'],
+        "eval/final_timing/total_samples": final_timing['total_samples'],
+    })
+    
+    if final_timing['avg_wavelet_time_ms'] > 0:
+        wandb.log({
+            "eval/final_timing/avg_wavelet_time_ms": final_timing['avg_wavelet_time_ms'],
+            "eval/final_timing/total_wavelet_time_s": final_timing['total_wavelet_time_s'],
+        })
     
     # Aggregate metrics
     mse_values = [m['mse'] for m in all_metrics]
@@ -342,6 +462,13 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
         results[f'mse_{mod}_std'] = np.std(mse_mod)
         results[f'ssim_{mod}_mean'] = np.mean(ssim_mod)
         results[f'ssim_{mod}_std'] = np.std(ssim_mod)
+    
+    # Add timing results to the evaluation results
+    results.update({
+        'eval_time_seconds': final_timing['total_forward_time_s'],
+        'eval_throughput_samples_per_sec': final_timing['samples_per_second'],
+        'avg_forward_time_ms': final_timing['avg_forward_time_ms'],
+    })
     
     return results, all_metrics
 
@@ -379,6 +506,8 @@ def print_results(results):
     print(f"MSE:  {results['mse_mean']:.6f} ± {results['mse_std']:.6f}")
     print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
     print(f"Samples evaluated: {results['num_samples']}")
+    print(f"Evaluation time: {results.get('eval_time_seconds', 0):.1f} seconds")
+    print(f"Throughput: {results.get('eval_throughput_samples_per_sec', 0):.1f} samples/sec")
     print("\nPer-modality MSE:")
     print(f"  T1:    {results['mse_t1_mean']:.6f} ± {results['mse_t1_std']:.6f}")
     print(f"  T1ce:  {results['mse_t1ce_mean']:.6f} ± {results['mse_t1ce_std']:.6f}")
@@ -395,6 +524,7 @@ def print_results(results):
 def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_name, save_wavelets=False):
     """
     Main evaluation function that can be called from other scripts
+    WITH COMPLETE TIMING STATS AND FIXED WAVELET VISUALIZATION
     
     Args:
         model: trained model
@@ -472,7 +602,13 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
     # Log example wavelet visualizations to wandb
     if save_wavelets:
         wavelet_viz_dir = Path(output_dir) / 'wavelet_visualizations'
-        for img_path in sorted(wavelet_viz_dir.glob('batch0_*.png'))[:3]:  # Log first batch
+        # Log ALL input wavelet visualizations (showing Z-1 and Z+1 components)
+        for img_path in sorted(wavelet_viz_dir.glob('batch0_input_wavelets_ALL8.png')):
+            wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
+        # Log output and target wavelets
+        for img_path in sorted(wavelet_viz_dir.glob('batch0_*output_wavelets.png'))[:3]:
+            wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
+        for img_path in sorted(wavelet_viz_dir.glob('batch0_*target_wavelets.png'))[:3]:
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
     
     # Save results to CSV
@@ -482,6 +618,7 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
     if save_wavelets:
         print(f"Wavelet coefficients saved to {output_dir}/wavelets/")
         print(f"Wavelet visualizations saved to {output_dir}/wavelet_visualizations/")
+        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
     
     return results, all_metrics
 
@@ -551,7 +688,58 @@ def get_args():
                        help='Wavelet type (for wavelet model type)')
     parser.add_argument('--save_wavelets', action='store_true',
                        help='Save wavelet coefficients and visualizations (wavelet models only)')
+    parser.add_argument('--timing_only', action='store_true',
+                       help='Only measure timing, skip full evaluation')
     return parser.parse_args()
+
+
+def measure_timing_only(model, data_loader, device, num_batches=100):
+    """
+    Quick timing measurement without full evaluation
+    """
+    print(f"Running timing-only evaluation over {num_batches} batches...")
+    
+    model.eval()
+    timing_stats = EvaluationTimingStats()
+    
+    with torch.no_grad():
+        for i, (inputs, targets, _) in enumerate(data_loader):
+            if i >= num_batches:
+                break
+            
+            # Data loading time
+            data_start = perf_counter()
+            inputs = inputs.to(device)
+            targets = targets.to(device)
+            data_time = perf_counter() - data_start
+            timing_stats.add_data_load_time(data_time)
+            
+            # Forward pass timing
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            forward_start = perf_counter()
+            
+            # Time wavelet transform if applicable
+            if hasattr(model, 'dwt2d_batch'):
+                wavelet_start = perf_counter()
+                _ = model.dwt2d_batch(inputs)
+                torch.cuda.synchronize() if device.type == 'cuda' else None
+                wavelet_time = perf_counter() - wavelet_start
+                timing_stats.add_wavelet_time(wavelet_time)
+            
+            # Full forward pass
+            outputs = model(inputs)
+            
+            torch.cuda.synchronize() if device.type == 'cuda' else None
+            forward_time = perf_counter() - forward_start
+            timing_stats.add_forward_time(forward_time)
+            timing_stats.add_samples(inputs.shape[0])
+            
+            if i % 20 == 0:
+                current_stats = timing_stats.get_stats()
+                print(f"Batch {i}/{num_batches}: {current_stats['avg_forward_time_ms']:.2f}ms/batch, "
+                      f"{current_stats['samples_per_second']:.1f} samples/sec")
+    
+    return timing_stats.get_stats()
 
 
 def main():
@@ -596,8 +784,38 @@ def main():
     if args.save_wavelets and not is_wavelet_model:
         print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
     
-    # Run evaluation
-    print("Running evaluation...")
+    # Quick timing-only evaluation if requested
+    if args.timing_only:
+        timing_results = measure_timing_only(model, data_loader, device)
+        
+        print(f"\n" + "="*60)
+        print("TIMING-ONLY RESULTS")
+        print("="*60)
+        print(f"Average forward time: {timing_results['avg_forward_time_ms']:.2f}ms per batch")
+        print(f"Average data load time: {timing_results['avg_data_load_time_ms']:.2f}ms per batch")
+        if timing_results['avg_wavelet_time_ms'] > 0:
+            print(f"Average wavelet time: {timing_results['avg_wavelet_time_ms']:.2f}ms per batch")
+        print(f"Throughput: {timing_results['samples_per_second']:.1f} samples/second")
+        print(f"Total samples: {timing_results['total_samples']}")
+        print("="*60)
+        
+        wandb.log({
+            "timing_only/avg_forward_time_ms": timing_results['avg_forward_time_ms'],
+            "timing_only/avg_data_load_time_ms": timing_results['avg_data_load_time_ms'],
+            "timing_only/samples_per_second": timing_results['samples_per_second'],
+            "timing_only/total_samples": timing_results['total_samples'],
+        })
+        
+        if timing_results['avg_wavelet_time_ms'] > 0:
+            wandb.log({
+                "timing_only/avg_wavelet_time_ms": timing_results['avg_wavelet_time_ms']
+            })
+        
+        wandb.finish()
+        return
+    
+    # Run full evaluation
+    print("Running full evaluation with timing statistics...")
     results, all_metrics = run_evaluation(
         model=model,
         data_loader=data_loader,

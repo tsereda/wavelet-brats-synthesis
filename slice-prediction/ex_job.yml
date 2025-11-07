@@ -76,6 +76,6 @@ spec:
       - name: shm
         emptyDir:
           medium: Memory
-          sizeLimit: 8Gi
+          sizeLimit: 16Gi
 
       restartPolicy: Never
