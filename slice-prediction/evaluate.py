@@ -79,81 +79,58 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
         title: str - title for the plot
         output_path: Path - where to save the visualization
     """
+    import io
+    from PIL import Image
+
     # Ensure coeffs is 3D [total_channels, H, W]
     if coeffs.dim() == 4:
-        # If [B, C*4, H, W], take first sample
         coeffs = coeffs[0]
-    
-    # Calculate number of modalities
+
     total_channels = coeffs.shape[0]
     C = total_channels // 4
-    
-    # Debug print
-    print(f"  Debug: coeffs.shape = {coeffs.shape}, C = {C}, total_channels = {total_channels}")
-    
-    # Determine labels based on number of channels
-    if C == 8:  # Input with Z-1 and Z+1 slices
-        modalities = [
-            'T1(Z-1)', 'T1ce(Z-1)', 'T2(Z-1)', 'FLAIR(Z-1)',  # First 4: Z-1 slices
-            'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)'   # Next 4: Z+1 slices
-        ]
-        C = min(C, 8)  # Show all 8
-        print(f"  Visualizing ALL 8 input channels (Z-1 and Z+1 slices)")
-    else:  # Output/target with 4 modalities
+
+    if C == 8:  # Input
+        modalities = ['T1(Z-1)', 'T1ce(Z-1)', 'T2(Z-1)', 'FLAIR(Z-1)',
+                      'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)']
+        show_C = 8
+    else:
         modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
-        C = min(C, 4)  # Show first 4 only
-        print(f"  Visualizing 4 output/target channels")
-    
-    fig = plt.figure(figsize=(16, 4*C))
-    gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
-    
-    for mod_idx in range(C):
+        show_C = min(C, 4)
+
+    fig = plt.figure(figsize=(16, 4 * show_C))
+    gs = GridSpec(show_C, 4, figure=fig, hspace=0.3, wspace=0.3)
+
+    for mod_idx in range(show_C):
         start_idx = mod_idx * 4
-        
-        # Extract 4 subbands for this modality
+
         ll = coeffs[start_idx].cpu().numpy()
         lh = coeffs[start_idx + 1].cpu().numpy()
         hl = coeffs[start_idx + 2].cpu().numpy()
         hh = coeffs[start_idx + 3].cpu().numpy()
-        
-        # Calculate common vmin/vmax for consistent scaling
+
         vmin = min(ll.min(), lh.min(), hl.min(), hh.min())
         vmax = max(ll.max(), lh.max(), hl.max(), hh.max())
-        
+        if vmin == vmax:
+            vmax = vmin + 1e-6
+
         mod_name = modalities[mod_idx] if mod_idx < len(modalities) else f"Mod{mod_idx}"
-        
-        # Plot LL (approximation)
-        ax = fig.add_subplot(gs[mod_idx, 0])
-        im = ax.imshow(ll, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{mod_name} - LL (Approx)')
-        ax.axis('off')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-        
-        # Plot LH (horizontal detail)
-        ax = fig.add_subplot(gs[mod_idx, 1])
-        im = ax.imshow(lh, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{mod_name} - LH (Horiz)')
-        ax.axis('off')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-        
-        # Plot HL (vertical detail)
-        ax = fig.add_subplot(gs[mod_idx, 2])
-        im = ax.imshow(hl, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{mod_name} - HL (Vert)')
-        ax.axis('off')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-        
-        # Plot HH (diagonal detail)
-        ax = fig.add_subplot(gs[mod_idx, 3])
-        im = ax.imshow(hh, cmap='gray', vmin=vmin, vmax=vmax)
-        ax.set_title(f'{mod_name} - HH (Diag)')
-        ax.axis('off')
-        plt.colorbar(im, ax=ax, fraction=0.046)
-    
+
+        for i, (subband, name) in enumerate([(ll, 'LL'), (lh, 'LH'), (hl, 'HL'), (hh, 'HH')]):
+            ax = fig.add_subplot(gs[mod_idx, i])
+            im = ax.imshow(subband, cmap='gray', vmin=vmin, vmax=vmax)
+            ax.set_title(f'{mod_name} - {name}', fontsize=10)
+            ax.axis('off')
+            if i == 3:
+                plt.colorbar(im, ax=ax, fraction=0.046)
+
     fig.suptitle(title, fontsize=14, fontweight='bold')
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.tight_layout()
+
+    if output_path:
+        plt.savefig(output_path, dpi=150, bbox_inches='tight')
+        print(f"  Saved: {output_path}")
+
     plt.close()
-    print(f"  Saved wavelet visualization: {output_path}")
 
 
 def calculate_metrics(prediction, ground_truth):
@@ -764,7 +741,8 @@ def main():
         data_dir=args.data_dir,
         image_size=(args.img_size, args.img_size),
         spacing=(1.0, 1.0, 1.0),
-        num_patients=args.num_patients
+        num_patients=args.num_patients,
+        cache_size=50  # prevent OOM by limiting volume cache
     )
     
     data_loader = DataLoader(

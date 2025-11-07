@@ -6,6 +6,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import os
 import glob
+from collections import OrderedDict
 import argparse
 from time import time, perf_counter
 import torch.multiprocessing
@@ -59,85 +60,100 @@ class TimingStats:
 
 
 class BraTS2D5Dataset(Dataset):
-    def __init__(self, data_dir, image_size, spacing, num_patients=None):
+    """Memory-efficient BraTS 2.5D dataset with on-demand volume loading and LRU caching.
+
+    Keeps a small LRU cache of processed volumes to avoid pre-loading the entire dataset
+    into memory (prevents OOM for large datasets). Builds the slice index map by
+    processing volumes one-by-one and then discarding them.
+    """
+    def __init__(self, data_dir, image_size, spacing, num_patients=None, cache_size=50):
         self.image_size = image_size
+        self.cache_size = cache_size
         patient_dirs = sorted(glob.glob(os.path.join(data_dir, "BraTS*")))
         if num_patients is not None:
             print(f"--- Using a subset of {num_patients} patients for testing. ---")
             patient_dirs = patient_dirs[:num_patients]
         if not patient_dirs:
             raise FileNotFoundError(f"No patient data found in '{data_dir}'. Check your --data_dir path.")
-        
+
         print(f"Found {len(patient_dirs)} patient directories")
-        
+
         # Build file list with better error handling
         self.files = []
         for p in patient_dirs:
             patient_name = os.path.basename(p)
-            
             try:
                 patient_files = {}
-                
-                # Find each modality with flexible pattern matching
                 for modality in ['t1', 't1ce', 't2', 'flair']:
                     pattern = os.path.join(p, f"*{modality}.nii*")
                     matches = glob.glob(pattern)
                     if not matches:
                         raise FileNotFoundError(f"No {modality} file found in {patient_name}")
                     patient_files[modality] = matches[0]
-                
-                # Find segmentation (might be 'seg' or 'label')
+
                 seg_matches = glob.glob(os.path.join(p, "*seg.nii*"))
                 if not seg_matches:
-                    # Try alternative pattern
                     seg_matches = glob.glob(os.path.join(p, "*label.nii*"))
                 if not seg_matches:
                     raise FileNotFoundError(f"No segmentation file found in {patient_name}")
                 patient_files['label'] = seg_matches[0]
-                
+
                 self.files.append(patient_files)
-                
             except FileNotFoundError as e:
                 print(f"Warning: Skipping patient {patient_name}: {e}")
                 continue
-        
+
         if not self.files:
             raise RuntimeError("No valid patients found! Check your dataset structure.")
-        
-        print(f"Successfully loaded {len(self.files)} patients")
-        
-        # Process volumes
-        transforms = get_train_transforms(image_size, spacing)
-        print("--- Pre-loading and processing volumes... ---")
-        start_time = time()
-        self.processed_volumes = []
-        for i, patient_files in enumerate(self.files):
-            self.processed_volumes.append(transforms(patient_files))
-            if (i + 1) % 10 == 0 or (i + 1) == len(self.files):
-                print(f"   Processed {i + 1}/{len(self.files)} patients...")
-        print(f"--- Volume processing took {time() - start_time:.2f} seconds. ---")
-        
-        # Create slice map
+
+        print(f"Successfully found {len(self.files)} patient entries")
+
+        # Prepare transforms and LRU cache
+        self.transforms = get_train_transforms(image_size, spacing)
+        self.volume_cache = OrderedDict()
+
+        # Build slice map by processing volumes one at a time (low memory)
         self.slice_map = []
-        print("Mapping and filtering slices to create dataset...")
-        for vol_idx, p_data in enumerate(self.processed_volumes):
-            num_slices = p_data["label"].shape[3]
-            for slice_idx in range(1, num_slices - 1): 
-                brain_slice = p_data["t1ce"][0, :, :, slice_idx]
+        print("Mapping and filtering slices to create dataset (streaming volumes)...")
+        start_time = time()
+        for i, patient_files in enumerate(self.files):
+            proc = self.transforms(patient_files)
+            num_slices = proc['label'].shape[3]
+            for slice_idx in range(1, num_slices - 1):
+                brain_slice = proc['t1ce'][0, :, :, slice_idx]
                 if torch.mean(brain_slice) > 0.1:
-                    self.slice_map.append((vol_idx, slice_idx))
-        print(f"Dataset ready. Found {len(self.slice_map)} valid slices from {len(self.files)} volumes.")
+                    self.slice_map.append((i, slice_idx))
+            # don't store processed volume now - will be loaded on demand
+            del proc
+            if (i + 1) % 10 == 0 or (i + 1) == len(self.files):
+                print(f"   Indexed {i + 1}/{len(self.files)} patients...")
+        print(f"--- Slice mapping took {time() - start_time:.2f} seconds. Found {len(self.slice_map)} slices.")
 
     def __len__(self):
         return len(self.slice_map)
-    
+
+    def _get_volume(self, vol_idx):
+        """Return processed volume for vol_idx using LRU cache."""
+        if vol_idx in self.volume_cache:
+            # mark as recently used
+            self.volume_cache.move_to_end(vol_idx)
+            return self.volume_cache[vol_idx]
+
+        # load and process
+        processed = self.transforms(self.files[vol_idx])
+        self.volume_cache[vol_idx] = processed
+        # enforce cache size
+        if len(self.volume_cache) > self.cache_size:
+            self.volume_cache.popitem(last=False)
+        return processed
+
     def __getitem__(self, index):
         volume_idx, slice_idx = self.slice_map[index]
-        patient_data = self.processed_volumes[volume_idx]
-        
-        img_modalities = torch.cat([patient_data['t1'], patient_data['t1ce'], 
+        patient_data = self._get_volume(volume_idx)
+
+        img_modalities = torch.cat([patient_data['t1'], patient_data['t1ce'],
                                     patient_data['t2'], patient_data['flair']], dim=0)
-        
+
         prev_slice = img_modalities[:, :, :, slice_idx - 1]
         next_slice = img_modalities[:, :, :, slice_idx + 1]
         input_tensor = torch.cat([prev_slice, next_slice], dim=0)
@@ -394,59 +410,54 @@ def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, ep
     Create and log wavelet decomposition visualizations to WandB
     Only works for wavelet models - FIXED TO SHOW ALL INPUT COMPONENTS
     """
+    """FIXED: Create and log wavelet decomposition visualizations to WandB"""
     if not hasattr(model, 'dwt2d_batch'):
-        return  # Not a wavelet model, skip
-    
+        return
+
+    import io
+    from PIL import Image
+
     with torch.no_grad():
-        # Get wavelet decomposition of input (8 channels)
-        input_wavelets = model.dwt2d_batch(inputs[:1])  # Just first sample
-        
-        # Get wavelet decomposition of output (4 channels)
-        output_wavelets = model.dwt2d_batch(outputs[:1])
-        
-        # Get wavelet decomposition of ground truth (4 channels)
-        target_wavelets = model.dwt2d_batch(targets[:1])
-        
-        # Print dimensions for debugging
-        print(f"\n>>> Wavelet Decomposition Dimensions (Epoch {epoch}):")
-        print(f"    Input shape: {inputs.shape} -> Wavelet shape: {input_wavelets.shape}")
-        print(f"    Output shape: {outputs.shape} -> Wavelet shape: {output_wavelets.shape}")
-        print(f"    Target shape: {targets.shape} -> Wavelet shape: {target_wavelets.shape}")
-        print(f"    (Each of 8 input channels becomes 4 subbands: LL, LH, HL, HH)")
-        print(f"    (Total input wavelets: {input_wavelets.shape[1]} = 8 × 4 = 32)\n")
-        
-        # Visualize the wavelet filter itself (only once at epoch 0)
-        if epoch == 0:
-            filter_fig = visualize_wavelet_filters(wavelet_name)
-            wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_fig)})
-            plt.close(filter_fig)
-        
-        # Create visualizations for input wavelets (ALL 8 MODALITIES: Z-1 and Z+1)
-        input_fig = visualize_wavelet_decomposition(
-            input_wavelets[0],
-            f'Input Wavelet Decomposition (Epoch {epoch}) - ALL 8 Channels (Z-1 and Z+1)',
-            num_modalities=8  # Show all 8 input channels
-        )
-        wandb.log({f"wavelets/input_decomposition_epoch_{epoch}": wandb.Image(input_fig)})
-        plt.close(input_fig)
-        
-        # Create visualizations for output wavelets (4 modalities)
-        output_fig = visualize_wavelet_decomposition(
-            output_wavelets[0],
-            f'Output Wavelet Decomposition (Epoch {epoch}) - 4 Modalities',
-            num_modalities=4
-        )
-        wandb.log({f"wavelets/output_decomposition_epoch_{epoch}": wandb.Image(output_fig)})
-        plt.close(output_fig)
-        
-        # Create visualizations for target wavelets (4 modalities)
-        target_fig = visualize_wavelet_decomposition(
-            target_wavelets[0],
-            f'Target Wavelet Decomposition (Epoch {epoch}) - 4 Modalities',
-            num_modalities=4
-        )
-        wandb.log({f"wavelets/target_decomposition_epoch_{epoch}": wandb.Image(target_fig)})
-        plt.close(target_fig)
+        try:
+            # Get decompositions
+            input_wavelets = model.dwt2d_batch(inputs[:1])
+            output_wavelets = model.dwt2d_batch(outputs[:1])
+            target_wavelets = model.dwt2d_batch(targets[:1])
+
+            print(f"\n>>> Wavelet shapes: Input {input_wavelets.shape}, Output {output_wavelets.shape}")
+
+            # Helper: convert matplotlib fig to PIL Image
+            def fig_to_pil(fig):
+                buf = io.BytesIO()
+                fig.savefig(buf, format='png', dpi=150, bbox_inches='tight')
+                buf.seek(0)
+                pil_image = Image.open(buf).convert('RGB')
+                plt.close(fig)
+                return pil_image
+
+            # Log filter visualization (only once)
+            if epoch == 0:
+                filter_fig = visualize_wavelet_filters(wavelet_name)
+                filter_image = fig_to_pil(filter_fig)
+                wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_image)})
+
+            # Log decompositions
+            input_fig = visualize_wavelet_decomposition(input_wavelets[0], f'Input Wavelets (Epoch {epoch})', num_modalities=8)
+            input_image = fig_to_pil(input_fig)
+            wandb.log({f"wavelets/input_epoch_{epoch}": wandb.Image(input_image)})
+
+            output_fig = visualize_wavelet_decomposition(output_wavelets[0], f'Output Wavelets (Epoch {epoch})', num_modalities=4)
+            output_image = fig_to_pil(output_fig)
+            wandb.log({f"wavelets/output_epoch_{epoch}": wandb.Image(output_image)})
+
+            target_fig = visualize_wavelet_decomposition(target_wavelets[0], f'Target Wavelets (Epoch {epoch})', num_modalities=4)
+            target_image = fig_to_pil(target_fig)
+            wandb.log({f"wavelets/target_epoch_{epoch}": wandb.Image(target_image)})
+
+            print(f"✓ Wavelet visualizations logged to WandB")
+
+        except Exception as e:
+            print(f"✗ Error in wavelet logging: {e}")
 
 
 def measure_inference_timing(model, data_loader, device, num_batches=100):
@@ -526,7 +537,8 @@ def main(args):
         data_dir=args.data_dir, 
         image_size=(args.img_size, args.img_size),
         spacing=(1.0, 1.0, 1.0), 
-        num_patients=args.num_patients
+        num_patients=args.num_patients,
+        cache_size=50  # prevent OOM by limiting volume cache
     )
     dataset_time = time() - dataset_start
     print(f"Dataset loading took {dataset_time:.2f} seconds")
