@@ -5,22 +5,17 @@ metric:
   goal: maximize
 
 parameters:
-  # Test all model architectures
   model_type:
     values:
       - swin
       - unet
       - unetr
   
-  # Wavelet type - 'none' means no wavelet processing
   wavelet:
     values:
-      - none        # No wavelet (baseline)
-      - haar        # Simplest, fastest
-      - db2         # Good balance
-      - db4         # More complex
-      - sym3        # Symmetric
-      - coif2       # Coiflets
+      - none
+      - haar
+      - db2
   
   data_dir:
     value: "BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
@@ -39,12 +34,3 @@ parameters:
   
   num_patients:
     value: 50  # Use subset for faster testing
-
-# This will test combinations like:
-# - swin + none (baseline)
-# - swin + haar wavelet
-# - swin + db2 wavelet
-# - unet + none (baseline) 
-# - unet + haar wavelet
-# - etc.
-# Total: 3 models × 6 wavelet options = 18 unique runs
