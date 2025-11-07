@@ -522,7 +522,7 @@ def main(args):
     if use_wavelet:
         run_name = f"{args.model_type}_wavelet_{args.wavelet}_{int(time())}"
     else:
-        run_name = f"{args.model_type}_baseline_{int(time())}"
+        run_name = f"{args.model_type}_nowavelet_{int(time())}"
     
     wandb.init(project="brats-middleslice-wavelet-sweep", config=vars(args), name=run_name)
     
@@ -538,7 +538,7 @@ def main(args):
         image_size=(args.img_size, args.img_size),
         spacing=(1.0, 1.0, 1.0), 
         num_patients=args.num_patients,
-        cache_size=50  # prevent OOM by limiting volume cache
+        cache_size=25
     )
     dataset_time = time() - dataset_start
     print(f"Dataset loading took {dataset_time:.2f} seconds")
