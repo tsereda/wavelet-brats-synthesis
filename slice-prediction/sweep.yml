@@ -31,3 +31,6 @@ parameters:
   
   img_size:
     value: 256
+
+  num_patients:
+    value: None #None = all

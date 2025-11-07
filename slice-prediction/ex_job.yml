@@ -55,11 +55,11 @@ spec:
           value: "wavelet-brats-synthesis"
         resources:
           requests:
-            memory: "25Gi"
+            memory: "50Gi"
             cpu: "15"
             nvidia.com/a100: "1"
           limits:
-            memory: "30Gi"
+            memory: "60Gi"
             cpu: "18"
             nvidia.com/a100: "1"
       
