@@ -7,8 +7,8 @@ metric:
 parameters:
   model_type:
     values:
-      - swin
       - unet
+      - swin
       - unetr
   
   wavelet:
@@ -31,6 +31,3 @@ parameters:
   
   img_size:
     value: 256
-
-  num_patients:
-    value: None #None = all
