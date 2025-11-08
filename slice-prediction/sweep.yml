@@ -18,7 +18,7 @@ parameters:
       - db2
   
   data_dir:
-    value: "BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+    value: "ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData"
   
   epochs:
     value: 100

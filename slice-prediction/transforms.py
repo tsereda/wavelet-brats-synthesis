@@ -11,7 +11,6 @@ from monai.transforms import (
     EnsureTyped,
 )
 
-
 def get_train_transforms(image_size, spacing):
     """
     Get MONAI transforms for loading and preprocessing BraTS volumes
@@ -22,8 +21,12 @@ def get_train_transforms(image_size, spacing):
     
     Returns:
         MONAI Compose transform
+    
+    Note: Updated for BraTS2023 GLI format with keys:
+        t1n (native T1), t1c (contrast-enhanced T1), t2w (T2-weighted), t2f (T2-FLAIR)
     """
-    keys = ["t1", "t1ce", "t2", "flair", "label"]
+    # BraTS2023 GLI format keys
+    keys = ["t1n", "t1c", "t2w", "t2f", "label"]
     
     return Compose([
         # Load NIfTI files
@@ -44,7 +47,7 @@ def get_train_transforms(image_size, spacing):
         
         # Normalize intensity for imaging modalities
         ScaleIntensityRanged(
-            keys=["t1", "t1ce", "t2", "flair"],
+            keys=["t1n", "t1c", "t2w", "t2f"],
             a_min=0.0,
             a_max=1000.0,  # Adjust based on your data
             b_min=0.0,
@@ -55,7 +58,7 @@ def get_train_transforms(image_size, spacing):
         # Crop to foreground (remove empty space)
         CropForegroundd(
             keys=keys,
-            source_key="t1ce",  # Use T1ce to detect brain
+            source_key="t1c",  # Use T1c (contrast-enhanced) to detect brain
             margin=10,
         ),
         
