@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# train.py - Complete training script with timing stats and full wavelet visualization
+# BraTS2023 GLI format only (t1n, t1c, t2w, t2f)
 
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -61,6 +60,9 @@ class TimingStats:
 
 class BraTS2D5Dataset(Dataset):
     """Memory-efficient BraTS 2.5D dataset with on-demand volume loading and LRU caching.
+    
+    Supports BraTS2023 GLI Challenge format:
+    - BraTS2023 GLI: *-t1n.nii.gz, *-t1c.nii.gz, *-t2w.nii.gz, *-t2f.nii.gz
 
     Keeps a small LRU cache of processed volumes to avoid pre-loading the entire dataset
     into memory (prevents OOM for large datasets). Builds the slice index map by
@@ -78,19 +80,29 @@ class BraTS2D5Dataset(Dataset):
 
         print(f"Found {len(patient_dirs)} patient directories")
 
-        # Build file list with better error handling
+        # Build file list for BraTS2023 GLI format
         self.files = []
+        brats2023_modalities = {
+            't1n': 't1n',
+            't1c': 't1c', 
+            't2w': 't2w',
+            't2f': 't2f'
+        }
+        
         for p in patient_dirs:
             patient_name = os.path.basename(p)
             try:
                 patient_files = {}
-                for modality in ['t1', 't1ce', 't2', 'flair']:
-                    pattern = os.path.join(p, f"*{modality}.nii*")
+                
+                # Find each modality file
+                for key, modality_suffix in brats2023_modalities.items():
+                    pattern = os.path.join(p, f"*-{modality_suffix}.nii*")
                     matches = glob.glob(pattern)
                     if not matches:
-                        raise FileNotFoundError(f"No {modality} file found in {patient_name}")
-                    patient_files[modality] = matches[0]
+                        raise FileNotFoundError(f"No {modality_suffix} file found in {patient_name}")
+                    patient_files[key] = matches[0]
 
+                # Find segmentation file
                 seg_matches = glob.glob(os.path.join(p, "*seg.nii*"))
                 if not seg_matches:
                     seg_matches = glob.glob(os.path.join(p, "*label.nii*"))
@@ -106,6 +118,7 @@ class BraTS2D5Dataset(Dataset):
         if not self.files:
             raise RuntimeError("No valid patients found! Check your dataset structure.")
 
+        print(f"✓ Detected BraTS2023 GLI format (t1n, t1c, t2w, t2f)")
         print(f"Successfully found {len(self.files)} patient entries")
 
         # Prepare transforms and LRU cache
@@ -120,7 +133,7 @@ class BraTS2D5Dataset(Dataset):
             proc = self.transforms(patient_files)
             num_slices = proc['label'].shape[3]
             for slice_idx in range(1, num_slices - 1):
-                brain_slice = proc['t1ce'][0, :, :, slice_idx]
+                brain_slice = proc['t1c'][0, :, :, slice_idx]
                 if torch.mean(brain_slice) > 0.1:
                     self.slice_map.append((i, slice_idx))
             # don't store processed volume now - will be loaded on demand
@@ -151,8 +164,8 @@ class BraTS2D5Dataset(Dataset):
         volume_idx, slice_idx = self.slice_map[index]
         patient_data = self._get_volume(volume_idx)
 
-        img_modalities = torch.cat([patient_data['t1'], patient_data['t1ce'],
-                                    patient_data['t2'], patient_data['flair']], dim=0)
+        img_modalities = torch.cat([patient_data['t1n'], patient_data['t1c'],
+                                    patient_data['t2w'], patient_data['t2f']], dim=0)
 
         prev_slice = img_modalities[:, :, :, slice_idx - 1]
         next_slice = img_modalities[:, :, :, slice_idx + 1]
@@ -163,8 +176,9 @@ class BraTS2D5Dataset(Dataset):
 
 
 def get_args():
-    parser = argparse.ArgumentParser(description="2.5D Middleslice Reconstruction")
-    parser.add_argument('--data_dir', type=str, required=True)
+    parser = argparse.ArgumentParser(description="2.5D Middleslice Reconstruction - BraTS2023 GLI")
+    parser.add_argument('--data_dir', type=str, required=True,
+                       help='Path to BraTS2023 GLI dataset directory')
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--model_type', type=str, default='swin', 
                        choices=['swin', 'unet', 'unetr'],
@@ -175,7 +189,8 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--img_size', type=int, default=256)
-    parser.add_argument('--num_patients', type=int, default=None)
+    parser.add_argument('--num_patients', type=int, default=None,
+                       help='Number of patients to use (default: all)')
     parser.add_argument('--eval_batch_size', type=int, default=16,
                        help='Batch size for evaluation (default: 16)')
     parser.add_argument('--skip_eval', action='store_true',
@@ -345,13 +360,13 @@ def visualize_wavelet_decomposition(coeffs, title, num_modalities=4):
     
     # Labels for modalities (including Z-1 and Z+1 for input)
     modalities = [
-        'T1(Z-1)', 'T1ce(Z-1)', 'T2(Z-1)', 'FLAIR(Z-1)',  # First 4: Z-1 slices
-        'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)'   # Next 4: Z+1 slices
+        'T1n(Z-1)', 'T1c(Z-1)', 'T2w(Z-1)', 'T2f(Z-1)',  # First 4: Z-1 slices
+        'T1n(Z+1)', 'T1c(Z+1)', 'T2w(Z+1)', 'T2f(Z+1)'   # Next 4: Z+1 slices
     ]
     
     # For output, use simple labels
     if num_modalities == 4:
-        modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+        modalities = ['T1n', 'T1c', 'T2w', 'T2f']
     
     fig = plt.figure(figsize=(16, 4*C))
     gs = GridSpec(C, 4, figure=fig, hspace=0.3, wspace=0.3)
@@ -531,7 +546,9 @@ def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load dataset
-    print("Loading dataset...")
+    print("\n" + "="*60)
+    print("LOADING DATASET")
+    print("="*60)
     dataset_start = time()
     dataset = BraTS2D5Dataset(
         data_dir=args.data_dir, 
@@ -542,6 +559,7 @@ def main(args):
     )
     dataset_time = time() - dataset_start
     print(f"Dataset loading took {dataset_time:.2f} seconds")
+    print("="*60 + "\n")
     
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
 
@@ -859,15 +877,15 @@ def main(args):
             print(f"SSIM: {results['ssim_mean']:.4f} ± {results['ssim_std']:.4f}")
             print(f"Samples evaluated: {results['num_samples']}")
             print("\nPer-modality MSE:")
-            print(f"  T1:    {results['mse_t1_mean']:.6f} ± {results['mse_t1_std']:.6f}")
-            print(f"  T1ce:  {results['mse_t1ce_mean']:.6f} ± {results['mse_t1ce_std']:.6f}")
-            print(f"  T2:    {results['mse_t2_mean']:.6f} ± {results['mse_t2_std']:.6f}")
-            print(f"  FLAIR: {results['mse_flair_mean']:.6f} ± {results['mse_flair_std']:.6f}")
+            print(f"  T1n:   {results['mse_t1n_mean']:.6f} ± {results['mse_t1n_std']:.6f}")
+            print(f"  T1c:   {results['mse_t1c_mean']:.6f} ± {results['mse_t1c_std']:.6f}")
+            print(f"  T2w:   {results['mse_t2w_mean']:.6f} ± {results['mse_t2w_std']:.6f}")
+            print(f"  T2f:   {results['mse_t2f_mean']:.6f} ± {results['mse_t2f_std']:.6f}")
             print("\nPer-modality SSIM:")
-            print(f"  T1:    {results['ssim_t1_mean']:.4f} ± {results['ssim_t1_std']:.4f}")
-            print(f"  T1ce:  {results['ssim_t1ce_mean']:.4f} ± {results['ssim_t1ce_std']:.4f}")
-            print(f"  T2:    {results['ssim_t2_mean']:.4f} ± {results['ssim_t2_std']:.4f}")
-            print(f"  FLAIR: {results['ssim_flair_mean']:.4f} ± {results['ssim_flair_std']:.4f}")
+            print(f"  T1n:   {results['ssim_t1n_mean']:.4f} ± {results['ssim_t1n_std']:.4f}")
+            print(f"  T1c:   {results['ssim_t1c_mean']:.4f} ± {results['ssim_t1c_std']:.4f}")
+            print(f"  T2w:   {results['ssim_t2w_mean']:.4f} ± {results['ssim_t2w_std']:.4f}")
+            print(f"  T2f:   {results['ssim_t2f_mean']:.4f} ± {results['ssim_t2f_std']:.4f}")
             print("="*60)
             
             print(f"\nEvaluation results saved to {results_dir}/")
