@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-5
+  name: midslice-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -42,7 +42,7 @@ spec:
             7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
             7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
             pip install PyWavelets
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/yhub0fz5
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/fpfuhfdn
 
       
         env:
@@ -74,7 +74,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-5
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory

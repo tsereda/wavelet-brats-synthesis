@@ -152,28 +152,75 @@ class BraTS2D5Dataset(Dataset):
         FAST slice mapping - much quicker than running full training transforms on every
         patient. Loads only T1c and performs a quick intensity check per slice.
         """
-        print("🚀 FAST slice mapping mode - optimized for speed!")
-        print("(Only loading T1c for slice counting, full processing happens on-demand)")
+        # Safer FAST slice mapping: estimate preprocessing reduction, use conservative
+        # bounds and avoid indexing slices that may be cropped/resized out by full
+        # preprocessing pipeline.
+        print("🚀 SAFE FAST slice mapping mode - with conservative bounds!")
+        print("(Sampling a few patients to estimate preprocessing effects, then building a safe slice map)")
         start_time = time()
 
         lightweight_transforms = self._get_lightweight_transforms()
 
+        # Step 1: sample a few patients to estimate how preprocessing changes slice counts
+        reduction_factor = 1.0
+        sample_size = min(5, len(self.files))
+        for i in range(sample_size):
+            try:
+                patient_files = self.files[i]
+                proc_light = lightweight_transforms({'t1c': patient_files['t1c']})
+                raw_slices = proc_light['t1c'].shape[3]
+
+                # Try a full transform on the same patient to estimate final size
+                try:
+                    proc_full = self.transforms(patient_files)
+                    final_slices = proc_full['t1c'].shape[3]
+                    current_factor = final_slices / float(raw_slices) if raw_slices > 0 else 1.0
+                    reduction_factor = min(reduction_factor, current_factor)
+                    del proc_full
+                except Exception:
+                    # If full transform fails for sampling, skip but keep default factor
+                    pass
+
+                del proc_light
+            except Exception as e:
+                print(f"  Warning: Could not sample patient {i}: {e}")
+                continue
+
+        print(f"Using conservative reduction factor: {reduction_factor:.3f}")
+
+        # Step 2: build slice map using conservative estimated final slice counts
         for i, patient_files in enumerate(self.files):
             try:
                 proc = lightweight_transforms({'t1c': patient_files['t1c']})
-                num_slices = proc['t1c'].shape[3]
+                raw_num_slices = proc['t1c'].shape[3]
 
-                # Quick brain detection on raw intensities
-                for slice_idx in range(1, num_slices - 1):
+                # Estimate final number of slices after preprocessing and add safety margin
+                estimated_final = max(3, int(raw_num_slices * reduction_factor * 0.9))
+
+                # Avoid edges that are often cropped; choose conservative start/end
+                safe_start = max(1, int(0.1 * estimated_final))
+                safe_end = min(estimated_final - 1, int(0.8 * estimated_final))
+
+                # Also ensure not to exceed raw slices
+                safe_end = min(safe_end, raw_num_slices - 2)
+
+                if safe_start >= safe_end:
+                    print(f"Warning: Patient {i} has insufficient slices after safety margins")
+                    del proc
+                    continue
+
+                for slice_idx in range(safe_start, safe_end):
+                    # Extra guard: don't read out-of-range on the lightweight proc
+                    if slice_idx >= proc['t1c'].shape[3] or slice_idx <= 0:
+                        continue
                     brain_slice = proc['t1c'][0, :, :, slice_idx]
-                    # Use a conservative threshold for raw intensities (adjust as needed)
                     if torch.mean(brain_slice) > 50.0:
                         self.slice_map.append((i, slice_idx))
 
                 del proc
 
             except Exception as e:
-                print(f"Warning: Failed to process patient {i} ({os.path.basename(list(patient_files.values())[0])}): {e}")
+                print(f"Warning: Failed to process patient {i}: {e}")
                 continue
 
             # Progress reporting with ETA
@@ -188,16 +235,13 @@ class BraTS2D5Dataset(Dataset):
                       f"Found: {len(self.slice_map):5d} slices)")
 
         total_time = time() - start_time
-        print(f"\n🚀 FAST slice mapping completed!")
+        print(f"\n🚀 SAFE FAST slice mapping completed!")
         print(f"   ⏱️  Total time: {total_time:.1f} seconds")
         print(f"   📈 Processing rate: {len(self.files)/total_time:.1f} patients/sec")
         print(f"   🧠 Found {len(self.slice_map)} brain slices")
-        print(f"   💾 Average {len(self.slice_map)/len(self.files):.1f} slices per patient")
-
-        # Estimate speedup vs. naive full-transform mapping
-        estimated_old_time = len(self.files) * 13  # ~13 seconds per patient with full transforms
-        speedup = estimated_old_time / total_time if total_time > 0 else 1
-        print(f"   ⚡ Estimated speedup: ~{speedup:.0f}x faster than full transforms!")
+        if len(self.files) > 0:
+            print(f"   💾 Average {len(self.slice_map)/len(self.files):.1f} slices per patient")
+        print(f"   🛡️  Using safety factor: {reduction_factor:.3f}")
 
     def __len__(self):
         return len(self.slice_map)
@@ -224,12 +268,43 @@ class BraTS2D5Dataset(Dataset):
         img_modalities = torch.cat([patient_data['t1n'], patient_data['t1c'],
                                     patient_data['t2w'], patient_data['t2f']], dim=0)
 
-        prev_slice = img_modalities[:, :, :, slice_idx - 1]
-        next_slice = img_modalities[:, :, :, slice_idx + 1]
-        input_tensor = torch.cat([prev_slice, next_slice], dim=0)
-        target_tensor = img_modalities[:, :, :, slice_idx]
+        # CRITICAL FIX: Bounds checking to prevent IndexError when preprocessing
+        # (cropping/resizing) has changed the final number of slices relative to
+        # the lightweight T1c count used when building the slice map.
+        max_slice = img_modalities.shape[3] - 1
 
-        return input_tensor, target_tensor, slice_idx
+        # Ensure slice_idx isn't on the extreme boundaries
+        if slice_idx <= 0 or slice_idx >= max_slice:
+            slice_idx = max(1, min(slice_idx, max_slice - 1))
+
+        prev_idx = max(0, slice_idx - 1)
+        next_idx = min(max_slice, slice_idx + 1)
+
+        try:
+            prev_slice = img_modalities[:, :, :, prev_idx]
+            next_slice = img_modalities[:, :, :, next_idx]
+            target_tensor = img_modalities[:, :, :, slice_idx]
+
+            input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+            return input_tensor, target_tensor, slice_idx
+
+        except IndexError as e:
+            # Fallback: log and use middle slice of volume
+            print(f"IndexError caught in __getitem__: volume_idx={volume_idx}, slice_idx={slice_idx}, "
+                  f"volume_shape={img_modalities.shape}, max_slice={max_slice}")
+            print(f"Attempted indices: prev={prev_idx}, curr={slice_idx}, next={next_idx}")
+
+            middle_slice = max_slice // 2
+            middle_prev = max(0, middle_slice - 1)
+            middle_next = min(max_slice, middle_slice + 1)
+
+            prev_slice = img_modalities[:, :, :, middle_prev]
+            next_slice = img_modalities[:, :, :, middle_next]
+            target_tensor = img_modalities[:, :, :, middle_slice]
+
+            input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+            print(f"Using fallback middle slice: {middle_slice}")
+            return input_tensor, target_tensor, middle_slice
 
 
 def get_args():
