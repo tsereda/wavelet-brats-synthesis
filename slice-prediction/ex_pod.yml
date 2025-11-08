@@ -59,7 +59,7 @@ spec:
         7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
         7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
         pip install PyWavelets
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/xe3chyhn
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/2ahhcaj2
 
         tail -f /dev/null
    

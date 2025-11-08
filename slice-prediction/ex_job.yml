@@ -37,11 +37,11 @@ spec:
             cd wavelet-brats-synthesis/slice-prediction
 
 
-            unzip /data/brats20-dataset-training-validation.zip
+            7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
+            7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
             pip install PyWavelets
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/2ahhcaj2
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/yhub0fz5
 
-            tail -f /dev/null
       
         env:
         - name: WANDB_API_KEY
