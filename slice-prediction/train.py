@@ -5,6 +5,8 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import os
 import glob
+import gzip
+import logging
 from collections import OrderedDict
 import argparse
 from time import time, perf_counter
@@ -71,6 +73,8 @@ class BraTS2D5Dataset(Dataset):
     def __init__(self, data_dir, image_size, spacing, num_patients=None, cache_size=50):
         self.image_size = image_size
         self.cache_size = cache_size
+        # Track corrupted patients (for reporting)
+        self.corrupted_patients = []
         patient_dirs = sorted(glob.glob(os.path.join(data_dir, "BraTS*")))
         if num_patients is not None:
             print(f"--- Using a subset of {num_patients} patients for testing. ---")
@@ -110,7 +114,14 @@ class BraTS2D5Dataset(Dataset):
                     raise FileNotFoundError(f"No segmentation file found in {patient_name}")
                 patient_files['label'] = seg_matches[0]
 
-                self.files.append(patient_files)
+                # Validate files for obvious corruption (gzip integrity and non-zero size)
+                is_valid, error_msg = self._validate_patient_files(patient_files, patient_name)
+                if is_valid:
+                    self.files.append(patient_files)
+                else:
+                    # Keep a short log of corrupted entries for later reporting
+                    print(f"  ⚠️  Skipping {patient_name}: {error_msg}")
+                    continue
             except FileNotFoundError as e:
                 print(f"Warning: Skipping patient {patient_name}: {e}")
                 continue
@@ -120,6 +131,21 @@ class BraTS2D5Dataset(Dataset):
 
         print(f"✓ Detected BraTS2023 GLI format (t1n, t1c, t2w, t2f)")
         print(f"Successfully found {len(self.files)} patient entries")
+
+        # Report corruption/skipped stats
+        try:
+            total_candidates = len(patient_dirs)
+            valid_count = len(self.files)
+            skipped = total_candidates - valid_count
+            if skipped > 0:
+                pct = (skipped / float(total_candidates)) * 100.0 if total_candidates > 0 else 0.0
+                print(f"⚠️  Corrupted/skipped: {skipped} ({pct:.2f}% of candidates)")
+                if getattr(self, 'corrupted_patients', None):
+                    print("  Examples of corrupted files (up to 5):")
+                    for p, key, err in self.corrupted_patients[:5]:
+                        print(f"    {p}: {key} -> {err}")
+        except Exception:
+            pass
 
         # Prepare transforms and LRU cache
         self.transforms = get_train_transforms(image_size, spacing)
@@ -245,6 +271,31 @@ class BraTS2D5Dataset(Dataset):
 
     def __len__(self):
         return len(self.slice_map)
+
+    def _validate_patient_files(self, patient_files, patient_name):
+        """Validate files are not corrupted.
+
+        Checks gzip files by reading the first chunk and non-zero size for uncompressed files.
+        Returns (True, None) on success or (False, error_message) on failure.
+        """
+        for key, filepath in patient_files.items():
+            try:
+                if filepath.endswith('.gz'):
+                    # Try to read a small chunk to verify gzip integrity
+                    with gzip.open(filepath, 'rb') as f:
+                        f.read(10240)
+                else:
+                    # For uncompressed files, a quick size check
+                    if os.path.getsize(filepath) == 0:
+                        return False, f"Empty file for {key}"
+            except Exception as e:
+                # Record corrupted patient info for later reporting
+                try:
+                    self.corrupted_patients.append((patient_name, key, str(e)))
+                except Exception:
+                    pass
+                return False, f"Error reading {key}: {e}"
+        return True, None
 
     def _get_volume(self, vol_idx):
         """Return processed volume for vol_idx using LRU cache."""
