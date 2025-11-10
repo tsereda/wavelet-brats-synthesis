@@ -8,6 +8,7 @@ import glob
 import gzip
 import logging
 from collections import OrderedDict
+from threading import Lock
 import argparse
 from time import time, perf_counter
 import torch.multiprocessing
@@ -70,9 +71,19 @@ class BraTS2D5Dataset(Dataset):
     into memory (prevents OOM for large datasets). Builds the slice index map by
     processing volumes one-by-one and then discarding them.
     """
-    def __init__(self, data_dir, image_size, spacing, num_patients=None, cache_size=50):
+    def __init__(self, data_dir, image_size, spacing, num_patients=None, cache_size=None, num_workers=0):
         self.image_size = image_size
-        self.cache_size = cache_size
+        # Store num_workers (used to pick a reasonable default cache size)
+        self.num_workers = num_workers
+
+        # If cache_size not provided, choose a conservative default that
+        # matches the expected DataLoader workers. We ensure at least 4
+        # slots for reasonable locality (matching author's intended default).
+        if cache_size is None:
+            # Use at least 4 or the number of workers (whichever is larger)
+            self.cache_size = max(4, int(self.num_workers or 0))
+        else:
+            self.cache_size = cache_size
         # Track corrupted patients (for reporting)
         self.corrupted_patients = []
         patient_dirs = sorted(glob.glob(os.path.join(data_dir, "BraTS*")))
@@ -150,6 +161,14 @@ class BraTS2D5Dataset(Dataset):
         # Prepare transforms and LRU cache
         self.transforms = get_train_transforms(image_size, spacing)
         self.volume_cache = OrderedDict()
+        # Lock to protect access to the LRU cache in multi-threaded contexts
+        # Note: threading.Lock protects threads within the same process. If you
+        # use multi-process DataLoader (num_workers>0), prefer num_workers=0
+        # or use multiprocessing-aware locks. We still add this lock so that
+        # running with threads or persistent workers does not corrupt the cache.
+        self.cache_lock = Lock()
+
+        print(f"LRU cache size set to: {self.cache_size} volumes")
 
         # Build slice map using FAST lightweight method to avoid expensive full transforms
         # This only loads T1c for slice counting and defers full processing until data is requested
@@ -298,19 +317,41 @@ class BraTS2D5Dataset(Dataset):
         return True, None
 
     def _get_volume(self, vol_idx):
-        """Return processed volume for vol_idx using LRU cache."""
-        if vol_idx in self.volume_cache:
-            # mark as recently used
-            self.volume_cache.move_to_end(vol_idx)
-            return self.volume_cache[vol_idx]
+        """Return processed volume for vol_idx using LRU cache.
 
-        # load and process
-        processed = self.transforms(self.files[vol_idx])
-        self.volume_cache[vol_idx] = processed
-        # enforce cache size
-        if len(self.volume_cache) > self.cache_size:
-            self.volume_cache.popitem(last=False)
-        return processed
+        This implementation adds a threading.Lock around cache access and
+        includes a small retry loop when loading fails (helps with transient
+        IO issues). The lock helps prevent race conditions when using
+        multithreaded data loading. For multiprocessing safety prefer
+        running with num_workers=0 or using multiprocessing-aware locks.
+        """
+        max_retries = 3
+
+        with self.cache_lock:
+            if vol_idx in self.volume_cache:
+                # mark as recently used
+                self.volume_cache.move_to_end(vol_idx)
+                return self.volume_cache[vol_idx]
+
+            # Not in cache -> attempt to load with retries
+            last_exc = None
+            for attempt in range(max_retries):
+                try:
+                    processed = self.transforms(self.files[vol_idx])
+                    # store in cache and enforce size
+                    self.volume_cache[vol_idx] = processed
+                    if len(self.volume_cache) > self.cache_size:
+                        self.volume_cache.popitem(last=False)
+                    return processed
+                except Exception as e:
+                    last_exc = e
+                    if attempt == max_retries - 1:
+                        # final failure: record and re-raise
+                        print(f"Failed to load volume {vol_idx} after {max_retries} attempts: {e}")
+                        raise
+                    else:
+                        print(f"Retry {attempt + 1}/{max_retries} for volume {vol_idx} due to error: {e}")
+                        continue
 
     def __getitem__(self, index):
         volume_idx, slice_idx = self.slice_map[index]
@@ -380,6 +421,8 @@ def get_args():
                        help='Skip evaluation after training')
     parser.add_argument('--timing_frequency', type=int, default=50,
                        help='How often to report detailed timing stats (batches)')
+    parser.add_argument('--num_workers', type=int, default=0,
+                       help='Number of DataLoader workers (default 0 - safe). Set >0 to enable multiprocessing.')
     return parser.parse_args()
 
 
@@ -738,13 +781,24 @@ def main(args):
         image_size=(args.img_size, args.img_size),
         spacing=(1.0, 1.0, 1.0), 
         num_patients=args.num_patients,
-        cache_size=25
+        cache_size=(args.num_workers if args.num_workers and args.num_workers > 0 else None),
+        num_workers=args.num_workers
     )
     dataset_time = time() - dataset_start
     print(f"Dataset loading took {dataset_time:.2f} seconds")
     print("="*60 + "\n")
     
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+    # DataLoader workers are controlled by CLI --num_workers. Default is 0 (safe).
+    # When increasing workers, set cache_size to match number of workers to
+    # avoid excessive cache usage.
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=(args.num_workers > 0)
+    )
 
     # Load model
     model = get_model(args.model_type, args.wavelet, args.img_size, device)
@@ -986,7 +1040,9 @@ def main(args):
         dataset, 
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=4
+        num_workers=args.num_workers,
+        pin_memory=True if torch.cuda.is_available() else False,
+        persistent_workers=(args.num_workers > 0)
     )
     
     # Measure inference timing
@@ -1027,7 +1083,9 @@ def main(args):
             dataset, 
             batch_size=args.eval_batch_size,  # Larger batch for faster eval
             shuffle=False,  # Don't shuffle for reproducible evaluation
-            num_workers=4
+            num_workers=args.num_workers,
+            pin_memory=True if torch.cuda.is_available() else False,
+            persistent_workers=(args.num_workers > 0)
         )
         
         # Import and run evaluation
