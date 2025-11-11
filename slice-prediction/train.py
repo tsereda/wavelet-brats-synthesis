@@ -410,10 +410,66 @@ class SimpleCSVTripletDataset(Dataset):
         self.samples = _pd.read_csv(csv_path)
         if self.samples.empty:
             raise RuntimeError(f"CSV index {csv_path} is empty")
+        # Validate CSV rows and drop any entries that reference corrupted files.
+        # This prevents runtime crashes while training when a gzipped NIfTI is corrupted
+        # (zlib.error: invalid stored block lengths) by performing a lightweight
+        # integrity check on each referenced file.
         self.transforms = get_train_transforms(image_size, spacing)
+
+        valid_indices = []
+        total_rows = len(self.samples)
+        print(f"Validating {total_rows} CSV rows for file integrity...")
+
+        for idx, row in self.samples.iterrows():
+            patient_files = {
+                't1n': row['t1n'],
+                't1c': row['t1c'],
+                't2w': row['t2w'],
+                't2f': row['t2f'],
+                'label': row['label'] if 'label' in row.index else None
+            }
+
+            ok, err = self._validate_patient_files(patient_files, idx)
+            if ok:
+                valid_indices.append(idx)
+            else:
+                print(f"  ⚠️  Skipping CSV row {idx} due to file error: {err}")
+
+        if not valid_indices:
+            raise RuntimeError(f"All rows in CSV {csv_path} are invalid or corrupted. Aborting.")
+
+        # Keep only valid rows
+        self.samples = self.samples.loc[valid_indices].reset_index(drop=True)
+        if len(self.samples) < total_rows:
+            print(f"CSV validation: kept {len(self.samples)}/{total_rows} rows (dropped {total_rows - len(self.samples)})")
 
     def __len__(self):
         return len(self.samples)
+
+    def _validate_patient_files(self, patient_files, row_idx):
+        """Lightweight validation of files referenced by a CSV row.
+
+        Returns (True, None) if all files look OK, else (False, error_message).
+        Performs a small read of gzipped files to catch decompression errors and
+        a non-zero size check for uncompressed files.
+        """
+        for key, filepath in patient_files.items():
+            if filepath is None:
+                # allow missing label
+                if key == 'label':
+                    continue
+                return False, f"Missing file for key '{key}'"
+            try:
+                if filepath.endswith('.gz'):
+                    # try to read a small chunk to verify gzip integrity
+                    with gzip.open(filepath, 'rb') as f:
+                        f.read(10240)
+                else:
+                    if os.path.getsize(filepath) == 0:
+                        return False, f"Empty file for {key}"
+            except Exception as e:
+                return False, f"Error reading {key} ('{filepath}'): {e}"
+        return True, None
 
     def __getitem__(self, idx):
         row = self.samples.iloc[idx]
@@ -429,6 +485,9 @@ class SimpleCSVTripletDataset(Dataset):
         try:
             processed = self.transforms(patient_files)
         except Exception as e:
+            # If this happens at runtime it indicates either a transient IO issue
+            # or a file that failed the earlier lightweight check. Provide useful
+            # context and raise so the training loop can surface which row failed.
             raise RuntimeError(f"Failed to process patient files for row {idx}: {e}")
 
         img_modalities = torch.cat([processed['t1n'], processed['t1c'], processed['t2w'], processed['t2f']], dim=0)
