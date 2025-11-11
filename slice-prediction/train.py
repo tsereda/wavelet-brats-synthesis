@@ -14,6 +14,7 @@ from time import time, perf_counter
 import torch.multiprocessing
 import cv2
 import wandb
+import pandas as pd
 from monai.networks.nets import SwinUNETR, UNETR, BasicUNet
 from torch.nn import L1Loss, MSELoss
 from transforms import get_train_transforms
@@ -399,6 +400,57 @@ class BraTS2D5Dataset(Dataset):
             return input_tensor, target_tensor, middle_slice
 
 
+class SimpleCSVTripletDataset(Dataset):
+    """Simplified CSV-backed dataset: each CSV row points to modality file paths and the triplet slices.
+
+    CSV must contain columns: t1n,t1c,t2w,t2f,label,slice_prev,slice_mid,slice_next
+    """
+    def __init__(self, csv_path, image_size, spacing):
+        import pandas as _pd
+        self.samples = _pd.read_csv(csv_path)
+        if self.samples.empty:
+            raise RuntimeError(f"CSV index {csv_path} is empty")
+        self.transforms = get_train_transforms(image_size, spacing)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        row = self.samples.iloc[idx]
+        patient_files = {
+            't1n': row['t1n'],
+            't1c': row['t1c'],
+            't2w': row['t2w'],
+            't2f': row['t2f'],
+            'label': row['label'] if 'label' in row.index else None
+        }
+
+        # Use the same transforms as training (they accept a dict of file paths)
+        try:
+            processed = self.transforms(patient_files)
+        except Exception as e:
+            raise RuntimeError(f"Failed to process patient files for row {idx}: {e}")
+
+        img_modalities = torch.cat([processed['t1n'], processed['t1c'], processed['t2w'], processed['t2f']], dim=0)
+
+        slice_prev = int(row['slice_prev'])
+        slice_mid = int(row['slice_mid'])
+        slice_next = int(row['slice_next'])
+
+        max_slice = img_modalities.shape[3] - 1
+        # Bounds check
+        slice_mid = max(1, min(slice_mid, max_slice - 1))
+        slice_prev = max(0, min(slice_prev, max_slice))
+        slice_next = max(0, min(slice_next, max_slice))
+
+        prev_slice = img_modalities[:, :, :, slice_prev]
+        next_slice = img_modalities[:, :, :, slice_next]
+        target_slice = img_modalities[:, :, :, slice_mid]
+
+        input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+        return input_tensor, target_slice, slice_mid
+
+
 def get_args():
     parser = argparse.ArgumentParser(description="2.5D Middleslice Reconstruction - BraTS2023 GLI")
     parser.add_argument('--data_dir', type=str, required=True,
@@ -423,6 +475,8 @@ def get_args():
                        help='How often to report detailed timing stats (batches)')
     parser.add_argument('--num_workers', type=int, default=0,
                        help='Number of DataLoader workers (default 0 - safe). Set >0 to enable multiprocessing.')
+    parser.add_argument('--csv_index', type=str, default=None,
+                       help='Optional CSV index of triplets (created by preprocess_dataset.py)')
     return parser.parse_args()
 
 
@@ -776,14 +830,22 @@ def main(args):
     print("LOADING DATASET")
     print("="*60)
     dataset_start = time()
-    dataset = BraTS2D5Dataset(
-        data_dir=args.data_dir, 
-        image_size=(args.img_size, args.img_size),
-        spacing=(1.0, 1.0, 1.0), 
-        num_patients=args.num_patients,
-        cache_size=(args.num_workers if args.num_workers and args.num_workers > 0 else None),
-        num_workers=args.num_workers
-    )
+    if args.csv_index:
+        print(f"Using CSV index: {args.csv_index}")
+        dataset = SimpleCSVTripletDataset(
+            csv_path=args.csv_index,
+            image_size=(args.img_size, args.img_size),
+            spacing=(1.0, 1.0, 1.0)
+        )
+    else:
+        dataset = BraTS2D5Dataset(
+            data_dir=args.data_dir, 
+            image_size=(args.img_size, args.img_size),
+            spacing=(1.0, 1.0, 1.0), 
+            num_patients=args.num_patients,
+            cache_size=(args.num_workers if args.num_workers and args.num_workers > 0 else None),
+            num_workers=args.num_workers
+        )
     dataset_time = time() - dataset_start
     print(f"Dataset loading took {dataset_time:.2f} seconds")
     print("="*60 + "\n")

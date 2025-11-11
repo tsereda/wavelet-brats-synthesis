@@ -42,7 +42,13 @@ spec:
             7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
             7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
             pip install PyWavelets
-            python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData
+            python preprocess_dataset.py \
+            --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
+            --output train_triplets.csv \
+            --num_triplets 5 \
+            --seed 42
+
+            python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
             wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/fgx9sgc2
 
         env:
