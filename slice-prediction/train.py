@@ -472,42 +472,67 @@ class SimpleCSVTripletDataset(Dataset):
         return True, None
 
     def __getitem__(self, idx):
-        row = self.samples.iloc[idx]
-        patient_files = {
-            't1n': row['t1n'],
-            't1c': row['t1c'],
-            't2w': row['t2w'],
-            't2f': row['t2f'],
-            'label': row['label'] if 'label' in row.index else None
-        }
+        # If a row is corrupted at runtime, log it and skip to the next row.
+        # We do NOT retry the same row repeatedly; we advance to the following
+        # sample and return its data. This keeps behavior simple and deterministic
+        # while allowing training to continue.
+        start_idx = idx
+        tried = set()
 
-        # Use the same transforms as training (they accept a dict of file paths)
-        try:
-            processed = self.transforms(patient_files)
-        except Exception as e:
-            # If this happens at runtime it indicates either a transient IO issue
-            # or a file that failed the earlier lightweight check. Provide useful
-            # context and raise so the training loop can surface which row failed.
-            raise RuntimeError(f"Failed to process patient files for row {idx}: {e}")
+        while True:
+            if idx in tried:
+                raise RuntimeError(f"All samples failed while attempting to start from row {start_idx}")
+            tried.add(idx)
 
-        img_modalities = torch.cat([processed['t1n'], processed['t1c'], processed['t2w'], processed['t2f']], dim=0)
+            row = self.samples.iloc[idx]
+            patient_files = {
+                't1n': row['t1n'],
+                't1c': row['t1c'],
+                't2w': row['t2w'],
+                't2f': row['t2f'],
+                'label': row['label'] if 'label' in row.index else None
+            }
 
-        slice_prev = int(row['slice_prev'])
-        slice_mid = int(row['slice_mid'])
-        slice_next = int(row['slice_next'])
+            try:
+                processed = self.transforms(patient_files)
 
-        max_slice = img_modalities.shape[3] - 1
-        # Bounds check
-        slice_mid = max(1, min(slice_mid, max_slice - 1))
-        slice_prev = max(0, min(slice_prev, max_slice))
-        slice_next = max(0, min(slice_next, max_slice))
+                img_modalities = torch.cat([processed['t1n'], processed['t1c'], processed['t2w'], processed['t2f']], dim=0)
 
-        prev_slice = img_modalities[:, :, :, slice_prev]
-        next_slice = img_modalities[:, :, :, slice_next]
-        target_slice = img_modalities[:, :, :, slice_mid]
+                slice_prev = int(row['slice_prev'])
+                slice_mid = int(row['slice_mid'])
+                slice_next = int(row['slice_next'])
 
-        input_tensor = torch.cat([prev_slice, next_slice], dim=0)
-        return input_tensor, target_slice, slice_mid
+                max_slice = img_modalities.shape[3] - 1
+                # Bounds check
+                slice_mid = max(1, min(slice_mid, max_slice - 1))
+                slice_prev = max(0, min(slice_prev, max_slice))
+                slice_next = max(0, min(slice_next, max_slice))
+
+                prev_slice = img_modalities[:, :, :, slice_prev]
+                next_slice = img_modalities[:, :, :, slice_next]
+                target_slice = img_modalities[:, :, :, slice_mid]
+
+                input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+                # Return the first successfully loaded sample (may be different from
+                # the originally requested index if it was corrupted).
+                return input_tensor, target_slice, slice_mid
+
+            except Exception as e:
+                # Log the corrupted row and file paths, then skip it.
+                try:
+                    t1c = patient_files.get('t1c', 'N/A')
+                    t1n = patient_files.get('t1n', 'N/A')
+                    print(f"⚠️  Skipping corrupted CSV row {idx}: {e}")
+                    print(f"    t1c: {t1c}")
+                    print(f"    t1n: {t1n}")
+                except Exception:
+                    print(f"⚠️  Skipping corrupted CSV row {idx}: {e} (failed to print file paths)")
+
+                # Advance to next index (wrap-around). Do NOT retry the same idx.
+                idx = (idx + 1) % len(self.samples)
+                if idx == start_idx:
+                    # we've looped the entire dataset and nothing worked
+                    raise RuntimeError(f"No valid samples found while skipping from row {start_idx}")
 
 
 def get_args():

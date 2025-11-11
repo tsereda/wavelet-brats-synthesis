@@ -33,4 +33,4 @@ parameters:
     value: 256
 
   csv_index: 
-    value: train_triplets.csv
+    value: "train_triplets.csv"

@@ -68,7 +68,7 @@ spec:
 
         python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
 
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/xu2el9s7
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/denn5y2h
 
         tail -f /dev/null
    
