@@ -34,3 +34,6 @@ parameters:
 
   csv_index: 
     value: "train_triplets.csv"
+
+  num_workers:
+    value: 16
