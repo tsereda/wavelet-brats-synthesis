@@ -7,6 +7,7 @@ import os
 import glob
 import gzip
 import logging
+import sys
 from collections import OrderedDict
 from threading import Lock
 import argparse
@@ -21,6 +22,49 @@ from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+
+
+# Configure logger for stdout (helps kubectl logs)
+logger = logging.getLogger("midslice_train")
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s', datefmt='%H:%M:%S')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+
+
+def log_info(msg, wandb_kv=None):
+    """Log to stdout (kubectl) and optionally to wandb.
+
+    wandb_kv: dict to pass directly to wandb.log (preferred) or None to send a short log string.
+    """
+    try:
+        logger.info(msg)
+    except Exception:
+        pass
+    try:
+        # Only attempt wandb logging if wandb has been initialized for this process
+        if wandb is not None and getattr(wandb, 'run', None) is not None:
+            if wandb_kv is None:
+                wandb.log({'log/info': str(msg)})
+            else:
+                wandb.log(wandb_kv)
+    except Exception:
+        # Don't let logging break training
+        pass
+
+
+def log_warn(msg, wandb_kv=None):
+    try:
+        logger.warning(msg)
+    except Exception:
+        pass
+    try:
+        if wandb is not None and getattr(wandb, 'run', None) is not None:
+            wandb.log({'log/warn': str(msg)})
+    except Exception:
+        pass
 
 
 # Create timing stats tracker
@@ -906,7 +950,7 @@ def main(args):
     wandb.init(project="brats-middleslice-wavelet-sweep", config=vars(args), name=run_name)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    log_info(f"Using device: {device}", wandb_kv={'system/device': str(device)})
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Load dataset
@@ -932,6 +976,20 @@ def main(args):
         )
     dataset_time = time() - dataset_start
     print(f"Dataset loading took {dataset_time:.2f} seconds")
+    # Extra logging for visibility in kubectl and wandb
+    try:
+        meta = {
+            'dataset/load_time_seconds': dataset_time,
+            'dataset/num_samples': len(dataset)
+        }
+        # Add cache-related info when available
+        if hasattr(dataset, 'cache_size'):
+            meta['dataset/cache_size'] = int(getattr(dataset, 'cache_size'))
+        if hasattr(dataset, 'corrupted_patients'):
+            meta['dataset/corrupted_rows'] = len(getattr(dataset, 'corrupted_patients'))
+        log_info(f"Dataset loaded: {len(dataset)} samples, cache_size={meta.get('dataset/cache_size','N/A')}", wandb_kv=meta)
+    except Exception as e:
+        log_warn(f"Failed to log dataset metadata: {e}")
     print("="*60 + "\n")
     
     # DataLoader workers are controlled by CLI --num_workers. Default is 0 (safe).
@@ -945,6 +1003,19 @@ def main(args):
         pin_memory=True if torch.cuda.is_available() else False,
         persistent_workers=(args.num_workers > 0)
     )
+
+    # Log DataLoader configuration
+    try:
+        dl_meta = {
+            'dataloader/batch_size': args.batch_size,
+            'dataloader/num_workers': args.num_workers,
+            'dataloader/pin_memory': bool(torch.cuda.is_available()),
+            'dataloader/persistent_workers': (args.num_workers > 0),
+            'dataset/length': len(dataset)
+        }
+        log_info(f"DataLoader created: batch_size={args.batch_size}, num_workers={args.num_workers}", wandb_kv=dl_meta)
+    except Exception as e:
+        log_warn(f"Failed to log DataLoader meta: {e}")
 
     # Load model
     model = get_model(args.model_type, args.wavelet, args.img_size, device)
@@ -981,6 +1052,11 @@ def main(args):
         epoch_loss = 0
         num_batches = len(data_loader)
         epoch_start = time()
+        # Log epoch start
+        log_info(f"Starting epoch {epoch+1}/{args.epochs} - {num_batches} batches", wandb_kv={
+            'epoch/number': epoch + 1,
+            'epoch/num_batches': num_batches,
+        })
         
         for i, (inputs, targets, slice_indices) in enumerate(data_loader):
             batch_start = perf_counter()
@@ -1133,9 +1209,12 @@ def main(args):
                 'loss': best_loss,
                 'config': vars(args)
             }, checkpoint_path)
-            print(f"Saved best checkpoint to {checkpoint_path}")
+            log_info(f"Saved best checkpoint to {checkpoint_path}", wandb_kv={'checkpoint/path': checkpoint_path, 'checkpoint/best_loss': float(best_loss)})
             # Ensure the file is saved locally then attempt to upload to WandB
-            wandb.save(checkpoint_path)
+            try:
+                wandb.save(checkpoint_path)
+            except Exception as e:
+                log_warn(f"wandb.save failed for {checkpoint_path}: {e}")
 
             # ALSO: log the checkpoint as a WandB Artifact for better model management
             try:
@@ -1149,10 +1228,10 @@ def main(args):
                 artifact.add_file(checkpoint_path)
                 # log_artifact uploads the file to the current run's artifacts
                 wandb.log_artifact(artifact)
-                print(f"Logged best checkpoint to WandB Artifact: {artifact_name}")
+                log_info(f"Logged best checkpoint to WandB Artifact: {artifact_name}", wandb_kv={'artifact/name': artifact_name})
             except Exception as e:
                 # Don't crash training if WandB artifact upload fails; warn and continue
-                print(f"Warning: Failed to log checkpoint artifact to WandB: {e}")
+                    log_warn(f"Failed to log checkpoint artifact to WandB: {e}")
     
     # Final training timing summary
     final_timing = timing_stats.get_stats()
@@ -1196,7 +1275,12 @@ def main(args):
     checkpoint_path = os.path.join(args.output_dir, checkpoint_name)
     
     print(f"Loading best checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path)
+    log_info(f"Loading best checkpoint from {checkpoint_path}...", wandb_kv={'checkpoint/load_path': checkpoint_path})
+    try:
+        checkpoint = torch.load(checkpoint_path)
+    except Exception as e:
+        log_warn(f"Failed to load checkpoint {checkpoint_path}: {e}")
+        raise
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # Create inference dataloader (no shuffle for reproducibility)
@@ -1213,12 +1297,13 @@ def main(args):
     inference_timing = measure_inference_timing(model, inference_loader, device, num_batches=100)
     
     print(f"\nINFERENCE TIMING RESULTS:")
-    print(f"Average inference time per batch: {inference_timing['avg_forward_time']*1000:.2f}ms")
-    print(f"Average data loading time: {inference_timing['avg_data_load_time']*1000:.2f}ms") 
+    log_info("INFERENCE TIMING RESULTS:")
+    log_info(f"Average inference time per batch: {inference_timing['avg_forward_time']*1000:.2f}ms", wandb_kv={'inference/avg_forward_time_ms': inference_timing['avg_forward_time']*1000})
+    log_info(f"Average data loading time: {inference_timing['avg_data_load_time']*1000:.2f}ms", wandb_kv={'inference/avg_data_load_time_ms': inference_timing['avg_data_load_time']*1000})
     if use_wavelet and inference_timing['avg_wavelet_time'] > 0:
-        print(f"Average wavelet transform time: {inference_timing['avg_wavelet_time']*1000:.2f}ms")
-    print(f"Inference throughput: {(1/inference_timing['avg_forward_time'])*args.batch_size:.1f} samples/sec")
-    print("="*60)
+        log_info(f"Average wavelet transform time: {inference_timing['avg_wavelet_time']*1000:.2f}ms", wandb_kv={'inference/avg_wavelet_time_ms': inference_timing['avg_wavelet_time']*1000})
+    log_info(f"Inference throughput: {(1/inference_timing['avg_forward_time'])*args.batch_size:.1f} samples/sec", wandb_kv={'inference/samples_per_second': (1/inference_timing['avg_forward_time']) * args.batch_size})
+    log_info("="*60)
     
     # Log inference timing
     wandb.log({
@@ -1309,8 +1394,17 @@ if __name__ == '__main__':
         args = get_args()
         main(args)
     except Exception as e:
-        print(f"Error during training: {e}")
+        # Log the exception to stdout and wandb (if available) before re-raising
+        try:
+            logger.error(f"Error during training: {e}")
+        except Exception:
+            pass
         import traceback
         traceback.print_exc()
-        wandb.finish(exit_code=1)
+        try:
+            if wandb is not None and getattr(wandb, 'run', None) is not None:
+                wandb.log({'error/exception': str(e)})
+                wandb.finish(exit_code=1)
+        except Exception:
+            pass
         raise
