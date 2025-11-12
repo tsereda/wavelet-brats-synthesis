@@ -623,8 +623,8 @@ class SimpleCSVTripletDataset(Dataset):
 
 def get_args():
     parser = argparse.ArgumentParser(description="2.5D Middleslice Reconstruction - BraTS2023 GLI")
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to BraTS2023 GLI dataset directory')
+    parser.add_argument('--data_dir', type=str, required=False, default=None,
+                       help='Path to BraTS2023 GLI dataset directory (optional when using --preprocessed_dir)')
     parser.add_argument('--output_dir', type=str, default='./checkpoints')
     parser.add_argument('--model_type', type=str, default='swin', 
                        choices=['swin', 'unet', 'unetr'],
@@ -647,6 +647,8 @@ def get_args():
                        help='Number of DataLoader workers (default 0 - safe). Set >0 to enable multiprocessing.')
     parser.add_argument('--csv_index', type=str, default=None,
                        help='Optional CSV index of triplets (created by preprocess_dataset.py)')
+    parser.add_argument('--preprocessed_dir', type=str, default=None,
+                       help='Directory with preprocessed .pt slice files (created by preprocess_slices_to_tensors.py)')
     return parser.parse_args()
 
 
@@ -1027,6 +1029,15 @@ def main(args):
             image_size=(args.img_size, args.img_size),
             spacing=(1.0, 1.0, 1.0)
         )
+    elif args.preprocessed_dir:
+        # Fast path: load precomputed .pt slice files
+        print(f"Using preprocessed directory: {args.preprocessed_dir}")
+        try:
+            from preprocessed_dataset import FastTensorSliceDataset
+            dataset = FastTensorSliceDataset(args.preprocessed_dir)
+        except Exception as e:
+            print(f"Failed to load FastTensorSliceDataset from {args.preprocessed_dir}: {e}")
+            raise
     else:
         dataset = BraTS2D5Dataset(
             data_dir=args.data_dir, 

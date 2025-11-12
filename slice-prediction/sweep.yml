@@ -17,8 +17,8 @@ parameters:
       - haar
       - db2
   
-  data_dir:
-    value: "ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData"
+  preprocessed_dir:
+    value: "./preprocessed_slices"
   
   epochs:
     value: 100
@@ -31,9 +31,6 @@ parameters:
   
   img_size:
     value: 256
-
-  csv_index: 
-    value: "train_triplets.csv"
 
   num_workers:
     value: 16

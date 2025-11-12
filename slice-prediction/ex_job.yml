@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-6
+  name: midslice-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -42,14 +42,13 @@ spec:
             7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
             7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
             pip install PyWavelets
-            python preprocess_dataset.py \
-            --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
-            --output train_triplets.csv \
-            --num_triplets 5 \
-            --seed 42
+            python preprocess_slices_to_tensors.py \
+              --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
+              --output_dir ./preprocessed_slices \
+              --img_size 256
 
-            #python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/pdosk5sb
+            # Run WandB sweep agent (trials will read from ./preprocessed_slices)
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/gruvwoo6
 
         env:
         - name: WANDB_API_KEY
@@ -80,7 +79,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-6
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory
