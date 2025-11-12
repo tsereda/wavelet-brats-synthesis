@@ -92,8 +92,10 @@ def validate(epoch: int):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", required=True)
-    parser.add_argument("--entity", required=True)
+    parser.add_argument("--project", default=None,
+                        help="W&B project (optional; will use WANDB_PROJECT env var or agent defaults if omitted)")
+    parser.add_argument("--entity", default=None,
+                        help="W&B entity (optional; will use WANDB_ENTITY env var or agent defaults if omitted)")
     parser.add_argument("--run_name", default=None)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--save_dir", type=str, default="./checkpoints")
@@ -107,7 +109,15 @@ def main():
     args = parser.parse_args()
 
     # Initialize wandb
-    run = wandb.init(project=args.project, entity=args.entity, config=vars(args), name=args.run_name)
+    # Prefer CLI args, then WANDB_PROJECT/WANDB_ENTITY env vars; omit if not set so wandb can use its defaults.
+    project = args.project or os.environ.get("WANDB_PROJECT")
+    entity = args.entity or os.environ.get("WANDB_ENTITY")
+    wandb_init_kwargs = {"config": vars(args), "name": args.run_name}
+    if project:
+        wandb_init_kwargs["project"] = project
+    if entity:
+        wandb_init_kwargs["entity"] = entity
+    run = wandb.init(**wandb_init_kwargs)
 
     # state you would normally save
     model_state = {"example": True}
