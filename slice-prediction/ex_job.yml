@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-1
+  name: midslice-6
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -48,7 +48,7 @@ spec:
             --num_triplets 5 \
             --seed 42
 
-            python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
+            #python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
             wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/bq23x74e
 
         env:
@@ -80,7 +80,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-1
+          claimName: brats2025-6
       - name: shm
         emptyDir:
           medium: Memory
