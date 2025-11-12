@@ -1134,7 +1134,25 @@ def main(args):
                 'config': vars(args)
             }, checkpoint_path)
             print(f"Saved best checkpoint to {checkpoint_path}")
+            # Ensure the file is saved locally then attempt to upload to WandB
             wandb.save(checkpoint_path)
+
+            # ALSO: log the checkpoint as a WandB Artifact for better model management
+            try:
+                artifact_name = f"{run_name}_best_model"
+                artifact = wandb.Artifact(name=artifact_name, type="model", metadata={
+                    'epoch': int(epoch),
+                    'best_loss': float(best_loss),
+                    'model_type': args.model_type,
+                    'wavelet': args.wavelet
+                })
+                artifact.add_file(checkpoint_path)
+                # log_artifact uploads the file to the current run's artifacts
+                wandb.log_artifact(artifact)
+                print(f"Logged best checkpoint to WandB Artifact: {artifact_name}")
+            except Exception as e:
+                # Don't crash training if WandB artifact upload fails; warn and continue
+                print(f"Warning: Failed to log checkpoint artifact to WandB: {e}")
     
     # Final training timing summary
     final_timing = timing_stats.get_stats()
