@@ -49,7 +49,7 @@ spec:
             --seed 42
 
             #python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/bq23x74e
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/i5926krh
 
         env:
         - name: WANDB_API_KEY
