@@ -93,9 +93,9 @@ def validate(epoch: int):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--project", default=None,
-                        help="W&B project (optional; will use WANDB_PROJECT env var or agent defaults if omitted)")
+                        help="W&B project name. If omitted, will use WANDB_PROJECT env var")
     parser.add_argument("--entity", default=None,
-                        help="W&B entity (optional; will use WANDB_ENTITY env var or agent defaults if omitted)")
+                        help="W&B entity name. If omitted, will use WANDB_ENTITY env var")
     parser.add_argument("--run_name", default=None)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--save_dir", type=str, default="./checkpoints")
@@ -106,37 +106,16 @@ def main():
     parser.add_argument("--monitor_mode", choices=["min", "max"], default="min")
     parser.add_argument("--resume", type=str, default=None,
                         help="Path to checkpoint to resume (local file)")
+    args = parser.parse_args()
 
-    # Added: expected sweep / training args (agent passes these)
-    parser.add_argument("--batch_size", type=int, default=8, help="training batch size")
-    parser.add_argument("--csv_index", type=str, default="train_triplets.csv", help="csv with triplet indices")
-    parser.add_argument("--data_dir", type=str, default="ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData", help="data directory")
-    parser.add_argument("--img_size", type=int, default=256, help="image size")
-    parser.add_argument("--lr", type=float, default=1e-4, help="learning rate")
-    parser.add_argument("--model_type", type=str, default="unet", help="model type")
-    parser.add_argument("--wavelet", type=str, default="none", help="wavelet type or 'none'")
-
-    # Use parse_known_args so unknown flags from external tooling don't crash the script
-    args, _unknown = parser.parse_known_args()
+    # Resolve project/entity from args or environment variables
+    args.project = args.project or os.getenv("WANDB_PROJECT")
+    args.entity = args.entity or os.getenv("WANDB_ENTITY")
+    if not args.project or not args.entity:
+        parser.error("project and entity must be provided via --project/--entity or WANDB_PROJECT/WANDB_ENTITY env vars")
 
     # Initialize wandb
-    # Prefer CLI args, then WANDB_PROJECT/WANDB_ENTITY env vars; omit if not set so wandb can use its defaults.
-    project = args.project or os.environ.get("WANDB_PROJECT")
-    entity = args.entity or os.environ.get("WANDB_ENTITY")
-    wandb_init_kwargs = {"config": vars(args), "name": args.run_name}
-    if project:
-        wandb_init_kwargs["project"] = project
-    if entity:
-        wandb_init_kwargs["entity"] = entity
-    run = wandb.init(**wandb_init_kwargs)
-
-    # Merge wandb.config into args so sweep-provided values (via agent) take precedence
-    try:
-        for k, v in dict(wandb.config).items():
-            if v is not None and hasattr(args, k):
-                setattr(args, k, v)
-    except Exception:
-        pass
+    run = wandb.init(project=args.project, entity=args.entity, config=vars(args), name=args.run_name)
 
     # state you would normally save
     model_state = {"example": True}

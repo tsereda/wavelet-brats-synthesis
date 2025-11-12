@@ -100,30 +100,45 @@ def main():
     sub = parser.add_subparsers(dest="cmd")
 
     p_list = sub.add_parser("list")
-    p_list.add_argument("--project", required=True)
-    p_list.add_argument("--entity", default=None)
+    p_list.add_argument("--project", default=None,
+                        help="W&B project name. If omitted, will use WANDB_PROJECT env var")
+    p_list.add_argument("--entity", default=None,
+                        help="W&B entity name. If omitted, will use WANDB_ENTITY env var")
     p_list.add_argument("--type", default=None)
 
     p_download = sub.add_parser("download")
-    p_download.add_argument("--project", required=True)
+    p_download.add_argument("--project", default=None,
+                            help="W&B project name. If omitted, will use WANDB_PROJECT env var")
     p_download.add_argument("--artifact-name", required=True)
-    p_download.add_argument("--entity", default=None)
+    p_download.add_argument("--entity", default=None,
+                            help="W&B entity name. If omitted, will use WANDB_ENTITY env var")
     p_download.add_argument("--dest", default=".")
 
     p_best = sub.add_parser("download_best")
-    p_best.add_argument("--project", required=True)
-    p_best.add_argument("--entity", default=None)
+    p_best.add_argument("--project", default=None,
+                        help="W&B project name. If omitted, will use WANDB_PROJECT env var")
+    p_best.add_argument("--entity", default=None,
+                        help="W&B entity name. If omitted, will use WANDB_ENTITY env var")
     p_best.add_argument("--dest", default=".")
 
     p_inspect = sub.add_parser("inspect")
     p_inspect.add_argument("path", help="Local checkpoint file to inspect")
 
     args = parser.parse_args()
+    # Resolve project/entity from args or environment variables
+    args.project = args.project or os.getenv("WANDB_PROJECT")
+    args.entity = args.entity or os.getenv("WANDB_ENTITY")
     if args.cmd == "list":
+        if not args.project:
+            parser.error("--project or WANDB_PROJECT env var must be provided")
         list_artifacts(args.project, args.entity, args.type)
     elif args.cmd == "download":
+        if not args.project:
+            parser.error("--project or WANDB_PROJECT env var must be provided")
         download_artifact(args.project, args.artifact_name, args.entity, args.dest)
     elif args.cmd == "download_best":
+        if not args.project:
+            parser.error("--project or WANDB_PROJECT env var must be provided")
         download_best(args.project, args.entity, args.dest)
     elif args.cmd == "inspect":
         inspect_local_checkpoint(args.path)
