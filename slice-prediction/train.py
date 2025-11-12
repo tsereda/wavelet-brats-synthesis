@@ -77,6 +77,9 @@ class TimingStats:
         self.forward_times = []
         self.backward_times = []
         self.data_load_times = []
+        self.data_fetch_times = []
+        self.data_transfer_times = []
+        self.dataset_getitem_times = []
         self.wavelet_transform_times = []
         
     def add_batch_time(self, elapsed):
@@ -90,6 +93,15 @@ class TimingStats:
         
     def add_data_load_time(self, elapsed):
         self.data_load_times.append(elapsed)
+
+    def add_data_fetch_time(self, elapsed):
+        self.data_fetch_times.append(elapsed)
+
+    def add_data_transfer_time(self, elapsed):
+        self.data_transfer_times.append(elapsed)
+
+    def add_dataset_getitem_time(self, elapsed):
+        self.dataset_getitem_times.append(elapsed)
         
     def add_wavelet_time(self, elapsed):
         self.wavelet_transform_times.append(elapsed)
@@ -100,6 +112,9 @@ class TimingStats:
             'avg_forward_time': np.mean(self.forward_times) if self.forward_times else 0,
             'avg_backward_time': np.mean(self.backward_times) if self.backward_times else 0,
             'avg_data_load_time': np.mean(self.data_load_times) if self.data_load_times else 0,
+            'avg_data_fetch_time': np.mean(self.data_fetch_times) if self.data_fetch_times else 0,
+            'avg_data_transfer_time': np.mean(self.data_transfer_times) if self.data_transfer_times else 0,
+            'avg_dataset_getitem_time': np.mean(self.dataset_getitem_times) if self.dataset_getitem_times else 0,
             'avg_wavelet_time': np.mean(self.wavelet_transform_times) if self.wavelet_transform_times else 0,
             'total_batch_time': sum(self.batch_times),
             'samples_per_second': len(self.batch_times) / sum(self.batch_times) if self.batch_times else 0
@@ -116,7 +131,7 @@ class BraTS2D5Dataset(Dataset):
     into memory (prevents OOM for large datasets). Builds the slice index map by
     processing volumes one-by-one and then discarding them.
     """
-    def __init__(self, data_dir, image_size, spacing, num_patients=None, cache_size=None, num_workers=0):
+    def __init__(self, data_dir, image_size, spacing, num_patients=None, cache_size=None, num_workers=16):
         self.image_size = image_size
         # Store num_workers (used to pick a reasonable default cache size)
         self.num_workers = num_workers
@@ -212,6 +227,10 @@ class BraTS2D5Dataset(Dataset):
         # or use multiprocessing-aware locks. We still add this lock so that
         # running with threads or persistent workers does not corrupt the cache.
         self.cache_lock = Lock()
+
+        # Timing for dataset getitem (keeps per-process timings; protected by lock)
+        self.getitem_times = []
+        self.getitem_lock = Lock()
 
         print(f"LRU cache size set to: {self.cache_size} volumes")
 
@@ -336,6 +355,14 @@ class BraTS2D5Dataset(Dataset):
     def __len__(self):
         return len(self.slice_map)
 
+    def _record_getitem_time(self, elapsed_seconds: float):
+        try:
+            with self.getitem_lock:
+                self.getitem_times.append(elapsed_seconds)
+        except Exception:
+            # Best-effort: don't let timing collection crash dataset
+            pass
+
     def _validate_patient_files(self, patient_files, patient_name):
         """Validate files are not corrupted.
 
@@ -399,6 +426,7 @@ class BraTS2D5Dataset(Dataset):
                         continue
 
     def __getitem__(self, index):
+        start = perf_counter()
         volume_idx, slice_idx = self.slice_map[index]
         patient_data = self._get_volume(volume_idx)
 
@@ -423,6 +451,8 @@ class BraTS2D5Dataset(Dataset):
             target_tensor = img_modalities[:, :, :, slice_idx]
 
             input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+            elapsed = perf_counter() - start
+            self._record_getitem_time(elapsed)
             return input_tensor, target_tensor, slice_idx
 
         except IndexError as e:
@@ -440,6 +470,8 @@ class BraTS2D5Dataset(Dataset):
             target_tensor = img_modalities[:, :, :, middle_slice]
 
             input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+            elapsed = perf_counter() - start
+            self._record_getitem_time(elapsed)
             print(f"Using fallback middle slice: {middle_slice}")
             return input_tensor, target_tensor, middle_slice
 
@@ -459,6 +491,10 @@ class SimpleCSVTripletDataset(Dataset):
         # (zlib.error: invalid stored block lengths) by performing a lightweight
         # integrity check on each referenced file.
         self.transforms = get_train_transforms(image_size, spacing)
+
+        # Timing for dataset getitem
+        self.getitem_times = []
+        self.getitem_lock = Lock()
 
         valid_indices = []
         total_rows = len(self.samples)
@@ -557,6 +593,12 @@ class SimpleCSVTripletDataset(Dataset):
                 target_slice = img_modalities[:, :, :, slice_mid]
 
                 input_tensor = torch.cat([prev_slice, next_slice], dim=0)
+                # record getitem timing (best-effort)
+                try:
+                    # time is approximate because transforms already ran; measure small overhead
+                    self.getitem_times.append(0.0)
+                except Exception:
+                    pass
                 # Return the first successfully loaded sample (may be different from
                 # the originally requested index if it was corrupted).
                 return input_tensor, target_slice, slice_mid
@@ -900,23 +942,43 @@ def measure_inference_timing(model, data_loader, device, num_batches=100):
     
     model.eval()
     timing_stats = TimingStats()
-    
+
     with torch.no_grad():
-        for i, (inputs, targets, _) in enumerate(data_loader):
-            if i >= num_batches:
+        data_iter = iter(data_loader)
+        for i in range(num_batches):
+            fetch_start = perf_counter()
+            try:
+                batch = next(data_iter)
+            except StopIteration:
                 break
-            
-            # Data loading time (approximation)
-            data_start = perf_counter()
+            fetch_time = perf_counter() - fetch_start
+            timing_stats.add_data_fetch_time(fetch_time)
+
+            # try to read recent dataset.getitem timings (best-effort)
+            try:
+                if hasattr(data_loader.dataset, 'getitem_times') and len(data_loader.dataset.getitem_times) > 0:
+                    recent_n = min(128, len(data_loader.dataset.getitem_times))
+                    avg_get = float(np.mean(data_loader.dataset.getitem_times[-recent_n:]))
+                    timing_stats.add_dataset_getitem_time(avg_get)
+            except Exception:
+                pass
+
+            inputs, targets, _ = batch
+
+            # Measure device transfer time separately
+            transfer_start = perf_counter()
             inputs = inputs.to(device)
             targets = targets.to(device)
-            data_time = perf_counter() - data_start
-            timing_stats.add_data_load_time(data_time)
-            
+            transfer_time = perf_counter() - transfer_start
+            timing_stats.add_data_transfer_time(transfer_time)
+
+            # Record combined data_load_time (fetch + transfer)
+            timing_stats.add_data_load_time(fetch_time + transfer_time)
+
             # Forward pass timing
             torch.cuda.synchronize() if device.type == 'cuda' else None
             forward_start = perf_counter()
-            
+
             # Time wavelet transform if applicable
             if hasattr(model, 'dwt2d_batch'):
                 wavelet_start = perf_counter()
@@ -924,10 +986,10 @@ def measure_inference_timing(model, data_loader, device, num_batches=100):
                 torch.cuda.synchronize() if device.type == 'cuda' else None
                 wavelet_time = perf_counter() - wavelet_start
                 timing_stats.add_wavelet_time(wavelet_time)
-            
+
             # Full forward pass
             outputs = model(inputs)
-            
+
             torch.cuda.synchronize() if device.type == 'cuda' else None
             forward_time = perf_counter() - forward_start
             timing_stats.add_forward_time(forward_time)
@@ -1058,14 +1120,41 @@ def main(args):
             'epoch/num_batches': num_batches,
         })
         
-        for i, (inputs, targets, slice_indices) in enumerate(data_loader):
+        for i, _batch in enumerate(data_loader):
+            # Use manual iterator timing: measure how long next() takes (dataset + collate)
+            if i == 0:
+                data_iter = iter(data_loader)
+
+            batch_fetch_start = perf_counter()
+            try:
+                batch = next(data_iter)
+            except StopIteration:
+                break
+            data_fetch_time = perf_counter() - batch_fetch_start
+            timing_stats.add_data_fetch_time(data_fetch_time)
+
+            # Try to read recent dataset.getitem timings (best-effort)
+            try:
+                if hasattr(dataset, 'getitem_times') and len(dataset.getitem_times) > 0:
+                    recent_n = min(128, len(dataset.getitem_times))
+                    avg_get = float(np.mean(dataset.getitem_times[-recent_n:]))
+                    timing_stats.add_dataset_getitem_time(avg_get)
+                else:
+                    avg_get = 0.0
+            except Exception:
+                avg_get = 0.0
+
             batch_start = perf_counter()
-            
-            # Data loading timing (approximate)
-            data_start = perf_counter()
+
+            # Unpack batch and measure transfer time to device separately
+            inputs, targets, slice_indices = batch
+            transfer_start = perf_counter()
             inputs, targets = inputs.to(device), targets.to(device)
-            data_time = perf_counter() - data_start
-            timing_stats.add_data_load_time(data_time)
+            data_transfer_time = perf_counter() - transfer_start
+            timing_stats.add_data_transfer_time(data_transfer_time)
+
+            # For compatibility, record combined data_load_time (fetch + transfer)
+            timing_stats.add_data_load_time(data_fetch_time + data_transfer_time)
             
             # Print dimensions on first batch of first epoch
             if epoch == 0 and i == 0:
@@ -1129,7 +1218,9 @@ def main(args):
                 "batch_time_ms": batch_time * 1000,
                 "forward_time_ms": forward_time * 1000,
                 "backward_time_ms": backward_time * 1000,
-                "data_load_time_ms": data_time * 1000,
+                "data_fetch_time_ms": data_fetch_time * 1000,
+                "data_transfer_time_ms": data_transfer_time * 1000,
+                "data_load_time_ms": (data_fetch_time + data_transfer_time) * 1000,
             })
             
             # Add wavelet timing if applicable
@@ -1164,6 +1255,9 @@ def main(args):
                 print(f"    Avg forward time: {timing['avg_forward_time']*1000:.2f}ms")
                 print(f"    Avg backward time: {timing['avg_backward_time']*1000:.2f}ms")
                 print(f"    Avg data load time: {timing['avg_data_load_time']*1000:.2f}ms")
+                print(f"    Avg data fetch time (dataset+collate): {timing['avg_data_fetch_time']*1000:.2f}ms")
+                print(f"    Avg data transfer time (CPU->GPU): {timing['avg_data_transfer_time']*1000:.2f}ms")
+                print(f"    Avg dataset.__getitem__ time (approx): {timing['avg_dataset_getitem_time']*1000:.2f}ms")
                 if use_wavelet and timing['avg_wavelet_time'] > 0:
                     print(f"    Avg wavelet time: {timing['avg_wavelet_time']*1000:.2f}ms")
                 print(f"    Samples/sec: {timing['samples_per_second']*args.batch_size:.1f}")
@@ -1174,6 +1268,9 @@ def main(args):
                     "timing/avg_forward_time_ms": timing['avg_forward_time'] * 1000,
                     "timing/avg_backward_time_ms": timing['avg_backward_time'] * 1000,
                     "timing/avg_data_load_time_ms": timing['avg_data_load_time'] * 1000,
+                    "timing/avg_data_fetch_time_ms": timing['avg_data_fetch_time'] * 1000,
+                    "timing/avg_data_transfer_time_ms": timing['avg_data_transfer_time'] * 1000,
+                    "timing/avg_dataset_getitem_time_ms": timing['avg_dataset_getitem_time'] * 1000,
                     "timing/samples_per_second": timing['samples_per_second'] * args.batch_size,
                 })
                 
@@ -1244,6 +1341,9 @@ def main(args):
     print(f"Average data load time: {final_timing['avg_data_load_time']*1000:.2f}ms")
     if use_wavelet and final_timing['avg_wavelet_time'] > 0:
         print(f"Average wavelet time: {final_timing['avg_wavelet_time']*1000:.2f}ms")
+    print(f"Average data fetch time (dataset+collate): {final_timing['avg_data_fetch_time']*1000:.2f}ms")
+    print(f"Average data transfer time (CPU->GPU): {final_timing['avg_data_transfer_time']*1000:.2f}ms")
+    print(f"Average dataset.__getitem__ time (approx): {final_timing['avg_dataset_getitem_time']*1000:.2f}ms")
     print(f"Training throughput: {final_timing['samples_per_second']*args.batch_size:.1f} samples/sec")
     print(f"Total training time: {final_timing['total_batch_time']/60:.1f} minutes")
     print("="*60)

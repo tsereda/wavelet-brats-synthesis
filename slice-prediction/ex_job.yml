@@ -49,7 +49,7 @@ spec:
             --seed 42
 
             #python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/1u42ygkm
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/ezgogyjx
 
         env:
         - name: WANDB_API_KEY
@@ -64,11 +64,11 @@ spec:
         resources:
           requests:
             memory: "50Gi"
-            cpu: "15"
+            cpu: "30"
             nvidia.com/a100: "1"
           limits:
             memory: "60Gi"
-            cpu: "18"
+            cpu: "36"
             nvidia.com/a100: "1"
       
         volumeMounts:
