@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-2
+  name: midslice-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -48,7 +48,7 @@ spec:
               --img_size 256
 
             # Run WandB sweep agent (trials will read from ./preprocessed_slices)
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/o8bt4smj
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/1wfhjnkh
 
         env:
         - name: WANDB_API_KEY
@@ -79,7 +79,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-2
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory

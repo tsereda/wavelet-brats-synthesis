@@ -72,7 +72,7 @@ spec:
           --output_dir ./preprocessed_slices \
           --img_size 256
 
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/rr6hdp69
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/o8bt4smj
 
         tail -f /dev/null
    
