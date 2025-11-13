@@ -20,7 +20,6 @@ import torch
 import random
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
-from functools import partial
 
 from transforms import get_train_transforms
 
@@ -60,7 +59,9 @@ def select_non_overlapping_triplets(depth, num_triplets=5, margin=3, seed=None):
         List of slice indices for triplet centers
     """
     if seed is not None:
-        random.seed(seed)
+        rng = random.Random(seed)
+    else:
+        rng = random.Random()
     
     # Valid range: need prev and next slice, so [1, depth-2]
     # Also apply conservative bounds similar to your training code
@@ -70,11 +71,11 @@ def select_non_overlapping_triplets(depth, num_triplets=5, margin=3, seed=None):
     if safe_end - safe_start < num_triplets * margin:
         # Not enough room for non-overlapping triplets, just sample what we can
         valid_indices = list(range(safe_start, safe_end + 1))
-        return random.sample(valid_indices, min(num_triplets, len(valid_indices)))
+        return rng.sample(valid_indices, min(num_triplets, len(valid_indices)))
     
     # Greedy selection of non-overlapping centers
     valid_indices = list(range(safe_start, safe_end + 1))
-    random.shuffle(valid_indices)
+    rng.shuffle(valid_indices)
     
     selected = []
     for idx in valid_indices:
@@ -87,12 +88,16 @@ def select_non_overlapping_triplets(depth, num_triplets=5, margin=3, seed=None):
     return sorted(selected)
 
 
-def process_patient(patient_path, output_dir, img_size, spacing, triplets_per_patient, 
-                   triplet_margin, base_seed, patient_idx):
+def process_patient(patient_info):
     """
     Process a single patient and save triplet slices.
     Returns list of (filepath, patient_name, slice_idx) tuples for CSV writing.
+    
+    patient_info is a tuple: (patient_path, patient_idx, output_dir, img_size, 
+                               spacing, triplets_per_patient, triplet_margin, base_seed)
     """
+    patient_path, patient_idx, output_dir, img_size, spacing, triplets_per_patient, triplet_margin, base_seed = patient_info
+    
     patient_name = os.path.basename(patient_path)
     results = []
     
@@ -119,7 +124,7 @@ def process_patient(patient_path, output_dir, img_size, spacing, triplets_per_pa
 
         ok, err = validate_patient_files(patient_files)
         if not ok:
-            print(f"Skipping {patient_name}: {err}")
+            print(f"✗ Skipping {patient_name}: {err}")
             return results
 
         # Get transforms (need to create fresh ones per process)
@@ -218,24 +223,16 @@ def main():
 
     start = time()
 
-    # Create partial function with fixed arguments
-    process_func = partial(
-        process_patient,
-        output_dir=out_dir,
-        img_size=args.img_size,
-        spacing=tuple(args.spacing),
-        triplets_per_patient=args.triplets_per_patient,
-        triplet_margin=args.triplet_margin,
-        base_seed=args.seed
-    )
+    # Prepare arguments for each worker
+    worker_args = [
+        (p, idx, out_dir, args.img_size, tuple(args.spacing), 
+         args.triplets_per_patient, args.triplet_margin, args.seed)
+        for idx, p in enumerate(patients)
+    ]
 
     # Process patients in parallel
     with Pool(processes=args.num_workers) as pool:
-        # Use enumerate to pass patient index for reproducible seeding
-        all_results = pool.starmap(
-            process_func,
-            [(p, idx) for idx, p in enumerate(patients)]
-        )
+        all_results = pool.map(process_patient, worker_args)
 
     # Flatten results and write CSV
     total_saved = 0
