@@ -6,46 +6,22 @@ metric:
 
 parameters:
   model_type:
-    value: wavelet
+    values:
+      - unet
+      - swin
+      - unetr
   
   wavelet:
     values:
-      # Haar
+      - none
       - haar
-      # Daubechies family
-      - db1
       - db2
-      - db3
-      - db4
-      - db5
-      - db8
-      - db10
-      # Symlets
-      - sym2
-      - sym3
-      - sym4
-      - sym5
-      - sym8
-      # Coiflets
-      - coif1
-      - coif2
-      - coif3
-      - coif5
-      # Biorthogonal
-      - bior1.3
-      - bior2.2
-      - bior3.3
-      - bior4.4
-      # Reverse biorthogonal
-      - rbio1.3
-      - rbio2.2
-      - rbio3.3
   
-  data_dir:
-    value: "BraTS2020_TrainingData/MICCAI_BraTS2020_TrainingData"
+  preprocessed_dir:
+    value: "./preprocessed_slices"
   
   epochs:
-    value: 10
+    value: 100
   
   batch_size:
     value: 8
@@ -55,6 +31,6 @@ parameters:
   
   img_size:
     value: 256
-  
-  num_patients:
-    value: 50  # Use all patients
+
+  num_workers:
+    value: 16

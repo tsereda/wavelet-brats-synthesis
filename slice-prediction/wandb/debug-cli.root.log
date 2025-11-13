@@ -1,0 +1,12 @@
+2025-11-11 17:55:24 INFO Running runs: []
+2025-11-11 17:55:24 INFO Agent received command: run
+2025-11-11 17:55:24 INFO Agent starting run with config:
+	batch_size: 8
+	csv_index: train_triplets.csv
+	data_dir: ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData
+	epochs: 100
+	img_size: 256
+	lr: 0.0001
+	model_type: unet
+	wavelet: none
+2025-11-11 17:55:24 INFO About to run command: /usr/bin/env python train.py --batch_size=8 --csv_index=train_triplets.csv --data_dir=ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --epochs=100 --img_size=256 --lr=0.0001 --model_type=unet --wavelet=none

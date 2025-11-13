@@ -51,11 +51,29 @@ def load_and_clean_data(filepath):
     df = pd.read_csv(filepath)
     metric_cols = [col for col in df.columns if col != 'Name']
     df_clean = df.dropna(subset=metric_cols, how='all').copy()
-    df_clean['wavelet_type'] = df_clean['Name'].str.extract(r'wavelet_([a-z0-9.]+)_\d+')[0]
+    
+    # Extract wavelet type from name, handling different patterns
+    df_clean['wavelet_type'] = df_clean['Name'].str.extract(r'_wavelet_([a-z0-9.]+)_\d+')[0]
+    
+    # Handle cases where wavelet extraction fails (likely nowavelet experiments)
+    df_clean['wavelet_type'] = df_clean['wavelet_type'].fillna('none')
+    
+    # For experiments with "nowavelet" in the name, explicitly set to 'none'
+    nowavelet_mask = df_clean['Name'].str.contains('nowavelet', na=False)
+    df_clean.loc[nowavelet_mask, 'wavelet_type'] = 'none'
     
     print(f"Total experiments: {len(df)}")
     print(f"Complete experiments: {len(df_clean)}")
-    print(f"\nWavelet types found: {sorted(df_clean['wavelet_type'].unique())}")
+    print(f"\nWavelet types found: {sorted(df_clean['wavelet_type'].dropna().unique())}")
+    
+    # Print experiment breakdown
+    print("\nExperiment breakdown:")
+    for wtype in sorted(df_clean['wavelet_type'].unique()):
+        count = (df_clean['wavelet_type'] == wtype).sum()
+        experiments = df_clean[df_clean['wavelet_type'] == wtype]['Name'].tolist()
+        print(f"  {wtype}: {count} experiments")
+        for exp in experiments:
+            print(f"    - {exp}")
     
     return df_clean
 
@@ -240,7 +258,8 @@ def print_analysis(df_clean):
         'Daubechies': [w for w in df_clean['wavelet_type'] if w.startswith('db')],
         'Symlets': [w for w in df_clean['wavelet_type'] if w.startswith('sym')],
         'Coiflets': [w for w in df_clean['wavelet_type'] if w.startswith('coif')],
-        'Haar': [w for w in df_clean['wavelet_type'] if w == 'haar']
+        'Haar': [w for w in df_clean['wavelet_type'] if w == 'haar'],
+        'None (Baseline)': [w for w in df_clean['wavelet_type'] if w == 'none']
     }
 
     print(f"\n🔬 Wavelet Family Analysis:")
@@ -264,6 +283,23 @@ def main():
     
     # Load and clean data
     df_clean = load_and_clean_data(input_file)
+    
+    # Check if we have valid data
+    if len(df_clean) == 0:
+        print("Error: No valid experiments found in the data!")
+        return
+    
+    # Check if we have the required columns
+    modalities = ['flair', 't1', 't1ce', 't2']
+    required_cols = []
+    for mod in modalities:
+        required_cols.extend([f'eval/ssim_{mod}_mean', f'eval/mse_{mod}_mean'])
+    
+    missing_cols = [col for col in required_cols if col not in df_clean.columns]
+    if missing_cols:
+        print(f"Warning: Missing columns: {missing_cols}")
+        print("Available columns:", df_clean.columns.tolist())
+        return
     
     # Create visualizations
     df_clean = create_visualizations(df_clean, OUTPUT_VIZ)
