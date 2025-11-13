@@ -66,9 +66,13 @@ spec:
         --num_triplets 5 \
         --seed 42
 
-        python train.py --num_patients 3 --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData --csv_index train_triplets.csv
+        pip install PyWavelets
+        python preprocess_slices_to_tensors.py \
+          --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
+          --output_dir ./preprocessed_slices \
+          --img_size 256
 
-        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/bq23x74e
+        wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/rr6hdp69
 
         tail -f /dev/null
    

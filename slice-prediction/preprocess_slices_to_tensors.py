@@ -52,8 +52,6 @@ def main():
     parser.add_argument('--output_dir', required=True)
     parser.add_argument('--img_size', type=int, default=256)
     parser.add_argument('--spacing', type=float, nargs=3, default=(1.0, 1.0, 1.0))
-    parser.add_argument('--min_mean_intensity', type=float, default=50.0,
-                        help='Minimum mean intensity on T1c slice to consider it a brain slice')
     parser.add_argument('--max_slices_per_patient', type=int, default=9999,
                         help='Optional cap on saved slices per patient (useful for debugging)')
     args = parser.parse_args()
@@ -117,10 +115,6 @@ def main():
                         break
 
                     mid_slice = img_modalities[:, :, :, z]
-                    if float(mid_slice.mean()) < args.min_mean_intensity:
-                        # likely background slice
-                        continue
-
                     prev_slice = img_modalities[:, :, :, z - 1]
                     next_slice = img_modalities[:, :, :, z + 1]
 
@@ -140,6 +134,8 @@ def main():
 
             except Exception as e:
                 print(f"Error processing {patient_name}: {e}")
+                import traceback
+                traceback.print_exc()
                 continue
 
     elapsed = time() - start
