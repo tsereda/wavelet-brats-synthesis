@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Preprocess BraTS volumes once and save 2.5D triplet slices as individual .pt files.
-MODIFIED: Saves only 5 random non-overlapping triplets per patient.
+MODIFIED: Saves only 5 random non-overlapping triplets per patient with MULTIPROCESSING.
 
 Usage:
     python preprocess_slices_to_tensors.py \
         --data_dir /path/to/BraTSFolder \
         --output_dir ./preprocessed_slices \
-        --img_size 256
+        --img_size 256 \
+        --num_workers 8
 """
 import os
 import glob
@@ -18,6 +19,8 @@ from time import time
 import torch
 import random
 from pathlib import Path
+from multiprocessing import Pool, cpu_count
+from functools import partial
 
 from transforms import get_train_transforms
 
@@ -43,7 +46,7 @@ def build_patient_list(data_dir):
     return patient_dirs
 
 
-def select_non_overlapping_triplets(depth, num_triplets=5, margin=3):
+def select_non_overlapping_triplets(depth, num_triplets=5, margin=3, seed=None):
     """
     Select num_triplets random non-overlapping triplet centers.
     
@@ -51,10 +54,14 @@ def select_non_overlapping_triplets(depth, num_triplets=5, margin=3):
         depth: total number of slices
         num_triplets: number of triplets to select (default 5)
         margin: minimum spacing between triplet centers to avoid overlap
+        seed: random seed (optional, for reproducibility per patient)
     
     Returns:
         List of slice indices for triplet centers
     """
+    if seed is not None:
+        random.seed(seed)
+    
     # Valid range: need prev and next slice, so [1, depth-2]
     # Also apply conservative bounds similar to your training code
     safe_start = max(1, int(0.1 * depth))
@@ -80,6 +87,96 @@ def select_non_overlapping_triplets(depth, num_triplets=5, margin=3):
     return sorted(selected)
 
 
+def process_patient(patient_path, output_dir, img_size, spacing, triplets_per_patient, 
+                   triplet_margin, base_seed, patient_idx):
+    """
+    Process a single patient and save triplet slices.
+    Returns list of (filepath, patient_name, slice_idx) tuples for CSV writing.
+    """
+    patient_name = os.path.basename(patient_path)
+    results = []
+    
+    # Use patient-specific seed for reproducibility
+    patient_seed = base_seed + patient_idx
+    
+    try:
+        # Find modalities
+        modalities = {}
+        for suffix in ['t1n', 't1c', 't2w', 't2f']:
+            matches = glob.glob(os.path.join(patient_path, f'*-{suffix}.nii*'))
+            if not matches:
+                raise FileNotFoundError(f"Missing *-{suffix} in {patient_name}")
+            modalities[suffix] = matches[0]
+        
+        seg = None
+        seg_matches = glob.glob(os.path.join(patient_path, '*seg.nii*'))
+        if not seg_matches:
+            seg_matches = glob.glob(os.path.join(patient_path, '*label.nii*'))
+        if seg_matches:
+            seg = seg_matches[0]
+
+        patient_files = {**modalities, 'label': seg}
+
+        ok, err = validate_patient_files(patient_files)
+        if not ok:
+            print(f"Skipping {patient_name}: {err}")
+            return results
+
+        # Get transforms (need to create fresh ones per process)
+        transforms = get_train_transforms((img_size, img_size), spacing)
+        
+        # Apply full transforms
+        processed = transforms(patient_files)
+
+        # Concatenate modalities into a single tensor [C_total, H, W, D]
+        img_modalities = torch.cat([
+            processed['t1n'], 
+            processed['t1c'], 
+            processed['t2w'], 
+            processed['t2f']
+        ], dim=0)
+
+        depth = img_modalities.shape[3]
+        
+        # Select random non-overlapping triplet centers
+        selected_slices = select_non_overlapping_triplets(
+            depth, 
+            num_triplets=triplets_per_patient,
+            margin=triplet_margin,
+            seed=patient_seed
+        )
+
+        # Save only the selected triplets
+        for z in selected_slices:
+            mid_slice = img_modalities[:, :, :, z]
+            prev_slice = img_modalities[:, :, :, z - 1]
+            next_slice = img_modalities[:, :, :, z + 1]
+
+            # input: concat(prev, next) -> channels doubled
+            input_tensor = torch.cat([prev_slice, next_slice], dim=0).contiguous()
+            target_tensor = mid_slice.contiguous()
+
+            fname = f"{patient_name}_slice_{z:04d}.pt"
+            out_path = output_dir / fname
+            torch.save({
+                'input': input_tensor, 
+                'target': target_tensor, 
+                'patient': patient_name, 
+                'slice_idx': int(z)
+            }, str(out_path))
+
+            results.append((str(out_path), patient_name, int(z)))
+
+        print(f"✓ {patient_name} -> saved {len(selected_slices)} slices at indices {selected_slices}")
+        
+    except Exception as e:
+        print(f"✗ Error processing {patient_name}: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_dir', required=True)
@@ -92,9 +189,17 @@ def main():
                         help='Minimum spacing between triplet centers')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
+    parser.add_argument('--num_workers', type=int, default=None,
+                        help='Number of worker processes (default: CPU count)')
     args = parser.parse_args()
 
-    # Set random seed for reproducibility
+    # Determine number of workers
+    if args.num_workers is None:
+        args.num_workers = cpu_count()
+    
+    print(f"Using {args.num_workers} worker processes")
+
+    # Set random seed for main process
     random.seed(args.seed)
     torch.manual_seed(args.seed)
 
@@ -103,107 +208,56 @@ def main():
 
     csv_path = out_dir / 'preprocessed_slices.csv'
 
-    transforms = get_train_transforms((args.img_size, args.img_size), tuple(args.spacing))
-
     patients = build_patient_list(args.data_dir)
     if not patients:
         raise RuntimeError(f"No patient directories found under {args.data_dir}")
 
-    start = time()
-    total_saved = 0
-
+    print(f"Found {len(patients)} patients")
     print(f"Preprocessing with {args.triplets_per_patient} random triplets per patient")
-    print(f"Using seed: {args.seed}")
+    print(f"Using base seed: {args.seed}")
 
-    # CSV header
+    start = time()
+
+    # Create partial function with fixed arguments
+    process_func = partial(
+        process_patient,
+        output_dir=out_dir,
+        img_size=args.img_size,
+        spacing=tuple(args.spacing),
+        triplets_per_patient=args.triplets_per_patient,
+        triplet_margin=args.triplet_margin,
+        base_seed=args.seed
+    )
+
+    # Process patients in parallel
+    with Pool(processes=args.num_workers) as pool:
+        # Use enumerate to pass patient index for reproducible seeding
+        all_results = pool.starmap(
+            process_func,
+            [(p, idx) for idx, p in enumerate(patients)]
+        )
+
+    # Flatten results and write CSV
+    total_saved = 0
     with open(csv_path, 'w', newline='') as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(['filepath', 'patient', 'slice_idx'])
-
-        for p_idx, p in enumerate(patients):
-            patient_name = os.path.basename(p)
-            try:
-                # find modalities
-                modalities = {}
-                for suffix in ['t1n', 't1c', 't2w', 't2f']:
-                    matches = glob.glob(os.path.join(p, f'*-{suffix}.nii*'))
-                    if not matches:
-                        raise FileNotFoundError(f"Missing *-{suffix} in {patient_name}")
-                    modalities[suffix] = matches[0]
-                seg = None
-                seg_matches = glob.glob(os.path.join(p, '*seg.nii*'))
-                if not seg_matches:
-                    seg_matches = glob.glob(os.path.join(p, '*label.nii*'))
-                if seg_matches:
-                    seg = seg_matches[0]
-
-                patient_files = {**modalities, 'label': seg}
-
-                ok, err = validate_patient_files(patient_files)
-                if not ok:
-                    print(f"Skipping {patient_name}: {err}")
-                    continue
-
-                # apply full transforms (this yields tensors with shape [C,H,W,D])
-                processed = transforms(patient_files)
-
-                # concatenate modalities into a single tensor [C_total, H, W, D]
-                img_modalities = torch.cat([
-                    processed['t1n'], 
-                    processed['t1c'], 
-                    processed['t2w'], 
-                    processed['t2f']
-                ], dim=0)
-
-                depth = img_modalities.shape[3]
-                
-                # Select random non-overlapping triplet centers
-                selected_slices = select_non_overlapping_triplets(
-                    depth, 
-                    num_triplets=args.triplets_per_patient,
-                    margin=args.triplet_margin
-                )
-
-                saved_for_patient = 0
-
-                # Save only the selected triplets
-                for z in selected_slices:
-                    mid_slice = img_modalities[:, :, :, z]
-                    prev_slice = img_modalities[:, :, :, z - 1]
-                    next_slice = img_modalities[:, :, :, z + 1]
-
-                    # input: concat(prev, next) -> channels doubled
-                    input_tensor = torch.cat([prev_slice, next_slice], dim=0).contiguous()
-                    target_tensor = mid_slice.contiguous()
-
-                    fname = f"{patient_name}_slice_{z:04d}.pt"
-                    out_path = out_dir / fname
-                    torch.save({
-                        'input': input_tensor, 
-                        'target': target_tensor, 
-                        'patient': patient_name, 
-                        'slice_idx': int(z)
-                    }, str(out_path))
-
-                    writer.writerow([str(out_path), patient_name, int(z)])
-                    saved_for_patient += 1
-                    total_saved += 1
-
-                print(f"Patient {p_idx+1}/{len(patients)}: {patient_name} -> saved {saved_for_patient} slices at indices {selected_slices}")
-
-            except Exception as e:
-                print(f"Error processing {patient_name}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
+        
+        for patient_results in all_results:
+            for row in patient_results:
+                writer.writerow(row)
+                total_saved += 1
 
     elapsed = time() - start
-    print(f"\nPreprocessing complete!")
+    print(f"\n{'='*60}")
+    print(f"Preprocessing complete!")
     print(f"Total slices saved: {total_saved}")
     print(f"Average per patient: {total_saved/len(patients):.1f}")
-    print(f"Time elapsed: {elapsed:.1f}s")
+    print(f"Time elapsed: {elapsed:.1f}s ({elapsed/60:.1f} minutes)")
+    print(f"Throughput: {len(patients)/elapsed:.2f} patients/second")
     print(f"Output directory: {out_dir}")
     print(f"CSV index: {csv_path}")
+    print(f"{'='*60}")
 
 
 if __name__ == '__main__':
