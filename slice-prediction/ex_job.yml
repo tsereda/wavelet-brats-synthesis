@@ -48,7 +48,7 @@ spec:
               --img_size 256
 
             # Run WandB sweep agent (trials will read from ./preprocessed_slices)
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/gruvwoo6
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/o8bt4smj
 
         env:
         - name: WANDB_API_KEY
