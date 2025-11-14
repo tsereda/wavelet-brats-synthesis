@@ -8,3 +8,4 @@ real03/
 k8s/training_pods/wandb-sweep-agent-*.yml
 k8s/training_pods/wandb-sweep-job-*.yml
 slice-prediction/wandb/
+slice-prediction/figures/
