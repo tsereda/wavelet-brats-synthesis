@@ -22,6 +22,7 @@ from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from dataset_split import get_split_loaders, split_dataset_by_patients
 
 
 # Configure logger for stdout (helps kubectl logs)
@@ -649,6 +650,14 @@ def get_args():
                        help='Optional CSV index of triplets (created by preprocess_dataset.py)')
     parser.add_argument('--preprocessed_dir', type=str, default=None,
                        help='Directory with preprocessed .pt slice files (created by preprocess_slices_to_tensors.py)')
+    parser.add_argument('--train_ratio', type=float, default=None,
+                       help='If set, perform patient-level split and use train/val/test loaders (e.g. 0.7)')
+    parser.add_argument('--val_ratio', type=float, default=0.15,
+                       help='Validation split ratio when performing patient-level split')
+    parser.add_argument('--test_ratio', type=float, default=0.15,
+                       help='Test split ratio when performing patient-level split')
+    parser.add_argument('--split_seed', type=int, default=42,
+                       help='Random seed for reproducible patient-level splits')
     return parser.parse_args()
 
 
@@ -1068,22 +1077,72 @@ def main(args):
     # DataLoader workers are controlled by CLI --num_workers. Default is 0 (safe).
     # When increasing workers, set cache_size to match number of workers to
     # avoid excessive cache usage.
-    data_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
-        persistent_workers=(args.num_workers > 0)
-    )
+    pin_mem = True if torch.cuda.is_available() else False
+    persistent = (args.num_workers > 0)
 
-    # Log DataLoader configuration
+    # If user requested patient-level splits via CLI, create split loaders
+    if getattr(args, 'train_ratio', None) is not None:
+        print(f"Creating patient-level splits: train={args.train_ratio}, val={args.val_ratio}, test={args.test_ratio}, seed={args.split_seed}")
+        try:
+            train_loader, val_loader, test_loader, train_dataset, val_dataset, test_dataset, patient_splits = get_split_loaders(
+                dataset,
+                batch_size=args.batch_size,
+                eval_batch_size=args.eval_batch_size,
+                num_workers=args.num_workers,
+                train_ratio=args.train_ratio,
+                val_ratio=args.val_ratio,
+                test_ratio=args.test_ratio,
+                seed=args.split_seed,
+                pin_memory=pin_mem,
+                persistent_workers=persistent,
+                shuffle_train=True
+            )
+            data_loader = train_loader
+            # Log split metadata
+            try:
+                dl_meta = {
+                    'dataloader/batch_size': args.batch_size,
+                    'dataloader/num_workers': args.num_workers,
+                    'dataloader/pin_memory': pin_mem,
+                    'dataloader/persistent_workers': persistent,
+                    'dataset/total_samples': len(dataset),
+                    'dataset/train_samples': len(train_dataset),
+                    'dataset/val_samples': len(val_dataset),
+                    'dataset/test_samples': len(test_dataset),
+                    'dataset/unique_patients_train': len(patient_splits.get('train', [])),
+                    'dataset/unique_patients_val': len(patient_splits.get('val', [])),
+                    'dataset/unique_patients_test': len(patient_splits.get('test', [])),
+                }
+                log_info(f"Split DataLoaders created", wandb_kv=dl_meta)
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"Failed to create split loaders: {e}\nFalling back to a single DataLoader on the full dataset")
+            data_loader = DataLoader(
+                dataset,
+                batch_size=args.batch_size,
+                shuffle=True,
+                num_workers=args.num_workers,
+                pin_memory=pin_mem,
+                persistent_workers=persistent
+            )
+    else:
+        data_loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=args.num_workers,
+            pin_memory=pin_mem,
+            persistent_workers=persistent
+        )
+
+    # Log DataLoader configuration (best-effort)
     try:
         dl_meta = {
             'dataloader/batch_size': args.batch_size,
             'dataloader/num_workers': args.num_workers,
-            'dataloader/pin_memory': bool(torch.cuda.is_available()),
-            'dataloader/persistent_workers': (args.num_workers > 0),
+            'dataloader/pin_memory': pin_mem,
+            'dataloader/persistent_workers': persistent,
             'dataset/length': len(dataset)
         }
         log_info(f"DataLoader created: batch_size={args.batch_size}, num_workers={args.num_workers}", wandb_kv=dl_meta)
@@ -1298,9 +1357,33 @@ def main(args):
             "epoch_time_seconds": epoch_time,
         })
         
-        # Save best checkpoint
-        if avg_epoch_loss < best_loss:
-            best_loss = avg_epoch_loss
+        # Compute validation loss (if val_loader exists) and use it for checkpointing when possible
+        val_loss = None
+        if 'val_loader' in locals() and val_loader is not None:
+            try:
+                model.eval()
+                total_val = 0.0
+                val_batches = 0
+                with torch.no_grad():
+                    for vb in val_loader:
+                        vin, vtarget, _ = vb
+                        vin = vin.to(device)
+                        vtarget = vtarget.to(device)
+                        vout = model(vin)
+                        total_val += loss_function(vout, vtarget).item()
+                        val_batches += 1
+                if val_batches > 0:
+                    val_loss = total_val / val_batches
+                    wandb.log({'val_loss': val_loss})
+                    print(f"Validation loss: {val_loss:.6f}")
+            except Exception as e:
+                print(f"Warning: validation pass failed: {e}")
+
+        # Use validation loss for checkpointing when available; otherwise fall back to training loss
+        metric_for_checkpoint = val_loss if val_loss is not None else avg_epoch_loss
+
+        if metric_for_checkpoint < best_loss:
+            best_loss = metric_for_checkpoint
             if use_wavelet:
                 checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
             else:
@@ -1310,7 +1393,7 @@ def main(args):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_loss,
+                'loss': float(best_loss),
                 'config': vars(args)
             }, checkpoint_path)
             log_info(f"Saved best checkpoint to {checkpoint_path}", wandb_kv={'checkpoint/path': checkpoint_path, 'checkpoint/best_loss': float(best_loss)})
@@ -1335,7 +1418,7 @@ def main(args):
                 log_info(f"Logged best checkpoint to WandB Artifact: {artifact_name}", wandb_kv={'artifact/name': artifact_name})
             except Exception as e:
                 # Don't crash training if WandB artifact upload fails; warn and continue
-                    log_warn(f"Failed to log checkpoint artifact to WandB: {e}")
+                log_warn(f"Failed to log checkpoint artifact to WandB: {e}")
     
     # Final training timing summary
     final_timing = timing_stats.get_stats()
@@ -1390,15 +1473,18 @@ def main(args):
         raise
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    # Create inference dataloader (no shuffle for reproducibility)
-    inference_loader = DataLoader(
-        dataset, 
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
-        persistent_workers=(args.num_workers > 0)
-    )
+    # Create inference dataloader (prefer test split when present)
+    if 'test_loader' in locals() and test_loader is not None:
+        inference_loader = test_loader
+    else:
+        inference_loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=True if torch.cuda.is_available() else False,
+            persistent_workers=(args.num_workers > 0)
+        )
     
     # Measure inference timing
     inference_timing = measure_inference_timing(model, inference_loader, device, num_batches=100)
@@ -1434,15 +1520,20 @@ def main(args):
         print("Running evaluation on best checkpoint...")
         print("="*60)
         
-        # Create evaluation dataloader (no shuffle for reproducibility)
-        eval_loader = DataLoader(
-            dataset, 
-            batch_size=args.eval_batch_size,  # Larger batch for faster eval
-            shuffle=False,  # Don't shuffle for reproducible evaluation
-            num_workers=args.num_workers,
-            pin_memory=True if torch.cuda.is_available() else False,
-            persistent_workers=(args.num_workers > 0)
-        )
+        # Create evaluation dataloader (prefer val split when present)
+        if 'val_loader' in locals() and val_loader is not None:
+            eval_loader = val_loader
+        elif 'test_loader' in locals() and test_loader is not None:
+            eval_loader = test_loader
+        else:
+            eval_loader = DataLoader(
+                dataset,
+                batch_size=args.eval_batch_size,  # Larger batch for faster eval
+                shuffle=False,  # Don't shuffle for reproducible evaluation
+                num_workers=args.num_workers,
+                pin_memory=True if torch.cuda.is_available() else False,
+                persistent_workers=(args.num_workers > 0)
+            )
         
         # Import and run evaluation
         try:
