@@ -1094,13 +1094,9 @@ def main(args):
     model = get_model(args.model_type, args.wavelet, args.img_size, device)
     wandb.watch(model, log="all", log_freq=100)
     
-    # Loss function
-    if use_wavelet:
-        loss_function = MSELoss()
-        print("Using MSE loss (for wavelet domain processing)")
-    else:
-        loss_function = L1Loss()
-        print("Using L1 loss (MAE)")
+
+    loss_function = MSELoss()
+
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
