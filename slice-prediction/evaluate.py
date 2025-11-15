@@ -3,6 +3,7 @@
 Evaluation script for middleslice reconstruction
 Calculates MSE and SSIM for model predictions
 WITH FIXED SSIM CALCULATION, COMPLETE WAVELET VISUALIZATION, AND TIMING STATS!
+FIXED: Updated to BraTS2023 GLI naming convention (t1n, t1c, t2w, t2f)
 """
 
 import torch
@@ -90,11 +91,11 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
     C = total_channels // 4
 
     if C == 8:  # Input
-        modalities = ['T1(Z-1)', 'T1ce(Z-1)', 'T2(Z-1)', 'FLAIR(Z-1)',
-                      'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)']
+        modalities = ['T1n(Z-1)', 'T1c(Z-1)', 'T2w(Z-1)', 'T2f(Z-1)',
+                      'T1n(Z+1)', 'T1c(Z+1)', 'T2w(Z+1)', 'T2f(Z+1)']
         show_C = 8
     else:
-        modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+        modalities = ['T1n', 'T1c', 'T2w', 'T2f']
         show_C = min(C, 4)
 
     fig = plt.figure(figsize=(16, 4 * show_C))
@@ -137,6 +138,7 @@ def calculate_metrics(prediction, ground_truth):
     """
     Calculate MSE and SSIM between prediction and ground truth
     FIXED: Uses stable data_range for SSIM calculation
+    FIXED: Updated to BraTS2023 GLI naming (t1n, t1c, t2w, t2f)
     
     Args:
         prediction: torch.Tensor [4, H, W] - predicted middle slice
@@ -173,14 +175,14 @@ def calculate_metrics(prediction, ground_truth):
     return {
         'mse': mse_avg,
         'ssim': ssim_avg,
-        'mse_t1': mse_per_modality[0],
-        'mse_t1ce': mse_per_modality[1],
-        'mse_t2': mse_per_modality[2],
-        'mse_flair': mse_per_modality[3],
-        'ssim_t1': ssim_scores[0],
-        'ssim_t1ce': ssim_scores[1],
-        'ssim_t2': ssim_scores[2],
-        'ssim_flair': ssim_scores[3],
+        'mse_t1n': mse_per_modality[0],   # FIXED: Changed from mse_t1
+        'mse_t1c': mse_per_modality[1],   # FIXED: Changed from mse_t1ce
+        'mse_t2w': mse_per_modality[2],   # FIXED: Changed from mse_t2
+        'mse_t2f': mse_per_modality[3],   # FIXED: Changed from mse_flair
+        'ssim_t1n': ssim_scores[0],       # FIXED: Changed from ssim_t1
+        'ssim_t1c': ssim_scores[1],       # FIXED: Changed from ssim_t1ce
+        'ssim_t2w': ssim_scores[2],       # FIXED: Changed from ssim_t2
+        'ssim_t2f': ssim_scores[3],       # FIXED: Changed from ssim_flair
     }
 
 
@@ -221,9 +223,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     # For logging sample predictions to wandb
     sample_logged = False
     
-    # Track running per-modality metrics for WandB
-    running_mse_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
-    running_ssim_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
+    # Track running per-modality metrics for WandB - FIXED naming
+    running_mse_per_mod = {'t1n': [], 't1c': [], 't2w': [], 't2f': []}
+    running_ssim_per_mod = {'t1n': [], 't1c': [], 't2w': [], 't2f': []}
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(data_loader)):
@@ -313,8 +315,8 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                 metrics['batch_idx'] = batch_idx
                 all_metrics.append(metrics)
                 
-                # Track per-modality metrics for running average
-                for mod in ['t1', 't1ce', 't2', 'flair']:
+                # Track per-modality metrics for running average - FIXED naming
+                for mod in ['t1n', 't1c', 't2w', 't2f']:
                     running_mse_per_mod[mod].append(metrics[f'mse_{mod}'])
                     running_ssim_per_mod[mod].append(metrics[f'ssim_{mod}'])
                 
@@ -325,9 +327,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                 
                 # Log first sample to wandb
                 if batch_idx == 0 and i == 0 and not sample_logged:
-                    # Create comparison visualization
+                    # Create comparison visualization - FIXED labels
                     fig, axes = plt.subplots(4, 5, figsize=(15, 12))
-                    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+                    modalities = ['T1n', 'T1c', 'T2w', 'T2f']
                     
                     for mod_idx, mod_name in enumerate(modalities):
                         # Input Z-1
@@ -370,18 +372,18 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
             metric_time = perf_counter() - metric_start
             timing_stats.add_metric_time(metric_time)
             
-            # Log running metrics every 10 batches
+            # Log running metrics every 10 batches - FIXED naming
             if batch_idx % 10 == 0 and batch_idx > 0:
                 current_timing = timing_stats.get_stats()
                 wandb.log({
-                    "eval/running_mse_t1": np.mean(running_mse_per_mod['t1']),
-                    "eval/running_mse_t1ce": np.mean(running_mse_per_mod['t1ce']),
-                    "eval/running_mse_t2": np.mean(running_mse_per_mod['t2']),
-                    "eval/running_mse_flair": np.mean(running_mse_per_mod['flair']),
-                    "eval/running_ssim_t1": np.mean(running_ssim_per_mod['t1']),
-                    "eval/running_ssim_t1ce": np.mean(running_ssim_per_mod['t1ce']),
-                    "eval/running_ssim_t2": np.mean(running_ssim_per_mod['t2']),
-                    "eval/running_ssim_flair": np.mean(running_ssim_per_mod['flair']),
+                    "eval/running_mse_t1n": np.mean(running_mse_per_mod['t1n']),
+                    "eval/running_mse_t1c": np.mean(running_mse_per_mod['t1c']),
+                    "eval/running_mse_t2w": np.mean(running_mse_per_mod['t2w']),
+                    "eval/running_mse_t2f": np.mean(running_mse_per_mod['t2f']),
+                    "eval/running_ssim_t1n": np.mean(running_ssim_per_mod['t1n']),
+                    "eval/running_ssim_t1c": np.mean(running_ssim_per_mod['t1c']),
+                    "eval/running_ssim_t2w": np.mean(running_ssim_per_mod['t2w']),
+                    "eval/running_ssim_t2f": np.mean(running_ssim_per_mod['t2f']),
                     "eval/progress": batch_idx / len(data_loader),
                     "eval/timing/avg_forward_time_ms": current_timing['avg_forward_time_ms'],
                     "eval/timing/samples_per_second": current_timing['samples_per_second']
@@ -431,8 +433,8 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
         'num_samples': len(all_metrics)
     }
     
-    # Per-modality stats
-    for mod in ['t1', 't1ce', 't2', 'flair']:
+    # Per-modality stats - FIXED naming
+    for mod in ['t1n', 't1c', 't2w', 't2f']:
         mse_mod = [m[f'mse_{mod}'] for m in all_metrics]
         ssim_mod = [m[f'ssim_{mod}'] for m in all_metrics]
         results[f'mse_{mod}_mean'] = np.mean(mse_mod)
@@ -476,7 +478,7 @@ def save_results(results, all_metrics, output_dir):
 
 
 def print_results(results):
-    """Print evaluation results to console"""
+    """Print evaluation results to console - FIXED naming"""
     print("\n" + "="*50)
     print("EVALUATION RESULTS")
     print("="*50)
@@ -486,15 +488,15 @@ def print_results(results):
     print(f"Evaluation time: {results.get('eval_time_seconds', 0):.1f} seconds")
     print(f"Throughput: {results.get('eval_throughput_samples_per_sec', 0):.1f} samples/sec")
     print("\nPer-modality MSE:")
-    print(f"  T1:    {results['mse_t1_mean']:.6f} ± {results['mse_t1_std']:.6f}")
-    print(f"  T1ce:  {results['mse_t1ce_mean']:.6f} ± {results['mse_t1ce_std']:.6f}")
-    print(f"  T2:    {results['mse_t2_mean']:.6f} ± {results['mse_t2_std']:.6f}")
-    print(f"  FLAIR: {results['mse_flair_mean']:.6f} ± {results['mse_flair_std']:.6f}")
+    print(f"  T1n:   {results['mse_t1n_mean']:.6f} ± {results['mse_t1n_std']:.6f}")
+    print(f"  T1c:   {results['mse_t1c_mean']:.6f} ± {results['mse_t1c_std']:.6f}")
+    print(f"  T2w:   {results['mse_t2w_mean']:.6f} ± {results['mse_t2w_std']:.6f}")
+    print(f"  T2f:   {results['mse_t2f_mean']:.6f} ± {results['mse_t2f_std']:.6f}")
     print("\nPer-modality SSIM:")
-    print(f"  T1:    {results['ssim_t1_mean']:.4f} ± {results['ssim_t1_std']:.4f}")
-    print(f"  T1ce:  {results['ssim_t1ce_mean']:.4f} ± {results['ssim_t1ce_std']:.4f}")
-    print(f"  T2:    {results['ssim_t2_mean']:.4f} ± {results['ssim_t2_std']:.4f}")
-    print(f"  FLAIR: {results['ssim_flair_mean']:.4f} ± {results['ssim_flair_std']:.4f}")
+    print(f"  T1n:   {results['ssim_t1n_mean']:.4f} ± {results['ssim_t1n_std']:.4f}")
+    print(f"  T1c:   {results['ssim_t1c_mean']:.4f} ± {results['ssim_t1c_std']:.4f}")
+    print(f"  T2w:   {results['ssim_t2w_mean']:.4f} ± {results['ssim_t2w_std']:.4f}")
+    print(f"  T2f:   {results['ssim_t2f_mean']:.4f} ± {results['ssim_t2f_std']:.4f}")
     print("="*50)
 
 
@@ -519,7 +521,7 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
     # Run evaluation
     results, all_metrics = evaluate_model(model, data_loader, device, output_dir, save_wavelets)
     
-    # Log comprehensive results to wandb
+    # Log comprehensive results to wandb - FIXED naming
     wandb.log({
         # Overall metrics
         "eval/mse_mean": results['mse_mean'],
@@ -529,29 +531,29 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
         "eval/num_samples": results['num_samples'],
         
         # Per-modality MSE
-        "eval/mse_t1_mean": results['mse_t1_mean'],
-        "eval/mse_t1_std": results['mse_t1_std'],
-        "eval/mse_t1ce_mean": results['mse_t1ce_mean'],
-        "eval/mse_t1ce_std": results['mse_t1ce_std'],
-        "eval/mse_t2_mean": results['mse_t2_mean'],
-        "eval/mse_t2_std": results['mse_t2_std'],
-        "eval/mse_flair_mean": results['mse_flair_mean'],
-        "eval/mse_flair_std": results['mse_flair_std'],
+        "eval/mse_t1n_mean": results['mse_t1n_mean'],
+        "eval/mse_t1n_std": results['mse_t1n_std'],
+        "eval/mse_t1c_mean": results['mse_t1c_mean'],
+        "eval/mse_t1c_std": results['mse_t1c_std'],
+        "eval/mse_t2w_mean": results['mse_t2w_mean'],
+        "eval/mse_t2w_std": results['mse_t2w_std'],
+        "eval/mse_t2f_mean": results['mse_t2f_mean'],
+        "eval/mse_t2f_std": results['mse_t2f_std'],
         
         # Per-modality SSIM
-        "eval/ssim_t1_mean": results['ssim_t1_mean'],
-        "eval/ssim_t1_std": results['ssim_t1_std'],
-        "eval/ssim_t1ce_mean": results['ssim_t1ce_mean'],
-        "eval/ssim_t1ce_std": results['ssim_t1ce_std'],
-        "eval/ssim_t2_mean": results['ssim_t2_mean'],
-        "eval/ssim_t2_std": results['ssim_t2_std'],
-        "eval/ssim_flair_mean": results['ssim_flair_mean'],
-        "eval/ssim_flair_std": results['ssim_flair_std'],
+        "eval/ssim_t1n_mean": results['ssim_t1n_mean'],
+        "eval/ssim_t1n_std": results['ssim_t1n_std'],
+        "eval/ssim_t1c_mean": results['ssim_t1c_mean'],
+        "eval/ssim_t1c_std": results['ssim_t1c_std'],
+        "eval/ssim_t2w_mean": results['ssim_t2w_mean'],
+        "eval/ssim_t2w_std": results['ssim_t2w_std'],
+        "eval/ssim_t2f_mean": results['ssim_t2f_mean'],
+        "eval/ssim_t2f_std": results['ssim_t2f_std'],
     })
     
-    # Create per-modality comparison chart
+    # Create per-modality comparison chart - FIXED naming
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+    modalities = ['T1n', 'T1c', 'T2w', 'T2f']
     
     # MSE comparison
     mse_values = [results[f'mse_{m.lower()}_mean'] for m in modalities]

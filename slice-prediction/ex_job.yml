@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-1
+  name: midslice-6
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -35,7 +35,7 @@ spec:
             pip install blobfile
             pip install scikit-image
           
-            git clone -b exp https://github.com/tsereda/wavelet-brats-synthesis.git
+            git clone -b analysis https://github.com/tsereda/wavelet-brats-synthesis.git
             cd wavelet-brats-synthesis/slice-prediction
 
 
@@ -48,7 +48,7 @@ spec:
               --img_size 256
 
             # Run WandB sweep agent (trials will read from ./preprocessed_slices)
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/1wfhjnkh
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/4xd6mkgh
 
         env:
         - name: WANDB_API_KEY
@@ -79,7 +79,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-1
+          claimName: brats2025-6
       - name: shm
         emptyDir:
           medium: Memory
