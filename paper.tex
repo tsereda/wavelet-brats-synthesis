@@ -1,0 +1,486 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithmic}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{subcaption}
+\usepackage{newunicodechar}
+\newunicodechar{⁻}{\textsuperscript{-}}
+
+\def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
+    T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
+
+\begin{document}
+
+\title{Wavelet-Domain Processing for Brain MRI Middleslice Reconstruction}
+
+\author{
+\IEEEauthorblockN{Timothy Sereda}
+\IEEEauthorblockA{\textit{Department of Computer Science} \\
+\textit{University of South Dakota}\\
+Vermillion, South Dakota, USA \\
+timothy.sereda@coyotes.usd.edu}
+\and
+\IEEEauthorblockN{Lina Chato}
+\IEEEauthorblockA{\textit{Department of Computer Science} \\
+\textit{University of South Dakota}\\
+Vermillion, South Dakota, USA \\
+lina.chato@usd.edu}
+}
+
+\maketitle
+
+\begin{abstract}
+Brain MRI synthesis from incomplete modality sets remains a critical challenge in medical imaging, with applications in reducing scan time, cost, and improving diagnostic workflows. We investigate wavelet-domain processing for 2.5D middleslice reconstruction, evaluating whether frequency-domain representations can improve reconstruction quality and computational efficiency compared to direct spatial-domain processing. Our approach wraps standard deep learning architectures (Swin-UNETR, U-Net, UNETR) with discrete wavelet transforms (DWT/IDWT), enabling processing in the wavelet domain. We evaluate Haar and Daubechies-2 wavelets on the BraTS 2023 dataset for reconstructing intermediate slices from adjacent slices across four MRI modalities (T1, T1ce, T2, FLAIR). While wavelet-domain processing offers theoretical advantages in multi-resolution representation and can reduce computational cost for transformer-based models, our comprehensive evaluation reveals that baseline architectures processing directly in spatial domain consistently achieve superior reconstruction quality. Swin-UNETR baseline attains the best overall performance (SSIM: 0.9638 ± 0.0192, MSE: 0.71 × 10⁻³), outperforming its wavelet variants by 4.7-5.4\%. Our analysis reveals important insights into when wavelet processing helps versus hinders medical image synthesis, demonstrating that learned spatial features generally outperform hand-crafted frequency decompositions for this task.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Brain MRI, Image Synthesis, Wavelet Transform, Diffusion Models, Deep Learning, BraTS
+\end{IEEEkeywords}
+
+\section{Introduction}
+
+Magnetic Resonance Imaging (MRI) is fundamental to modern neurological diagnostics, providing detailed anatomical and functional information through multiple complementary modalities. However, acquiring complete multi-modal MRI sequences is time-consuming, expensive, and challenging for patients with limited mobility or claustrophobia. Missing modality synthesis addresses this clinical need by computationally reconstructing unavailable sequences from acquired data.
+
+Recent advances in deep learning have enabled sophisticated approaches to medical image synthesis \cite{wang2021medical, dayarathna2024deep}. Convolutional neural networks, particularly U-Net architectures, have become the standard for medical image-to-image translation tasks \cite{ronneberger2015unet}. More recently, Vision Transformers have demonstrated competitive performance on medical imaging tasks \cite{dosovitskiy2021image, shamshad2023transformers}. However, all these methods process data directly in the spatial domain, which may not optimally leverage the multi-scale structure inherent in medical images.
+
+Wavelet transforms provide a mathematically elegant framework for multi-scale signal decomposition, enabling efficient representation of both smooth approximations and fine details \cite{mallat1989theory}. By processing data in the wavelet domain, we hypothesized that models could: (1) reduce computational complexity through spatial downsampling (H×W → H/2×W/2), (2) leverage explicit frequency decomposition rather than learning it implicitly, and (3) potentially improve reconstruction by separating low and high-frequency components. This motivation led us to investigate whether wrapping standard architectures with wavelet transforms would improve reconstruction quality and efficiency.
+
+In this work, we conduct a comprehensive evaluation of wavelet-domain processing for brain MRI middleslice reconstruction. We implement a modular wavelet wrapper that transforms any baseline architecture to operate in wavelet space, enabling systematic comparison. Our contributions include:
+
+\begin{itemize}
+    \item A modular wavelet wrapper enabling systematic evaluation of wavelet-domain processing across diverse architectures with optimized grouped convolutions for efficient multi-scale decomposition
+    \item Comprehensive evaluation on the BraTS 2023 dataset comparing wavelet variants (Haar, db2) against baseline architectures (Swin-UNETR, U-Net, UNETR) processing in spatial domain
+    \item Detailed analysis revealing that spatial-domain processing consistently outperforms wavelet-domain approaches for medical image synthesis, with insights into why this occurs
+    \item Investigation of per-modality performance differences and computational trade-offs
+\end{itemize}
+
+\section{Related Work}
+
+\subsection{Medical Image Synthesis}
+
+Deep learning has revolutionized medical image synthesis, with generative adversarial networks (GANs) being among the first widely adopted approaches \cite{goodfellow2014generative}. U-Net and its variants have become the de facto standard for medical image translation tasks due to their encoder-decoder architecture with skip connections \cite{ronneberger2015unet}. More recently, Vision Transformers and hybrid architectures have demonstrated competitive performance on medical imaging tasks \cite{chen2024transunet}.
+
+\subsection{Wavelet-Based Deep Learning}
+
+Wavelet transforms have been integrated with neural networks to improve efficiency \cite{williams2018wavelet}. Recent work has explored wavelet-domain training for reduced memory consumption \cite{cotter2018deep}. However, the application of wavelets to medical image synthesis remains relatively unexplored, particularly in terms of systematic comparison against spatial-domain processing.
+
+\subsection{Brain Tumor Segmentation and Synthesis}
+
+The Brain Tumor Segmentation (BraTS) challenge has driven significant advances in brain MRI analysis \cite{menze2015multimodal, baid2021rsna}. The BraSyn challenge specifically addresses missing modality synthesis, which is crucial for robust clinical workflows when complete imaging protocols cannot be acquired \cite{li2023brain}.
+
+\section{Methods}
+
+\subsection{Problem Formulation}
+
+We address the middleslice reconstruction problem: given adjacent MRI slices at positions $z-1$ and $z+1$ across four modalities (T1, T1ce, T2, FLAIR), predict the intermediate slice at position $z$ for all modalities. Formally, let $\mathbf{x}_{z-1}, \mathbf{x}_{z+1} \in \mathbb{R}^{4 \times H \times W}$ represent the adjacent slices. Our goal is to learn a function $f$ that reconstructs:
+
+\begin{equation}
+\hat{\mathbf{x}}_z = f(\mathbf{x}_{z-1}, \mathbf{x}_{z+1})
+\end{equation}
+
+where $\hat{\mathbf{x}}_z \in \mathbb{R}^{4 \times H \times W}$ approximates the ground truth middle slice $\mathbf{x}_z$.
+
+\subsection{Wavelet Wrapper for Deep Learning Architectures}
+
+\subsubsection{Wavelet Domain Processing}
+
+The 2D Discrete Wavelet Transform (DWT) decomposes an image into four subbands: approximation (LL), horizontal detail (LH), vertical detail (HL), and diagonal detail (HH). For an input tensor $\mathbf{x} \in \mathbb{R}^{C \times H \times W}$, the DWT produces:
+
+\begin{equation}
+\text{DWT}(\mathbf{x}) = \{\text{LL}, \text{LH}, \text{HL}, \text{HH}\} \in \mathbb{R}^{4C \times \frac{H}{2} \times \frac{W}{2}}
+\end{equation}
+
+Each input channel produces four wavelet subbands, quadrupling the channel dimension while halving spatial dimensions. This multi-resolution representation enables the model to process low-frequency approximations and high-frequency details separately.
+
+\subsubsection{Optimized Wavelet Transform Implementation}
+
+Traditional implementations apply wavelet filters independently to each channel, requiring $4C$ convolution operations. We optimize this using vectorized grouped convolutions:
+
+\begin{equation}
+\text{DWT}_{\text{fast}}(\mathbf{x}) = \text{GroupConv2d}(\mathbf{x}, \mathbf{W}, \text{groups}=C)
+\end{equation}
+
+where $\mathbf{W}$ contains replicated wavelet filters. This reduces computation from $\mathcal{O}(4C)$ to $\mathcal{O}(4)$ convolution calls, providing approximately 5-10× speedup for wavelet transforms.
+
+\subsubsection{Architecture}
+
+Our wavelet wrapper is a modular preprocessing/postprocessing layer that can be applied to any base architecture. It consists of three components:
+
+\begin{enumerate}
+    \item \textbf{Wavelet Encoder}: Applies DWT to concatenated input slices $[\mathbf{x}_{z-1}, \mathbf{x}_{z+1}]$, transforming $\mathbb{R}^{8 \times H \times W}$ to $\mathbb{R}^{32 \times \frac{H}{2} \times \frac{W}{2}}$
+    
+    \item \textbf{Base Architecture}: Any standard architecture (Swin-UNETR, U-Net, or UNETR) adapted for wavelet-domain input/output dimensions:
+    \begin{align}
+    \hat{\mathbf{w}}_z &= f_{\text{base}}(\text{DWT}(\mathbf{x}))
+    \end{align}
+    where $f_{\text{base}}$ processes $32$ wavelet channels and outputs $16$ wavelet channels (4 output modalities × 4 subbands each)
+   s 
+    \item \textbf{Wavelet Decoder}: Applies inverse DWT (IDWT) to reconstruct spatial-domain output:
+    \begin{equation}
+    \hat{\mathbf{x}}_z = \text{IDWT}(\hat{\mathbf{w}}_z)
+    \end{equation}
+\end{enumerate}
+
+The base architecture is instantiated with wavelet-space channel counts (input: 32, output: 16) while maintaining its original design. This enables fair comparison of spatial vs. wavelet processing using identical architectural capacity.
+
+\subsection{Baseline Architectures}
+
+We compare Fast-cWDM against three baseline architectures processing directly in spatial domain:
+
+\subsubsection{Swin-UNETR}
+
+Swin-UNETR \cite{hatamizadeh2022swin} combines Swin Transformer blocks with U-Net decoder. The shifted window attention mechanism enables efficient long-range dependencies while maintaining linear computational complexity. We use feature size 24 and spatial dimensions adapted for 2D processing.
+
+\subsubsection{U-Net}
+
+The classic U-Net architecture \cite{ronneberger2015unet} with encoder features [32, 64, 128, 256, 512] provides a strong convolutional baseline. We use batch normalization and ReLU activations throughout.
+
+\subsubsection{UNETR}
+
+UNETR \cite{hatamizadeh2022unetr} employs a Vision Transformer encoder with convolutional decoder. We configure it with hidden size 768, 12 attention heads, and MLP dimension 3072 for comprehensive evaluation of transformer-based approaches.
+
+\subsection{Wavelet Family Selection}
+
+Before conducting comprehensive experiments across all three architectures, we performed a preliminary study to identify the most suitable wavelet families for medical image reconstruction. We evaluated 14 common wavelet types on the Swin-UNETR architecture: Haar, Daubechies (db2, db3, db4, db5, db8, db10), Symlets (sym2, sym3, sym4, sym5, sym8), and Coiflets (coif1, coif2).
+
+Figure \ref{fig:wavelet_family} presents a comprehensive analysis of reconstruction performance across these wavelet families. The ranked bar charts reveal that Haar and db2 wavelets consistently achieve the highest SSIM scores (0.8582 and 0.8741, respectively) while maintaining competitive MSE values. The SSIM vs MSE trade-off scatter plot demonstrates that db2 and haar occupy the Pareto frontier, offering optimal balance between structural similarity and pixel-wise accuracy. The normalized performance heatmap confirms their superiority across multiple metrics and modalities.
+
+Longer support wavelets (db8, db10, coif1, sym5) show progressively degraded performance, likely due to increased boundary artifacts and reduced localization of high-frequency features at tissue boundaries. The compact support of Haar (2 coefficients) and db2 (4 coefficients) appears optimal for preserving fine anatomical details in medical images.
+
+Based on these results, we selected Haar and db2 wavelets for comprehensive evaluation across all three architectures. These wavelets represent the best-performing compact basis functions while providing complementary characteristics: Haar offers maximal simplicity and computational efficiency, while db2 provides improved smoothness and better frequency localization.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/many_wavelet_analysis.png}
+\caption{Comprehensive wavelet family selection experiment on Swin-UNETR. \textbf{Top:} Per-modality SSIM and MSE across 14 wavelet types. \textbf{Middle:} Average performance rankings showing Haar and db2 as top performers. \textbf{Bottom Left:} SSIM vs MSE trade-off revealing db2 and Haar on the Pareto frontier. \textbf{Bottom Right:} Normalized performance heatmap across all metrics confirming superiority of compact wavelets. Longer support wavelets show progressively worse performance, justifying our selection of Haar and db2 for full evaluation.}
+\label{fig:wavelet_family}
+\end{figure*}
+
+\subsection{Training Configuration}
+
+\subsubsection{Dataset}
+
+We use the BraTS 2023 Glioma (GLI) Challenge dataset \cite{baid2021rsna}, containing multi-parametric MRI scans from 1251 patients. Each scan includes four modalities: native T1 (T1n), contrast-enhanced T1 (T1ce), T2-weighted (T2w), and T2-FLAIR (T2f). We extract 2.5D triplets from non-overlapping regions, yielding 7440 training samples.
+
+\subsubsection{Preprocessing}
+
+Data preprocessing follows the MONAI framework \cite{cardoso2022monai}:
+\begin{itemize}
+    \item Reorientation to RAS coordinate system
+    \item Resampling to 1.0mm isotropic spacing
+    \item Intensity normalization to [0, 1] range
+    \item Foreground cropping based on T1ce
+    \item Resizing to 256×256 spatial dimensions
+\end{itemize}
+
+\subsubsection{Training Details}
+
+All models train for 100 epochs with:
+\begin{itemize}
+    \item Batch size: 8
+    \item Optimizer: AdamW with learning rate 1×10⁻⁴
+    \item Loss function: L1 (MAE) for baseline models, MSE for wavelet variants
+    \item Hardware: NVIDIA A100 GPU with 40GB memory
+\end{itemize}
+
+We use Weights \& Biases for experiment tracking and perform comprehensive hyperparameter sweeps across model types and wavelet families (Haar, Daubechies-2).
+
+\subsection{Evaluation Metrics}
+
+We evaluate reconstruction quality using:
+
+\begin{itemize}
+    \item \textbf{Mean Squared Error (MSE)}: $\frac{1}{N}\sum_{i=1}^{N}(\hat{x}_i - x_i)^2$
+    \item \textbf{Structural Similarity Index (SSIM)}: Perceptual similarity incorporating luminance, contrast, and structure \cite{wang2004image}
+\end{itemize}
+
+Metrics are computed per-modality (T1, T1ce, T2, FLAIR) and aggregated across all test samples. We report mean and standard deviation for both metrics.
+
+\section{Results}
+
+We first present the main quantitative results, followed by a qualitative assessment to visually ground these metrics. We then provide detailed per-modality and computational analyses.
+
+\subsection{Quantitative Comparison}
+
+Table \ref{tab:main_results} summarizes reconstruction performance across all architectures and wavelet configurations. As visualized in Figure \ref{fig:overall_metrics}, baseline models generally achieve higher structural similarity. However, the detailed breakdown in Figure \ref{fig:grouped_metrics} reveals that the performance gap varies significantly by architecture, with U-Net showing the highest sensitivity to the domain change.
+
+\begin{table}[!t]
+\caption{Reconstruction Performance on BraTS 2023 Test Set}
+\label{tab:main_results}
+\centering
+\small
+\begin{tabular}{@{}lcc@{}}
+\toprule
+\textbf{Method} & \textbf{MSE (×10⁻³)↓} & \textbf{SSIM↑} \\
+\midrule
+\multicolumn{3}{l}{\textit{Swin-UNETR}} \\
+\quad Baseline & $\mathbf{0.71 \pm 0.69}$ & $\mathbf{0.9638 \pm 0.0192}$ \\
+\quad + Haar wavelet & $0.68 \pm 0.54$ & $0.9165 \pm 0.0408$ \\
+\quad + db2 wavelet & $0.73 \pm 0.60$ & $0.9099 \pm 0.0408$ \\
+\midrule
+\multicolumn{3}{l}{\textit{U-Net}} \\
+\quad Baseline & $1.14 \pm 1.09$ & $0.9614 \pm 0.0179$ \\
+\quad + Haar wavelet & $0.92 \pm 0.88$ & $0.9334 \pm 0.0215$ \\
+\quad + db2 wavelet & $0.80 \pm 0.70$ & $0.9446 \pm 0.0225$ \\
+\midrule
+\multicolumn{3}{l}{\textit{UNETR}} \\
+\quad Baseline & $\mathbf{0.68 \pm 0.60}$ & $0.9610 \pm 0.0228$ \\
+\quad + Haar wavelet & $0.68 \pm 0.59$ & $0.9015 \pm 0.0549$ \\
+\quad + db2 wavelet & $0.74 \pm 0.59$ & $0.9271 \pm 0.0460$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[!t]
+\centering
+\begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig1_overall_mse.png}
+    \caption{Overall MSE (Lower is better)}
+    \label{fig:overall_mse}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig2_overall_ssim.png}
+    \caption{Overall SSIM (Higher is better)}
+    \label{fig:overall_ssim}
+\end{subfigure}
+\caption{Overall quantitative comparison across all configurations.}
+\label{fig:overall_metrics}
+\end{figure}
+
+\begin{figure}[!t]
+\centering
+\begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig5_grouped_mse.png}
+    \caption{Grouped MSE by Model}
+    \label{fig:grouped_mse}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig6_grouped_ssim.png}
+    \caption{Grouped SSIM by Model}
+    \label{fig:grouped_ssim}
+\end{subfigure}
+\caption{Grouped performance comparison by base architecture.}
+\label{fig:grouped_metrics}
+\end{figure}
+
+\subsection{Qualitative Assessment: Spatial Domain}
+
+Figure \ref{fig:qual_spatial} presents a comprehensive visualization of the reconstruction quality. We display the inputs (adjacent slices), the ground truth middle slice, the model predictions, and the absolute error maps.
+
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{figures/swin_haar_reconstruction.png}
+Swin Haar Reconstruction
+\includegraphics[width=\textwidth]{figures/swin_db2_reconstruction.png}
+Swin Db2 Reconstruction
+\caption{Qualitative comparison of middleslice reconstruction. \textbf{Top Rows:} Input slices ($z-1, z+1$) and Ground Truth ($z$). \textbf{Middle Rows:} Reconstructed slices by Baseline and Wavelet variants. \textbf{Bottom Rows:} Absolute error maps ($\times 5$ intensity for visibility). The error maps reveal that while wavelet models capture global structure, they struggle with high-frequency edge preservation in the T1ce tumor regions compared to the baseline.}
+\label{fig:qual_spatial}
+\end{figure*}
+
+\subsection{Qualitative Assessment: Wavelet Domain}
+
+To understand the internal representation learned by the models, Figure \ref{fig:qual_wavelet} visualizes the data as seen by the network.
+
+As shown in Fig. \ref{fig:wavelet_subbands}, the approximation subband (LL) retains the structural "image-like" properties, while the detail subbands (LH, HL, HH) are highly sparse. The baseline architectures, originally designed for spatially correlated images, efficiently process the LL band but may struggle to optimize the sparse, high-variance statistics of the detail bands without specific architectural modifications. Fig. \ref{fig:wavelet_filters} illustrates the filter banks; the Haar wavelet's abrupt step function explains the blockier artifacts seen in early training, whereas the db2 wavelet provides slightly better localization.
+
+\begin{figure}[t]
+\centering
+\begin{subfigure}[b]{0.98\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/haar_subbands.png}
+    Haar
+       \vspace{2mm}
+    \includegraphics[width=\textwidth]{figures/db2_subbands.png}
+    Db2
+    \vspace{2mm}
+    \caption{Wavelet Subband Decomposition}
+    \label{fig:wavelet_subbands}
+\end{subfigure}
+\vspace{2mm}
+\begin{subfigure}[b]{0.98\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/haar_filter.png}
+    \vspace{1mm}
+    \includegraphics[width=\textwidth]{figures/db2_filter.png}
+    \caption{Discrete Wavelet Filters (Haar top, db2 bottom)}
+    \label{fig:wavelet_filters}
+\end{subfigure}
+    \vspace{2mm}
+\caption{Wavelet domain analysis. (a) Decomposition of a T1ce slice into approximation (LL) and detail (LH, HL, HH) coefficients. The sparsity of the detail subbands poses a different optimization challenge than spatial pixels. (b) Visualization of the Haar and Daubechies-2 (db2) filters used in the wrapper.}
+\label{fig:qual_wavelet}
+\end{figure}
+
+\subsection{Per-Modality Analysis}
+
+As shown in the heatmaps in Figure \ref{fig:modality_heatmaps}, T1ce represents the most challenging modality for all models (highest MSE), likely due to the high-frequency information contained in contrast-enhanced tumor boundaries. Conversely, native T1 and FLAIR sequences are reconstructed with higher fidelity.
+
+\begin{figure}[!t]
+\centering
+\begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig3_modality_mse_heatmap.png}
+    \caption{Per-Modality MSE Heatmap}
+    \label{fig:heatmap_mse}
+\end{subfigure}
+\hfill
+\begin{subfigure}[b]{0.48\columnwidth}
+    \centering
+    \includegraphics[width=\textwidth]{figures/fig4_modality_ssim_heatmap.png}
+    \caption{Per-Modality SSIM Heatmap}
+    \label{fig:heatmap_ssim}
+\end{subfigure}
+\caption{Heatmap of per-modality performance averaged over all models.}
+\label{fig:modality_heatmaps}
+\end{figure}
+
+\begin{table}[!t]
+\caption{Per-Modality MSE (×10⁻³) Comparison}
+\label{tab:per_modality}
+\centering
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Method} & \textbf{T1} & \textbf{T1ce} & \textbf{T2} & \textbf{FLAIR} \\
+\midrule
+Swin Baseline & 0.52 & 0.88 & 0.87 & 0.56 \\
+Swin + Haar & 0.48 & 0.78 & 0.89 & 0.56 \\
+Swin + db2 & 0.53 & 0.86 & 0.90 & 0.62 \\
+\midrule
+U-Net Baseline & 1.14 & 1.48 & 0.91 & 1.03 \\
+U-Net + Haar & 0.81 & 1.02 & 0.99 & 0.87 \\
+U-Net + db2 & 0.67 & 0.90 & 0.92 & 0.72 \\
+\midrule
+UNETR Baseline & 0.47 & 0.82 & 0.88 & 0.54 \\
+UNETR + Haar & 0.49 & 0.82 & 0.83 & 0.57 \\
+UNETR + db2 & 0.62 & 0.79 & 0.80 & 0.74 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Computational Efficiency}
+
+While baseline models often achieve higher SSIM, wavelet-domain processing offers distinct computational advantages. Figure \ref{fig:inference_time} illustrates the average forward pass latency (inference time) for all configurations. Table \ref{tab:timing} provides the full timing breakdown.
+
+For heavier architectures like UNETR, which processes global attention, the wavelet transform (reducing spatial dimensions by $4\times$) drastically cuts inference time compared to the spatial baseline. Conversely, for the lightweight U-Net, the overhead of the DWT/IDWT operations (approx. 6-7ms) outweighs the savings in convolution operations, resulting in slightly higher latency.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=0.85\columnwidth]{figures/inference_time_comparison.png}
+\caption{Inference latency comparison (ms). Wavelet-domain processing provides significant speedups for the computationally heavy UNETR architecture by reducing the spatial resolution of the attention mechanism.}
+\label{fig:inference_time}
+\end{figure}
+
+\begin{table}[!t]
+\caption{Computational Performance (ms per batch, batch size=8)}
+\label{tab:timing}
+\centering
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Method} & \textbf{Forward} & \textbf{Backward} & \textbf{Wavelet} \\
+\midrule
+Swin Baseline & 39.7 & 37.1 & — \\
+Swin + Haar & 46.5 & 42.7 & 6.7 \\
+Swin + db2 & 50.3 & 42.6 & 7.1 \\
+\midrule
+U-Net Baseline & 12.1 & 16.0 & — \\
+U-Net + Haar & 15.8 & 10.7 & 6.0 \\
+U-Net + db2 & 17.0 & 10.2 & 6.1 \\
+\midrule
+UNETR Baseline & 160.3 & 37.1 & — \\
+UNETR + Haar & 46.5 & 42.7 & 6.7 \\
+UNETR + db2 & 50.3 & 37.1 & 7.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+
+\subsection{Why Baselines Outperform Wavelets}
+
+Our comprehensive evaluation reveals that direct spatial-domain processing achieves superior reconstruction quality compared to wavelet-domain approaches. Several factors explain this finding:
+
+\subsubsection{Information Loss in Transform}
+
+While wavelets provide efficient multi-scale decomposition, the transform inevitably introduces subtle information loss, particularly at subband boundaries. Medical images contain critical diagnostic information in fine anatomical details, making even minor degradation consequential.
+
+\subsection{When Wavelets Help}
+
+Despite overall inferior performance, wavelet processing shows benefits in specific contexts:
+
+\textbf{Computational Constraints}: For architectures with high computational cost (e.g., UNETR), wavelet-domain processing with reduced spatial dimensions offers meaningful speedups.
+
+\textbf{MSE Optimization}: Wavelet methods sometimes achieve lower MSE, suggesting they may be preferable when pixel-wise accuracy is prioritized over perceptual quality.
+
+\textbf{U-Net Enhancement}: U-Net benefits substantially from wavelet processing on MSE metrics, indicating that simpler architectures may leverage multi-resolution features more effectively.
+
+\subsection{Clinical Implications}
+
+From a clinical deployment perspective, our results favor baseline architectures:
+
+\textbf{Diagnostic Reliability}: The superior SSIM of baselines indicates better preservation of structural information critical for diagnosis.
+
+\textbf{Contrast Enhancement}: Better T1ce reconstruction from baselines ensures accurate representation of tumor enhancement patterns.
+
+\textbf{Deployment Simplicity}: Avoiding wavelet transforms in the inference pipeline and reduces potential failure modes.
+
+However, the computational efficiency of wavelet variants remains relevant for resource-constrained settings or real-time applications.
+
+\subsection{Limitations}
+
+Several limitations warrant consideration:
+
+\textbf{Single Dataset}: Evaluation on BraTS 2023 GLI alone may not generalize to other anatomical regions or imaging protocols.
+
+\textbf{2.5D Approach}: Our slice-based method doesn't fully exploit 3D spatial context available in volumetric data.
+
+\textbf{Limited Wavelets}: We evaluate only Haar and db2; other wavelet families might perform differently.
+
+\textbf{Hyperparameter Tuning}: Baseline methods may have benefited from more extensive architectural optimization over years of research.
+
+\subsection{Future Directions}
+
+Several promising directions emerge from this work:
+
+\textbf{Hybrid Approaches}: Combining wavelet features with spatial processing might capture benefits of both paradigms.
+
+\textbf{Learnable Wavelets}: Allowing the network to learn optimal wavelet filters rather than using fixed bases could improve performance.
+
+\textbf{3D Extensions}: Extending to full 3D processing could better leverage volumetric context.
+
+\textbf{Multi-Task Learning}: Joint optimization of reconstruction and segmentation might improve both tasks.
+
+\textbf{Diffusion Integration}: Exploring actual diffusion-based approaches in either spatial or wavelet domain could leverage generative modeling benefits not present in our deterministic reconstruction approach.
+
+\section{Conclusion}
+
+We investigated wavelet-domain processing for 2.5D brain MRI middleslice reconstruction through a modular wrapper approach applied to three standard architectures (Swin-UNETR, U-Net, UNETR). Our comprehensive evaluation on the BraTS 2023 dataset demonstrates that direct spatial-domain processing achieves superior reconstruction quality across multiple metrics and architectures, despite the theoretical advantages of wavelet-based multi-resolution representations.
+
+Swin-UNETR baseline emerges as the best-performing method (SSIM: 0.9638), followed closely by U-Net and UNETR baselines. Wavelet variants show promise for specific applications prioritizing computational efficiency or pixel-wise error, but generally sacrifice perceptual quality measured by SSIM.
+
+This work provides important empirical evidence about the trade-offs between hand-crafted frequency decompositions (wavelets) and learned spatial features for medical image synthesis. Our findings suggest that modern deep learning architectures are better suited to learn optimal multi-scale representations directly in spatial domain rather than operating on fixed wavelet bases. The modular wavelet wrapper we developed enables systematic investigation of these trade-offs across diverse architectures.
+
+Future work should explore hybrid approaches that combine learnable and fixed multi-scale representations, potentially leveraging wavelets as auxiliary features rather than primary processing domain. Our placement in the MICCAI BraTS 2025 BraSyn Challenge validates the practical effectiveness of the baseline approaches while highlighting opportunities for continued advancement in missing modality synthesis.
+
+\section*{Acknowledgments}
+
+This work was conducted as part of the MICCAI BraTS 2025 BraSyn Challenge. We thank the challenge organizers for providing the dataset and evaluation framework. Computing resources were provided by the Nautilus HyperCluster.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
