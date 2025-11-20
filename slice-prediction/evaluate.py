@@ -118,7 +118,7 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
 
         for i, (subband, name) in enumerate([(ll, 'LL'), (lh, 'LH'), (hl, 'HL'), (hh, 'HH')]):
             ax = fig.add_subplot(gs[mod_idx, i])
-            im = ax.imshow(subband, cmap='gray', vmin=vmin, vmax=vmax)
+            im = ax.imshow(subband, cmap='Reds', vmin=vmin, vmax=vmax)
             ax.set_title(f'{mod_name} - {name}', fontsize=10)
             ax.axis('off')
             if i == 3:

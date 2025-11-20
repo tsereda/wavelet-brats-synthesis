@@ -18,7 +18,10 @@ parameters:
       - db2
   
   preprocessed_dir:
-    value: "./preprocessed_slices"
+    value: "./preprocessed_slices_train"
+
+  val_preprocessed_dir:
+    value: "./preprocessed_slices_val"
   
   epochs:
     value: 100

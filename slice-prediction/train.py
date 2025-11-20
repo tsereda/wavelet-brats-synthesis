@@ -22,7 +22,6 @@ from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
-from dataset_split import get_split_loaders, split_dataset_by_patients
 
 
 # Configure logger for stdout (helps kubectl logs)
@@ -650,14 +649,9 @@ def get_args():
                        help='Optional CSV index of triplets (created by preprocess_dataset.py)')
     parser.add_argument('--preprocessed_dir', type=str, default=None,
                        help='Directory with preprocessed .pt slice files (created by preprocess_slices_to_tensors.py)')
-    parser.add_argument('--train_ratio', type=float, default=None,
-                       help='If set, perform patient-level split and use train/val/test loaders (e.g. 0.7)')
-    parser.add_argument('--val_ratio', type=float, default=0.15,
-                       help='Validation split ratio when performing patient-level split')
-    parser.add_argument('--test_ratio', type=float, default=0.15,
-                       help='Test split ratio when performing patient-level split')
-    parser.add_argument('--split_seed', type=int, default=42,
-                       help='Random seed for reproducible patient-level splits')
+    parser.add_argument('--val_preprocessed_dir', type=str, default=None,
+                       help='Directory with preprocessed .pt slice files for validation (created by preprocess_slices_to_tensors.py)')
+    # NOTE: patient-level splitting has been removed; use explicit preprocessed train/val dirs
     return parser.parse_args()
 
 
@@ -849,28 +843,28 @@ def visualize_wavelet_decomposition(coeffs, title, num_modalities=4):
         
         # Plot LL (approximation)
         ax = fig.add_subplot(gs[mod_idx, 0])
-        im = ax.imshow(ll, cmap='gray', vmin=vmin, vmax=vmax)
+        im = ax.imshow(ll, cmap='Reds', vmin=vmin, vmax=vmax)
         ax.set_title(f'{mod_name} - LL (Approx)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
         
         # Plot LH (horizontal detail)
         ax = fig.add_subplot(gs[mod_idx, 1])
-        im = ax.imshow(lh, cmap='gray', vmin=vmin, vmax=vmax)
+        im = ax.imshow(lh, cmap='Reds', vmin=vmin, vmax=vmax)
         ax.set_title(f'{mod_name} - LH (Horiz)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
         
         # Plot HL (vertical detail)
         ax = fig.add_subplot(gs[mod_idx, 2])
-        im = ax.imshow(hl, cmap='gray', vmin=vmin, vmax=vmax)
+        im = ax.imshow(hl, cmap='Reds', vmin=vmin, vmax=vmax)
         ax.set_title(f'{mod_name} - HL (Vert)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
         
         # Plot HH (diagonal detail)
         ax = fig.add_subplot(gs[mod_idx, 3])
-        im = ax.imshow(hh, cmap='gray', vmin=vmin, vmax=vmax)
+        im = ax.imshow(hh, cmap='Reds', vmin=vmin, vmax=vmax)
         ax.set_title(f'{mod_name} - HH (Diag)')
         ax.axis('off')
         plt.colorbar(im, ax=ax, fraction=0.046)
@@ -881,7 +875,7 @@ def visualize_wavelet_decomposition(coeffs, title, num_modalities=4):
     return fig
 
 
-def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, epoch):
+def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, epoch, sample_id=None):
     """
     Create and log wavelet decomposition visualizations to WandB
     Only works for wavelet models - FIXED TO SHOW ALL INPUT COMPONENTS
@@ -918,17 +912,21 @@ def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, ep
                 wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_image)})
 
             # Log decompositions
-            input_fig = visualize_wavelet_decomposition(input_wavelets[0], f'Input Wavelets (Epoch {epoch})', num_modalities=8)
+            title_suffix = f"Epoch {epoch}"
+            if sample_id is not None:
+                title_suffix = f"{title_suffix} | Sample {sample_id}"
+
+            input_fig = visualize_wavelet_decomposition(input_wavelets[0], f'Input Wavelets ({title_suffix})', num_modalities=8)
             input_image = fig_to_pil(input_fig)
-            wandb.log({f"wavelets/input_epoch_{epoch}": wandb.Image(input_image)})
+            wandb.log({f"wavelets/input_epoch_{epoch}_{sample_id if sample_id is not None else 'sample'}": wandb.Image(input_image)})
 
-            output_fig = visualize_wavelet_decomposition(output_wavelets[0], f'Output Wavelets (Epoch {epoch})', num_modalities=4)
+            output_fig = visualize_wavelet_decomposition(output_wavelets[0], f'Output Wavelets ({title_suffix})', num_modalities=4)
             output_image = fig_to_pil(output_fig)
-            wandb.log({f"wavelets/output_epoch_{epoch}": wandb.Image(output_image)})
+            wandb.log({f"wavelets/output_epoch_{epoch}_{sample_id if sample_id is not None else 'sample'}": wandb.Image(output_image)})
 
-            target_fig = visualize_wavelet_decomposition(target_wavelets[0], f'Target Wavelets (Epoch {epoch})', num_modalities=4)
+            target_fig = visualize_wavelet_decomposition(target_wavelets[0], f'Target Wavelets ({title_suffix})', num_modalities=4)
             target_image = fig_to_pil(target_fig)
-            wandb.log({f"wavelets/target_epoch_{epoch}": wandb.Image(target_image)})
+            wandb.log({f"wavelets/target_epoch_{epoch}_{sample_id if sample_id is not None else 'sample'}": wandb.Image(target_image)})
 
             print(f"✓ Wavelet visualizations logged to WandB")
 
@@ -1080,61 +1078,43 @@ def main(args):
     pin_mem = True if torch.cuda.is_available() else False
     persistent = (args.num_workers > 0)
 
-    # If user requested patient-level splits via CLI, create split loaders
-    if getattr(args, 'train_ratio', None) is not None:
-        print(f"Creating patient-level splits: train={args.train_ratio}, val={args.val_ratio}, test={args.test_ratio}, seed={args.split_seed}")
+    # Create train and optional validation DataLoaders using explicit datasets
+    # Train dataset is the one we loaded above into `dataset`.
+    train_dataset = dataset
+    val_dataset = None
+    # If a separate validation preprocessed directory is provided, load it
+    if getattr(args, 'val_preprocessed_dir', None):
         try:
-            train_loader, val_loader, test_loader, train_dataset, val_dataset, test_dataset, patient_splits = get_split_loaders(
-                dataset,
-                batch_size=args.batch_size,
-                eval_batch_size=args.eval_batch_size,
-                num_workers=args.num_workers,
-                train_ratio=args.train_ratio,
-                val_ratio=args.val_ratio,
-                test_ratio=args.test_ratio,
-                seed=args.split_seed,
-                pin_memory=pin_mem,
-                persistent_workers=persistent,
-                shuffle_train=True
-            )
-            data_loader = train_loader
-            # Log split metadata
-            try:
-                dl_meta = {
-                    'dataloader/batch_size': args.batch_size,
-                    'dataloader/num_workers': args.num_workers,
-                    'dataloader/pin_memory': pin_mem,
-                    'dataloader/persistent_workers': persistent,
-                    'dataset/total_samples': len(dataset),
-                    'dataset/train_samples': len(train_dataset),
-                    'dataset/val_samples': len(val_dataset),
-                    'dataset/test_samples': len(test_dataset),
-                    'dataset/unique_patients_train': len(patient_splits.get('train', [])),
-                    'dataset/unique_patients_val': len(patient_splits.get('val', [])),
-                    'dataset/unique_patients_test': len(patient_splits.get('test', [])),
-                }
-                log_info(f"Split DataLoaders created", wandb_kv=dl_meta)
-            except Exception:
-                pass
+            from preprocessed_dataset import FastTensorSliceDataset
+            print(f"Using preprocessed validation directory: {args.val_preprocessed_dir}")
+            val_dataset = FastTensorSliceDataset(args.val_preprocessed_dir)
         except Exception as e:
-            print(f"Failed to create split loaders: {e}\nFalling back to a single DataLoader on the full dataset")
-            data_loader = DataLoader(
-                dataset,
-                batch_size=args.batch_size,
-                shuffle=True,
-                num_workers=args.num_workers,
-                pin_memory=pin_mem,
-                persistent_workers=persistent
-            )
-    else:
-        data_loader = DataLoader(
-            dataset,
-            batch_size=args.batch_size,
-            shuffle=True,
+            print(f"Failed to load FastTensorSliceDataset from {args.val_preprocessed_dir}: {e}")
+            val_dataset = None
+
+    data_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        pin_memory=pin_mem,
+        persistent_workers=persistent
+    )
+
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.eval_batch_size,
+            shuffle=False,
             num_workers=args.num_workers,
-            pin_memory=pin_mem,
+            pin_memory=True if torch.cuda.is_available() else False,
             persistent_workers=persistent
         )
+    else:
+        val_loader = None
+
+    # Keep `dataset` variable for backward compatibility (points to train dataset)
+    dataset = train_dataset
 
     # Log DataLoader configuration (best-effort)
     try:
@@ -1224,10 +1204,19 @@ def main(args):
             
             # Print dimensions on first batch of first epoch
             if epoch == 0 and i == 0:
+                # Robustly display slice indices whether collated as a tensor or list
+                try:
+                    preview_slices = slice_indices.tolist()[:5]
+                except Exception:
+                    try:
+                        preview_slices = [ (s[1] if isinstance(s, (list, tuple)) else int(s)) for s in slice_indices[:5] ]
+                    except Exception:
+                        preview_slices = ['N/A']
+
                 print(f"\n>>> Data Dimensions:")
                 print(f"    Input: {inputs.shape} (batch, channels, height, width)")
                 print(f"    Target: {targets.shape}")
-                print(f"    Batch contains slices: {slice_indices.tolist()[:5]}...\n")
+                print(f"    Batch contains slices: {preview_slices}...\n")
             
             optimizer.zero_grad()
             
@@ -1301,16 +1290,26 @@ def main(args):
                 
                 # Create reconstruction visualization
                 with torch.no_grad():
+                    # Extract first slice index for annotation (robust to collate format)
+                    try:
+                        first_slice = slice_indices[0].item()
+                    except Exception:
+                        try:
+                            first_elem = slice_indices[0]
+                            first_slice = first_elem[1] if isinstance(first_elem, (list, tuple)) else int(first_elem)
+                        except Exception:
+                            first_slice = -1
+
                     panel = create_reconstruction_log_panel(
                         inputs[0], targets[0], outputs[0], 
-                        slice_indices[0].item(), i
+                        first_slice, i
                     )
                     wandb.log({"reconstruction_preview": wandb.Image(panel)})
                 
                 # Log wavelet decompositions (only for wavelet models, only first batch of epoch)
                 if i == 0 and use_wavelet:
                     log_wavelet_visualizations(
-                        model, inputs, outputs, targets, args.wavelet, epoch
+                        model, inputs, outputs, targets, args.wavelet, epoch, sample_id=first_slice
                     )
             
             # Report timing stats periodically
@@ -1473,9 +1472,9 @@ def main(args):
         raise
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    # Create inference dataloader (prefer test split when present)
-    if 'test_loader' in locals() and test_loader is not None:
-        inference_loader = test_loader
+    # Create inference dataloader (prefer validation split when present)
+    if 'val_loader' in locals() and val_loader is not None:
+        inference_loader = val_loader
     else:
         inference_loader = DataLoader(
             dataset,
@@ -1523,8 +1522,6 @@ def main(args):
         # Create evaluation dataloader (prefer val split when present)
         if 'val_loader' in locals() and val_loader is not None:
             eval_loader = val_loader
-        elif 'test_loader' in locals() and test_loader is not None:
-            eval_loader = test_loader
         else:
             eval_loader = DataLoader(
                 dataset,
