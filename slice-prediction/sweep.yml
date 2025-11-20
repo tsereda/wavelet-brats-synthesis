@@ -18,7 +18,7 @@ parameters:
       - db2
   
   preprocessed_dir:
-    value: "./preprocessed_slices_train"
+    value: "./preprocessed_slices"
 
   val_preprocessed_dir:
     value: "./preprocessed_slices_val"
@@ -37,3 +37,9 @@ parameters:
 
   num_workers:
     value: 16
+
+  eval_batch_size:
+    value: 16
+
+  timing_frequency:
+    value: 50
