@@ -74,7 +74,7 @@ spec:
 
             echo "=== Starting WandB Sweep Agent ==="
             # Run WandB sweep agent (trials will read from ./preprocessed_slices and ./preprocessed_slices_val)
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/zfqabz0s
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/j9wznyhd
 
         env:
         - name: WANDB_API_KEY

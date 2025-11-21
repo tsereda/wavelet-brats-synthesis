@@ -1,14 +1,15 @@
 import numpy as np
 import cv2
 import torch
-from typing import List
+from typing import List, Optional
 
 def create_reconstruction_log_panel(
     inputs_sample: torch.Tensor,      # Model input (Prev/Next slices), shape [8, H, W]
     target_sample: torch.Tensor,      # Ground Truth (Real middle slice), shape [4, H, W]
     output_sample: torch.Tensor,      # Model Prediction (Reconstructed middle slice), shape [4, H, W]
     slice_idx: int,
-    batch_idx: int
+    batch_idx: int,
+    patient_id: Optional[str] = None
 ) -> np.ndarray:
     modalities = ["t1", "t1ce", "t2", "flair"]
     all_rows = []
@@ -59,6 +60,8 @@ def create_reconstruction_log_panel(
     final_panel = np.vstack(all_rows)
     main_header = np.full((40, final_panel.shape[1], 3), 60, dtype=np.uint8)
     title = f"Slice Reconstruction - Batch #{batch_idx}, Middle Slice #{slice_idx}"
+    if patient_id is not None:
+        title = f"{title} | {patient_id}"
     cv2.putText(main_header, title, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
     
     return np.vstack([main_header, final_panel])

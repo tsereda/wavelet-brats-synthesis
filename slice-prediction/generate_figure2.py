@@ -38,7 +38,17 @@ def select_best_example(data_loader, model, device, num_candidates=50):
             input_sample = inputs[0].cpu()
             target_sample = targets[0].cpu()
             output_sample = outputs[0].cpu()
-            slice_idx = slice_indices[0].item()
+            # Robust extraction in case dataset returns (slice_idx, patient_id)
+            first_info = slice_indices[0]
+            patient_id = None
+            if isinstance(first_info, (list, tuple)):
+                slice_idx = int(first_info[0])
+                patient_id = str(first_info[1])
+            else:
+                try:
+                    slice_idx = int(first_info.item())
+                except Exception:
+                    slice_idx = int(first_info)
             
             # Calculate MSE
             mse = torch.mean((output_sample - target_sample) ** 2).item()
@@ -52,6 +62,7 @@ def select_best_example(data_loader, model, device, num_candidates=50):
                     'target': target_sample,
                     'output': output_sample,
                     'slice_idx': slice_idx,
+                    'patient_id': patient_id,
                     'mse': mse,
                     'batch_idx': i
                 })
@@ -304,6 +315,17 @@ def main():
     # Create output directory
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # If we selected an example and it contains a patient_id, append it to the filename
+    try:
+        pid = examples.get('swin', {}).get('patient_id', None)
+        if pid:
+            # Only append when the filename doesn't already contain the id
+            stem = output_path.stem
+            if str(pid) not in stem:
+                output_path = output_path.with_name(f"{stem}_{pid}" + output_path.suffix)
+    except Exception:
+        pass
     
     # Generate figure
     if args.simple or len(examples) == 1:

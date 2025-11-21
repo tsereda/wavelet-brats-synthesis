@@ -12,6 +12,7 @@ from collections import OrderedDict
 from threading import Lock
 import argparse
 from time import time, perf_counter
+from pathlib import Path
 import torch.multiprocessing
 import cv2
 import wandb
@@ -185,6 +186,9 @@ class BraTS2D5Dataset(Dataset):
                     raise FileNotFoundError(f"No segmentation file found in {patient_name}")
                 patient_files['label'] = seg_matches[0]
 
+                # Preserve original patient identifier (folder basename)
+                # so callers can save artifacts using the original dataset numbering.
+                patient_files['_patient_id'] = patient_name
                 # Validate files for obvious corruption (gzip integrity and non-zero size)
                 is_valid, error_msg = self._validate_patient_files(patient_files, patient_name)
                 if is_valid:
@@ -324,7 +328,9 @@ class BraTS2D5Dataset(Dataset):
                         continue
                     brain_slice = proc['t1c'][0, :, :, slice_idx]
                     if torch.mean(brain_slice) > 50.0:
-                        self.slice_map.append((i, slice_idx))
+                        # Store patient id alongside volume and slice index
+                        patient_id = patient_files.get('_patient_id', f'patient_{i}')
+                        self.slice_map.append((i, slice_idx, patient_id))
 
                 del proc
 
@@ -427,7 +433,8 @@ class BraTS2D5Dataset(Dataset):
 
     def __getitem__(self, index):
         start = perf_counter()
-        volume_idx, slice_idx = self.slice_map[index]
+        # slice_map entries are (volume_idx, slice_idx, patient_id)
+        volume_idx, slice_idx, patient_id = self.slice_map[index]
         patient_data = self._get_volume(volume_idx)
 
         img_modalities = torch.cat([patient_data['t1n'], patient_data['t1c'],
@@ -453,7 +460,7 @@ class BraTS2D5Dataset(Dataset):
             input_tensor = torch.cat([prev_slice, next_slice], dim=0)
             elapsed = perf_counter() - start
             self._record_getitem_time(elapsed)
-            return input_tensor, target_tensor, slice_idx
+            return input_tensor, target_tensor, (int(slice_idx), patient_id)
 
         except IndexError as e:
             # Fallback: log and use middle slice of volume
@@ -473,7 +480,7 @@ class BraTS2D5Dataset(Dataset):
             elapsed = perf_counter() - start
             self._record_getitem_time(elapsed)
             print(f"Using fallback middle slice: {middle_slice}")
-            return input_tensor, target_tensor, middle_slice
+            return input_tensor, target_tensor, (int(middle_slice), patient_id if 'patient_id' in locals() else f'patient_{volume_idx}')
 
 
 class SimpleCSVTripletDataset(Dataset):
@@ -601,7 +608,17 @@ class SimpleCSVTripletDataset(Dataset):
                     pass
                 # Return the first successfully loaded sample (may be different from
                 # the originally requested index if it was corrupted).
-                return input_tensor, target_slice, slice_mid
+                # Preserve a patient identifier for CSV rows - prefer containing
+                # directory name, fall back to filename stem.
+                try:
+                    patient_dir = os.path.dirname(str(row['t1c']))
+                    patient_id = os.path.basename(patient_dir) if patient_dir else os.path.basename(str(row['t1c']))
+                    if not patient_id:
+                        patient_id = os.path.splitext(os.path.basename(str(row['t1c'])))[0]
+                except Exception:
+                    patient_id = f"csvrow_{idx}"
+
+                return input_tensor, target_slice, (int(slice_mid), patient_id)
 
             except Exception as e:
                 # Log the corrupted row and file paths, then skip it.
@@ -1209,7 +1226,7 @@ def main(args):
                     preview_slices = slice_indices.tolist()[:5]
                 except Exception:
                     try:
-                        preview_slices = [ (s[1] if isinstance(s, (list, tuple)) else int(s)) for s in slice_indices[:5] ]
+                        preview_slices = [ (s[0] if isinstance(s, (list, tuple)) else int(s)) for s in slice_indices[:5] ]
                     except Exception:
                         preview_slices = ['N/A']
 
@@ -1290,19 +1307,25 @@ def main(args):
                 
                 # Create reconstruction visualization
                 with torch.no_grad():
-                    # Extract first slice index for annotation (robust to collate format)
+                    # Extract first slice index and patient id for annotation (robust to collate format)
                     try:
-                        first_slice = slice_indices[0].item()
+                        first_info = slice_indices[0]
+                        if isinstance(first_info, (list, tuple)):
+                            first_slice = int(first_info[0])
+                            first_patient = str(first_info[1])
+                        else:
+                            try:
+                                first_slice = int(first_info.item())
+                            except Exception:
+                                first_slice = int(first_info)
+                            first_patient = f"batch{i}_sample0_slice{first_slice}"
                     except Exception:
-                        try:
-                            first_elem = slice_indices[0]
-                            first_slice = first_elem[1] if isinstance(first_elem, (list, tuple)) else int(first_elem)
-                        except Exception:
-                            first_slice = -1
+                        first_slice = -1
+                        first_patient = None
 
                     panel = create_reconstruction_log_panel(
                         inputs[0], targets[0], outputs[0], 
-                        first_slice, i
+                        first_slice, i, patient_id=first_patient
                     )
                     wandb.log({"reconstruction_preview": wandb.Image(panel)})
                 
@@ -1419,6 +1442,64 @@ def main(args):
                 # Don't crash training if WandB artifact upload fails; warn and continue
                 log_warn(f"Failed to log checkpoint artifact to WandB: {e}")
     
+    # Save one final sample at end of training for figure generation
+    try:
+        print("Saving final training sample for figure generation...")
+        model.eval()
+        with torch.no_grad():
+            # Get one batch
+            final_batch = next(iter(data_loader))
+            inputs, targets, slice_indices = final_batch
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            
+            # Use first sample
+            # Extract slice and patient id robustly from collated slice_indices
+            try:
+                first_info = slice_indices[0]
+                if isinstance(first_info, (list, tuple)):
+                    final_slice_idx = int(first_info[0])
+                    final_patient_orig = str(first_info[1])
+                else:
+                    try:
+                        final_slice_idx = int(first_info.item())
+                    except Exception:
+                        final_slice_idx = int(first_info)
+                    final_patient_orig = f"batch0_sample0_slice{final_slice_idx}"
+            except Exception:
+                final_slice_idx = -1
+                final_patient_orig = f"final_epoch{args.epochs}_slice{final_slice_idx}"
+            final_patient_id = f"final_epoch{args.epochs}_{final_patient_orig}"
+            
+            # Save everything for this sample
+            final_dir = Path(args.output_dir) / "final_sample"
+            final_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Raw data
+            np.savez(final_dir / f"sample_data_{final_patient_id}.npz",
+                input=inputs[0].cpu().numpy(),
+                target=targets[0].cpu().numpy(),
+                output=outputs[0].cpu().numpy(),
+                slice_idx=final_slice_idx,
+                patient_id=final_patient_orig
+            )
+            
+            # Wavelets if available
+            if hasattr(model, 'dwt2d_batch'):
+                input_wavelets = model.dwt2d_batch(inputs[0:1])
+                output_wavelets = model.dwt2d_batch(outputs[0:1]) 
+                target_wavelets = model.dwt2d_batch(targets[0:1])
+                
+                np.savez(final_dir / f"wavelets_{final_patient_id}.npz",
+                    input_wavelets=input_wavelets[0].cpu().numpy(),
+                    output_wavelets=output_wavelets[0].cpu().numpy(), 
+                    target_wavelets=target_wavelets[0].cpu().numpy()
+                )
+            
+            print(f"✓ Final sample saved as {final_patient_id}")
+    except Exception as e:
+        print(f"Warning: failed to save final sample: {e}")
+
     # Final training timing summary
     final_timing = timing_stats.get_stats()
     print(f"\n" + "="*60)
