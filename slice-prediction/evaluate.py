@@ -22,6 +22,7 @@ from time import perf_counter
 
 from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
+from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
 
 
 # Timing stats tracker for evaluation
@@ -270,81 +271,42 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     wavelet_time = perf_counter() - wavelet_start
                     timing_stats.add_wavelet_time(wavelet_time)
                     
-                    # Save first sample in batch
+                    # Save first sample in batch using patient-specific directory
                     sample_idx = 0
+                    sample_slice_idx, sample_patient_id = extract_patient_info(slice_indices, batch_idx, sample_idx)
                     
-                    # Save coefficients as .npy files (keep batch-named files for backward compatibility)
+                    # Create patient-specific subdirectory for wavelets
+                    patient_wavelet_dir = get_patient_output_dir(predictions_dir, sample_patient_id, sample_slice_idx)
+                    
+                    # Save wavelet coefficients with clean filenames
                     np.save(
-                        wavelet_dir / f'batch{batch_idx}_input_wavelets.npy',
+                        patient_wavelet_dir / 'wavelet_input.npy',
                         input_wavelets[sample_idx].cpu().numpy()
                     )
                     np.save(
-                        wavelet_dir / f'batch{batch_idx}_output_wavelets.npy',
+                        patient_wavelet_dir / 'wavelet_output.npy',
                         output_wavelets[sample_idx].cpu().numpy()
                     )
                     np.save(
-                        wavelet_dir / f'batch{batch_idx}_target_wavelets.npy',
+                        patient_wavelet_dir / 'wavelet_target.npy',
                         target_wavelets[sample_idx].cpu().numpy()
                     )
 
-                    # Also save patient-specific coefficient files when patient_id is available
-                    try:
-                        sample_slice_info = slice_indices[sample_idx]
-                        if isinstance(sample_slice_info, (list, tuple)):
-                            sample_patient_id = str(sample_slice_info[1])
-                        else:
-                            try:
-                                _slice = int(sample_slice_info.item())
-                                sample_patient_id = f"batch{batch_idx}_sample{sample_idx}_slice{_slice}"
-                            except Exception:
-                                sample_patient_id = f"batch{batch_idx}_sample{sample_idx}"
-                    except Exception:
-                        sample_patient_id = f"batch{batch_idx}_sample{sample_idx}"
-
-                    np.save(
-                        wavelet_dir / f'batch{batch_idx}_input_wavelets_{sample_patient_id}.npy',
-                        input_wavelets[sample_idx].cpu().numpy()
-                    )
-                    np.save(
-                        wavelet_dir / f'batch{batch_idx}_output_wavelets_{sample_patient_id}.npy',
-                        output_wavelets[sample_idx].cpu().numpy()
-                    )
-                    np.save(
-                        wavelet_dir / f'batch{batch_idx}_target_wavelets_{sample_patient_id}.npy',
-                        target_wavelets[sample_idx].cpu().numpy()
-                    )
-
-                    # Create visualizations - NOW SHOWING ALL INPUT COMPONENTS
-                    # Save both batch-named and patient-specific visualizations
-                    visualize_wavelet_decomposition(
-                        input_wavelets[sample_idx],
-                        f'Input Wavelet Decomposition (Batch {batch_idx}) - ALL 8 Channels',
-                        wavelet_viz_dir / f'batch{batch_idx}_input_wavelets_ALL8.png'
-                    )
+                    # Create wavelet visualizations with clean filenames
                     visualize_wavelet_decomposition(
                         input_wavelets[sample_idx],
                         f'Input Wavelet Decomposition - {sample_patient_id} - ALL 8 Channels',
-                        wavelet_viz_dir / f'batch{batch_idx}_input_wavelets_ALL8_{sample_patient_id}.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        output_wavelets[sample_idx],
-                        f'Output Wavelet Decomposition (Batch {batch_idx})',
-                        wavelet_viz_dir / f'batch{batch_idx}_output_wavelets.png'
+                        patient_wavelet_dir / 'wavelet_input_viz.png'
                     )
                     visualize_wavelet_decomposition(
                         output_wavelets[sample_idx],
                         f'Output Wavelet Decomposition - {sample_patient_id}',
-                        wavelet_viz_dir / f'batch{batch_idx}_output_wavelets_{sample_patient_id}.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        target_wavelets[sample_idx],
-                        f'Target Wavelet Decomposition (Batch {batch_idx})',
-                        wavelet_viz_dir / f'batch{batch_idx}_target_wavelets.png'
+                        patient_wavelet_dir / 'wavelet_output_viz.png'
                     )
                     visualize_wavelet_decomposition(
                         target_wavelets[sample_idx],
                         f'Target Wavelet Decomposition - {sample_patient_id}',
-                        wavelet_viz_dir / f'batch{batch_idx}_target_wavelets_{sample_patient_id}.png'
+                        patient_wavelet_dir / 'wavelet_target_viz.png'
                     )
             
             # Time metric calculation
@@ -354,18 +316,10 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
             batch_size = inputs.shape[0]
             for i in range(batch_size):
                 metrics = calculate_metrics(outputs[i], targets[i])
-                # Robustly extract slice index and optional patient identifier
-                slice_info = slice_indices[i]
-                if isinstance(slice_info, (list, tuple)):
-                    slice_idx = int(slice_info[0])
-                    patient_id = str(slice_info[1])
-                else:
-                    try:
-                        slice_idx = int(slice_info.item())
-                    except Exception:
-                        slice_idx = int(slice_info)
-                    patient_id = f"batch{batch_idx}_sample{i}_slice{slice_idx}"
-
+                
+                # Extract slice index and patient ID using centralized utility
+                slice_idx, patient_id = extract_patient_info(slice_indices, batch_idx, i)
+                
                 metrics['slice_idx'] = slice_idx
                 metrics['patient_id'] = patient_id
                 metrics['batch_idx'] = batch_idx
@@ -376,30 +330,26 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     running_mse_per_mod[mod].append(metrics[f'mse_{mod}'])
                     running_ssim_per_mod[mod].append(metrics[f'ssim_{mod}'])
                 
-                # Optionally save predictions
-                if batch_idx < 10:  # Save first 10 batches for inspection
-                    # Use patient_id when available to make filenames deterministic
-                    try:
-                        pid_for_file = patient_id
-                    except Exception:
-                        # Fallback to a batch/sample based id
-                        pid_for_file = f"batch{batch_idx}_sample{i}"
-                    pred_path = predictions_dir / f'batch{batch_idx}_sample{i}_{pid_for_file}.npy'
-                    np.save(pred_path, outputs[i].cpu().numpy())
+                # Save predictions for first 10 batches using patient-specific directories
+                if batch_idx < 10:
+                    patient_dir = get_patient_output_dir(predictions_dir, patient_id, slice_idx)
+                    save_slice_outputs(
+                        patient_dir=patient_dir,
+                        inputs=inputs[i],
+                        target=targets[i],
+                        output=outputs[i],
+                        slice_idx=slice_idx,
+                        patient_id=patient_id,
+                        batch_idx=batch_idx
+                    )
                 
                 # Log first sample to wandb - SAVE ALL COMPONENTS FOR SAME SAMPLE
                 if batch_idx == 0 and i == 0 and not sample_logged:
-                    # Use propagated patient_id when available
-                    slice_info = slice_indices[i]
-                    if isinstance(slice_info, (list, tuple)):
-                        slice_idx = int(slice_info[0])
-                        patient_id = str(slice_info[1])
-                    else:
-                        try:
-                            slice_idx = int(slice_info.item())
-                        except Exception:
-                            slice_idx = int(slice_info)
-                        patient_id = f"batch{batch_idx}_sample{i}_slice{slice_idx}"
+                    # Extract patient info using utility function
+                    first_slice_idx, first_patient_id = extract_patient_info(slice_indices, batch_idx, i)
+                    
+                    # Create patient-specific directory for this sample
+                    first_patient_dir = get_patient_output_dir(predictions_dir, first_patient_id, first_slice_idx)
                     
                     # Create comparison visualization (inputs Z-1, Z+1, prediction, target, error)
                     fig, axes = plt.subplots(4, 5, figsize=(15, 12))
@@ -432,66 +382,70 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                         axes[mod_idx, 4].set_title(f'|Error|' if mod_idx == 0 else '')
                         axes[mod_idx, 4].axis('off')
                     
-                    plt.suptitle(f'Sample Prediction - {patient_id}')
+                    plt.suptitle(f'Sample Prediction - {first_patient_id}')
                     plt.tight_layout()
                     
-                    # Save reconstruction with patient ID in filename
-                    reconstruction_path = predictions_dir / f'reconstruction_{patient_id}.png'
+                    # Save reconstruction panel in patient directory
+                    reconstruction_path = first_patient_dir / 'reconstruction_panel.png'
                     plt.savefig(reconstruction_path, dpi=150, bbox_inches='tight')
-                    wandb.log({f"eval/reconstruction_{patient_id}": wandb.Image(str(reconstruction_path))})
+                    wandb.log({f"eval/reconstruction_{first_patient_id}": wandb.Image(str(reconstruction_path))})
                     plt.close()
                     
-                    # Save raw tensor data for this specific sample
-                    sample_data_path = predictions_dir / f'sample_data_{patient_id}.npz'
-                    np.savez(sample_data_path,
-                        input=inputs[i].cpu().numpy(),
-                        target=targets[i].cpu().numpy(), 
-                        output=outputs[i].cpu().numpy(),
-                        slice_idx=slice_idx,
-                        batch_idx=batch_idx,
-                        patient_id=patient_id
-                    )
-                    
-                    # Save wavelets for the SAME sample (if model has wavelets)
+                    # Save wavelets if model has them
                     if hasattr(model, 'dwt2d_batch'):
                         input_wavelets = model.dwt2d_batch(inputs[i:i+1])   # Keep batch dim
                         output_wavelets = model.dwt2d_batch(outputs[i:i+1])
                         target_wavelets = model.dwt2d_batch(targets[i:i+1])
                         
-                        # Save wavelet coefficient tensors
-                        wavelet_data_path = predictions_dir / f'wavelets_{patient_id}.npz'
-                        np.savez(wavelet_data_path,
-                            input_wavelets=input_wavelets[0].cpu().numpy(),
-                            output_wavelets=output_wavelets[0].cpu().numpy(),
-                            target_wavelets=target_wavelets[0].cpu().numpy()
+                        # Save wavelets to patient directory
+                        save_slice_outputs(
+                            patient_dir=first_patient_dir,
+                            inputs=inputs[i],
+                            target=targets[i],
+                            output=outputs[i],
+                            slice_idx=first_slice_idx,
+                            patient_id=first_patient_id,
+                            batch_idx=batch_idx,
+                            input_wavelets=input_wavelets[0],
+                            output_wavelets=output_wavelets[0],
+                            target_wavelets=target_wavelets[0]
                         )
                         
-                        # Create and save wavelet visualizations with matching filename
-                        # Input wavelets (all 8 channels)
+                        # Create wavelet visualizations in patient directory
                         visualize_wavelet_decomposition(
                             input_wavelets[0], 
-                            f'Input Wavelets - {patient_id}', 
-                            output_path=predictions_dir / f'wavelets_input_{patient_id}.png'
+                            f'Input Wavelets - {first_patient_id}', 
+                            output_path=first_patient_dir / 'wavelet_input_viz.png'
                         )
-                        wandb.log({f"eval/wavelets_input_{patient_id}": wandb.Image(str(predictions_dir / f'wavelets_input_{patient_id}.png'))})
+                        wandb.log({f"eval/wavelets_input_{first_patient_id}": wandb.Image(str(first_patient_dir / 'wavelet_input_viz.png'))})
                         
-                        # Output wavelets 
                         visualize_wavelet_decomposition(
                             output_wavelets[0],
-                            f'Output Wavelets - {patient_id}',
-                            output_path=predictions_dir / f'wavelets_output_{patient_id}.png'
+                            f'Output Wavelets - {first_patient_id}',
+                            output_path=first_patient_dir / 'wavelet_output_viz.png'
                         )
-                        wandb.log({f"eval/wavelets_output_{patient_id}": wandb.Image(str(predictions_dir / f'wavelets_output_{patient_id}.png'))})
+                        wandb.log({f"eval/wavelets_output_{first_patient_id}": wandb.Image(str(first_patient_dir / 'wavelet_output_viz.png'))})
                         
-                        # Target wavelets
                         visualize_wavelet_decomposition(
                             target_wavelets[0], 
-                            f'Target Wavelets - {patient_id}',
-                            output_path=predictions_dir / f'wavelets_target_{patient_id}.png'  
+                            f'Target Wavelets - {first_patient_id}',
+                            output_path=first_patient_dir / 'wavelet_target_viz.png'
                         )
-                        wandb.log({f"eval/wavelets_target_{patient_id}": wandb.Image(str(predictions_dir / f'wavelets_target_{patient_id}.png'))})
+                        wandb.log({f"eval/wavelets_target_{first_patient_id}": wandb.Image(str(first_patient_dir / 'wavelet_target_viz.png'))})
                         
-                        print(f"✓ Saved complete sample data and wavelets for {patient_id}")
+                        print(f"✓ Saved complete sample data and wavelets for {first_patient_id}")
+                    else:
+                        # No wavelets, just save the slice outputs
+                        save_slice_outputs(
+                            patient_dir=first_patient_dir,
+                            inputs=inputs[i],
+                            target=targets[i],
+                            output=outputs[i],
+                            slice_idx=first_slice_idx,
+                            patient_id=first_patient_id,
+                            batch_idx=batch_idx
+                        )
+                        print(f"✓ Saved complete sample data for {first_patient_id}")
                     
                     sample_logged = True
             

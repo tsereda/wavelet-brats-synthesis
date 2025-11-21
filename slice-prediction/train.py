@@ -21,6 +21,7 @@ from monai.networks.nets import SwinUNETR, UNETR, BasicUNet
 from torch.nn import L1Loss, MSELoss
 from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
+from utils import extract_patient_info
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
@@ -1221,14 +1222,14 @@ def main(args):
             
             # Print dimensions on first batch of first epoch
             if epoch == 0 and i == 0:
-                # Robustly display slice indices whether collated as a tensor or list
+                # Display sample slice indices using centralized utility
                 try:
-                    preview_slices = slice_indices.tolist()[:5]
+                    preview_slices = []
+                    for idx, s in enumerate(slice_indices[:5]):
+                        slice_idx, _ = extract_patient_info(slice_indices, 0, idx)
+                        preview_slices.append(slice_idx)
                 except Exception:
-                    try:
-                        preview_slices = [ (s[0] if isinstance(s, (list, tuple)) else int(s)) for s in slice_indices[:5] ]
-                    except Exception:
-                        preview_slices = ['N/A']
+                    preview_slices = ['N/A']
 
                 print(f"\n>>> Data Dimensions:")
                 print(f"    Input: {inputs.shape} (batch, channels, height, width)")
@@ -1307,21 +1308,8 @@ def main(args):
                 
                 # Create reconstruction visualization
                 with torch.no_grad():
-                    # Extract first slice index and patient id for annotation (robust to collate format)
-                    try:
-                        first_info = slice_indices[0]
-                        if isinstance(first_info, (list, tuple)):
-                            first_slice = int(first_info[0])
-                            first_patient = str(first_info[1])
-                        else:
-                            try:
-                                first_slice = int(first_info.item())
-                            except Exception:
-                                first_slice = int(first_info)
-                            first_patient = f"batch{i}_sample0_slice{first_slice}"
-                    except Exception:
-                        first_slice = -1
-                        first_patient = None
+                    # Extract patient info for the first sample using centralized utility
+                    first_slice, first_patient = extract_patient_info(slice_indices, i, 0)
 
                     panel = create_reconstruction_log_panel(
                         inputs[0], targets[0], outputs[0], 
