@@ -255,7 +255,7 @@ def main():
 
     # OPTIMIZATION: Determine optimal number of processes
     if args.num_processes is None:
-        args.num_processes = min(mp.cpu_count() - 1, 8)  # Leave one core free, cap at 8
+        args.num_processes = min(mp.cpu_count() - 1, 30)  # Leave one core free, cap at 8
         if args.num_processes < 1:
             args.num_processes = 1
     
