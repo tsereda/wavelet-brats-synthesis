@@ -376,8 +376,8 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                 }
                 
                 # Add wavelet visualizations if available
-                if save_wavelets and hasattr(model, 'dwt2d_batch') and batch_idx == 0:
-                    # Only save wavelets for first batch to avoid too many files
+                if save_wavelets and hasattr(model, 'dwt2d_batch'):
+                    # Save wavelets for all samples to include in table
                     input_wavelets = model.dwt2d_batch(inputs[i:i+1])
                     output_wavelets = model.dwt2d_batch(outputs[i:i+1])
                     target_wavelets = model.dwt2d_batch(targets[i:i+1])
