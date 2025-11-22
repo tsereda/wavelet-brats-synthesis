@@ -28,7 +28,7 @@ def extract_patient_info(slice_indices, batch_idx: int, sample_idx: int) -> Tupl
         >>> # From a single tensor
         >>> slice_indices = torch.tensor([78, 79])
         >>> extract_patient_info(slice_indices, 0, 0)
-        (78, 'batch0_sample0_slice78')
+        (78, 'sample0_slice78')
     """
     try:
         slice_info = slice_indices[sample_idx] if hasattr(slice_indices, '__getitem__') else slice_indices
@@ -42,13 +42,13 @@ def extract_patient_info(slice_indices, batch_idx: int, sample_idx: int) -> Tupl
                 slice_idx = int(slice_info.item()) if hasattr(slice_info, 'item') else int(slice_info)
             except Exception:
                 slice_idx = int(slice_info)
-            patient_id = f"batch{batch_idx}_sample{sample_idx}_slice{slice_idx}"
+            patient_id = f"sample{sample_idx}_slice{slice_idx}"
         
         return slice_idx, patient_id
         
     except Exception:
         # Ultimate fallback
-        return -1, f"batch{batch_idx}_sample{sample_idx}"
+        return -1, f"sample{sample_idx}"
 
 
 def get_patient_output_dir(base_dir: Path, patient_id: str, slice_idx: int) -> Path:

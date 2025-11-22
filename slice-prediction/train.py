@@ -1453,7 +1453,7 @@ def main(args):
                         final_slice_idx = int(first_info.item())
                     except Exception:
                         final_slice_idx = int(first_info)
-                    final_patient_orig = f"batch0_sample0_slice{final_slice_idx}"
+                    final_patient_orig = f"sample0_slice{final_slice_idx}"
             except Exception:
                 final_slice_idx = -1
                 final_patient_orig = f"final_epoch{args.epochs}_slice{final_slice_idx}"
