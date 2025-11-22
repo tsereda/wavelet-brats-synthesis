@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-2
+  name: midslice-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -105,7 +105,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-2
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory
