@@ -59,5 +59,9 @@ class FastTensorSliceDataset(Dataset):
         if input_t is None or target_t is None:
             raise KeyError(f"Sample {path} missing 'input' or 'target' keys")
 
+        # Return (input, target, (slice_idx, patient_id)) tuple for compatibility
+        slice_idx = sample.get('slice_idx', -1)
+        patient_id = sample.get('patient', f'unknown_{idx}')
+        
         # Ensure float32 tensors
-        return input_t.float(), target_t.float(), sample.get('slice_idx', -1)
+        return input_t.float(), target_t.float(), (slice_idx, patient_id)

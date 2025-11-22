@@ -189,7 +189,7 @@ def calculate_metrics(prediction, ground_truth):
     }
 
 
-def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
+def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
     """
     Evaluate model on entire dataset WITH COMPLETE TIMING STATS
     
@@ -375,9 +375,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     "reconstruction": wandb.Image(str(panel_path)),
                 }
                 
-                # Add wavelet visualizations if available
-                if save_wavelets and hasattr(model, 'dwt2d_batch') and batch_idx == 0:
-                    # Only save wavelets for first batch to avoid too many files
+                # Add wavelet visualizations if available (for all samples when save_wavelets=True)
+                if save_wavelets and hasattr(model, 'dwt2d_batch'):
+                    # Compute wavelets for this sample
                     input_wavelets = model.dwt2d_batch(inputs[i:i+1])
                     output_wavelets = model.dwt2d_batch(outputs[i:i+1])
                     target_wavelets = model.dwt2d_batch(targets[i:i+1])
@@ -610,7 +610,7 @@ def print_results(results):
     print("="*50)
 
 
-def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_name, save_wavelets=False):
+def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_name, save_wavelets=True):
     """
     Main evaluation function that can be called from other scripts
     WITH COMPLETE TIMING STATS AND FIXED WAVELET VISUALIZATION
@@ -775,8 +775,8 @@ def get_args():
                        help='Model architecture')
     parser.add_argument('--wavelet', type=str, default='haar',
                        help='Wavelet type (for wavelet model type)')
-    parser.add_argument('--save_wavelets', action='store_true',
-                       help='Save wavelet coefficients and visualizations (wavelet models only)')
+    parser.add_argument('--no_save_wavelets', action='store_true',
+                       help='Disable saving wavelet coefficients and visualizations')
     parser.add_argument('--timing_only', action='store_true',
                        help='Only measure timing, skip full evaluation')
     return parser.parse_args()
@@ -870,9 +870,9 @@ def main():
     
     # Check if we should save wavelets
     is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
-    save_wavelets = args.save_wavelets and is_wavelet_model
-    if args.save_wavelets and not is_wavelet_model:
-        print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
+    save_wavelets = (not args.no_save_wavelets) and is_wavelet_model
+    if (not args.no_save_wavelets) and not is_wavelet_model:
+        print("Warning: wavelet saving only works with wavelet models. Ignoring.")
     
     # Quick timing-only evaluation if requested
     if args.timing_only:
