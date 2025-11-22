@@ -10,6 +10,7 @@ import torch
 import numpy as np
 import argparse
 import os
+import cv2
 from pathlib import Path
 from torch.utils.data import DataLoader
 from skimage.metrics import structural_similarity as ssim
@@ -23,6 +24,7 @@ from time import perf_counter
 from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
 from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
+from logging_utils import create_reconstruction_log_panel
 
 
 # Timing stats tracker for evaluation
@@ -228,6 +230,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     running_mse_per_mod = {'t1n': [], 't1c': [], 't2w': [], 't2f': []}
     running_ssim_per_mod = {'t1n': [], 't1c': [], 't2w': [], 't2f': []}
     
+    # Collect data for W&B table
+    table_data = []
+    
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(data_loader)):
             # Time data loading (approximate)
@@ -330,9 +335,54 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                     running_mse_per_mod[mod].append(metrics[f'mse_{mod}'])
                     running_ssim_per_mod[mod].append(metrics[f'ssim_{mod}'])
                 
-                # Save predictions for first 10 batches using patient-specific directories
-                if batch_idx < 10:
-                    patient_dir = get_patient_output_dir(predictions_dir, patient_id, slice_idx)
+                # Save all predictions using patient-specific directories and add to table
+                patient_dir = get_patient_output_dir(predictions_dir, patient_id, slice_idx)
+                
+                # Save slice outputs
+                saved_files = save_slice_outputs(
+                    patient_dir=patient_dir,
+                    inputs=inputs[i],
+                    target=targets[i],
+                    output=outputs[i],
+                    slice_idx=slice_idx,
+                    patient_id=patient_id,
+                    batch_idx=batch_idx
+                )
+                
+                # Create reconstruction panel for this sample
+                panel = create_reconstruction_log_panel(
+                    inputs[i], targets[i], outputs[i],
+                    slice_idx, batch_idx, patient_id=patient_id
+                )
+                panel_path = patient_dir / 'reconstruction_panel.png'
+                cv2.imwrite(str(panel_path), panel)
+                
+                # Prepare table row
+                table_row = {
+                    "patient_id": patient_id,
+                    "slice_idx": slice_idx,
+                    "batch_idx": batch_idx,
+                    "mse": float(metrics['mse']),
+                    "ssim": float(metrics['ssim']),
+                    "mse_t1n": float(metrics['mse_t1n']),
+                    "mse_t1c": float(metrics['mse_t1c']),
+                    "mse_t2w": float(metrics['mse_t2w']),
+                    "mse_t2f": float(metrics['mse_t2f']),
+                    "ssim_t1n": float(metrics['ssim_t1n']),
+                    "ssim_t1c": float(metrics['ssim_t1c']),
+                    "ssim_t2w": float(metrics['ssim_t2w']),
+                    "ssim_t2f": float(metrics['ssim_t2f']),
+                    "reconstruction": wandb.Image(str(panel_path)),
+                }
+                
+                # Add wavelet visualizations if available
+                if save_wavelets and hasattr(model, 'dwt2d_batch') and batch_idx == 0:
+                    # Only save wavelets for first batch to avoid too many files
+                    input_wavelets = model.dwt2d_batch(inputs[i:i+1])
+                    output_wavelets = model.dwt2d_batch(outputs[i:i+1])
+                    target_wavelets = model.dwt2d_batch(targets[i:i+1])
+                    
+                    # Save wavelets using our utility
                     save_slice_outputs(
                         patient_dir=patient_dir,
                         inputs=inputs[i],
@@ -340,114 +390,40 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
                         output=outputs[i],
                         slice_idx=slice_idx,
                         patient_id=patient_id,
-                        batch_idx=batch_idx
+                        batch_idx=batch_idx,
+                        input_wavelets=input_wavelets[0],
+                        output_wavelets=output_wavelets[0],
+                        target_wavelets=target_wavelets[0]
                     )
+                    
+                    # Create wavelet visualizations
+                    visualize_wavelet_decomposition(
+                        input_wavelets[0],
+                        f'Input Wavelets - {patient_id}',
+                        patient_dir / 'wavelet_input_viz.png'
+                    )
+                    visualize_wavelet_decomposition(
+                        output_wavelets[0],
+                        f'Output Wavelets - {patient_id}',
+                        patient_dir / 'wavelet_output_viz.png'
+                    )
+                    visualize_wavelet_decomposition(
+                        target_wavelets[0],
+                        f'Target Wavelets - {patient_id}',
+                        patient_dir / 'wavelet_target_viz.png'
+                    )
+                    
+                    # Add to table row
+                    table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
+                    table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
+                    table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
+                else:
+                    table_row['wavelet_input'] = None
+                    table_row['wavelet_output'] = None
+                    table_row['wavelet_target'] = None
                 
-                # Log first sample to wandb - SAVE ALL COMPONENTS FOR SAME SAMPLE
-                if batch_idx == 0 and i == 0 and not sample_logged:
-                    # Extract patient info using utility function
-                    first_slice_idx, first_patient_id = extract_patient_info(slice_indices, batch_idx, i)
-                    
-                    # Create patient-specific directory for this sample
-                    first_patient_dir = get_patient_output_dir(predictions_dir, first_patient_id, first_slice_idx)
-                    
-                    # Create comparison visualization (inputs Z-1, Z+1, prediction, target, error)
-                    fig, axes = plt.subplots(4, 5, figsize=(15, 12))
-                    modalities = ['T1n', 'T1c', 'T2w', 'T2f']
-                    
-                    for mod_idx, mod_name in enumerate(modalities):
-                        # Input Z-1
-                        axes[mod_idx, 0].imshow(inputs[i, mod_idx].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 0].set_title(f'{mod_name} Input (Z-1)' if mod_idx == 0 else '')
-                        axes[mod_idx, 0].axis('off')
-                        
-                        # Input Z+1
-                        axes[mod_idx, 1].imshow(inputs[i, mod_idx+4].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 1].set_title(f'Input (Z+1)' if mod_idx == 0 else '')
-                        axes[mod_idx, 1].axis('off')
-                        
-                        # Prediction
-                        axes[mod_idx, 2].imshow(outputs[i, mod_idx].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 2].set_title(f'Prediction (Z)' if mod_idx == 0 else '')
-                        axes[mod_idx, 2].axis('off')
-                        
-                        # Ground truth
-                        axes[mod_idx, 3].imshow(targets[i, mod_idx].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 3].set_title(f'Ground Truth (Z)' if mod_idx == 0 else '')
-                        axes[mod_idx, 3].axis('off')
-                        
-                        # Error map
-                        error = np.abs(outputs[i, mod_idx].cpu().numpy() - targets[i, mod_idx].cpu().numpy())
-                        im = axes[mod_idx, 4].imshow(error, cmap='hot', vmin=0, vmax=0.3)
-                        axes[mod_idx, 4].set_title(f'|Error|' if mod_idx == 0 else '')
-                        axes[mod_idx, 4].axis('off')
-                    
-                    plt.suptitle(f'Sample Prediction - {first_patient_id}')
-                    plt.tight_layout()
-                    
-                    # Save reconstruction panel in patient directory
-                    reconstruction_path = first_patient_dir / 'reconstruction_panel.png'
-                    plt.savefig(reconstruction_path, dpi=150, bbox_inches='tight')
-                    wandb.log({f"eval/reconstruction_{first_patient_id}": wandb.Image(str(reconstruction_path))})
-                    plt.close()
-                    
-                    # Save wavelets if model has them
-                    if hasattr(model, 'dwt2d_batch'):
-                        input_wavelets = model.dwt2d_batch(inputs[i:i+1])   # Keep batch dim
-                        output_wavelets = model.dwt2d_batch(outputs[i:i+1])
-                        target_wavelets = model.dwt2d_batch(targets[i:i+1])
-                        
-                        # Save wavelets to patient directory
-                        save_slice_outputs(
-                            patient_dir=first_patient_dir,
-                            inputs=inputs[i],
-                            target=targets[i],
-                            output=outputs[i],
-                            slice_idx=first_slice_idx,
-                            patient_id=first_patient_id,
-                            batch_idx=batch_idx,
-                            input_wavelets=input_wavelets[0],
-                            output_wavelets=output_wavelets[0],
-                            target_wavelets=target_wavelets[0]
-                        )
-                        
-                        # Create wavelet visualizations in patient directory
-                        visualize_wavelet_decomposition(
-                            input_wavelets[0], 
-                            f'Input Wavelets - {first_patient_id}', 
-                            output_path=first_patient_dir / 'wavelet_input_viz.png'
-                        )
-                        wandb.log({f"eval/wavelets_input_{first_patient_id}": wandb.Image(str(first_patient_dir / 'wavelet_input_viz.png'))})
-                        
-                        visualize_wavelet_decomposition(
-                            output_wavelets[0],
-                            f'Output Wavelets - {first_patient_id}',
-                            output_path=first_patient_dir / 'wavelet_output_viz.png'
-                        )
-                        wandb.log({f"eval/wavelets_output_{first_patient_id}": wandb.Image(str(first_patient_dir / 'wavelet_output_viz.png'))})
-                        
-                        visualize_wavelet_decomposition(
-                            target_wavelets[0], 
-                            f'Target Wavelets - {first_patient_id}',
-                            output_path=first_patient_dir / 'wavelet_target_viz.png'
-                        )
-                        wandb.log({f"eval/wavelets_target_{first_patient_id}": wandb.Image(str(first_patient_dir / 'wavelet_target_viz.png'))})
-                        
-                        print(f"✓ Saved complete sample data and wavelets for {first_patient_id}")
-                    else:
-                        # No wavelets, just save the slice outputs
-                        save_slice_outputs(
-                            patient_dir=first_patient_dir,
-                            inputs=inputs[i],
-                            target=targets[i],
-                            output=outputs[i],
-                            slice_idx=first_slice_idx,
-                            patient_id=first_patient_id,
-                            batch_idx=batch_idx
-                        )
-                        print(f"✓ Saved complete sample data for {first_patient_id}")
-                    
-                    sample_logged = True
+                # Add row to table data
+                table_data.append(table_row)
             
             metric_time = perf_counter() - metric_start
             timing_stats.add_metric_time(metric_time)
@@ -500,6 +476,60 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
             "eval/final_timing/avg_wavelet_time_ms": final_timing['avg_wavelet_time_ms'],
             "eval/final_timing/total_wavelet_time_s": final_timing['total_wavelet_time_s'],
         })
+    
+    # Create and log W&B table with all predictions
+    print(f"\n" + "="*60)
+    print(f"Creating W&B table with {len(table_data)} samples...")
+    print("="*60)
+    
+    if wandb.run is not None and len(table_data) > 0:
+        # Define table columns
+        columns = [
+            "patient_id", "slice_idx", "batch_idx",
+            "mse", "ssim",
+            "mse_t1n", "mse_t1c", "mse_t2w", "mse_t2f",
+            "ssim_t1n", "ssim_t1c", "ssim_t2w", "ssim_t2f",
+            "reconstruction"
+        ]
+        
+        # Add wavelet columns if we have wavelet data
+        if save_wavelets and any(row.get('wavelet_input') is not None for row in table_data):
+            columns.extend(["wavelet_input", "wavelet_output", "wavelet_target"])
+        
+        # Build table data rows
+        table_rows = []
+        for row in table_data:
+            table_row = [
+                row["patient_id"],
+                row["slice_idx"],
+                row["batch_idx"],
+                row["mse"],
+                row["ssim"],
+                row["mse_t1n"],
+                row["mse_t1c"],
+                row["mse_t2w"],
+                row["mse_t2f"],
+                row["ssim_t1n"],
+                row["ssim_t1c"],
+                row["ssim_t2w"],
+                row["ssim_t2f"],
+                row["reconstruction"]
+            ]
+            
+            # Add wavelet images if available
+            if save_wavelets and any(r.get('wavelet_input') is not None for r in table_data):
+                table_row.extend([
+                    row.get("wavelet_input"),
+                    row.get("wavelet_output"),
+                    row.get("wavelet_target")
+                ])
+            
+            table_rows.append(table_row)
+        
+        # Create and log table
+        predictions_table = wandb.Table(columns=columns, data=table_rows)
+        wandb.log({"eval/predictions_table": predictions_table})
+        print(f"✓ Logged predictions table with {len(table_data)} samples to W&B")
     
     # Aggregate metrics
     mse_values = [m['mse'] for m in all_metrics]
