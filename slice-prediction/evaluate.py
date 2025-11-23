@@ -261,13 +261,19 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             # Separate timing from computation to ensure wavelets are available for ALL samples in table
             has_wavelets = save_wavelets and hasattr(model, 'dwt2d_batch')
             
+            # Initialize wavelet variables (will be None if not computed)
+            input_wavelets = None
+            output_wavelets = None
+            target_wavelets = None
+            
             if has_wavelets:
                 # Debug: Log on first batch
                 if batch_idx == 0:
                     print(f"✓ Wavelet model detected - will compute wavelets for all batches")
                 
                 # Time wavelet computation only for first 10 batches (for performance metrics)
-                if batch_idx < 10:
+                measure_timing = batch_idx < 10
+                if measure_timing:
                     wavelet_start = perf_counter()
                 
                 # But ALWAYS compute wavelets for all batches (needed for W&B table)
@@ -281,48 +287,14 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                 target_wavelets = model.dwt2d_batch(targets)
                 
                 # Complete timing for first 10 batches
-                if batch_idx < 10:
+                if measure_timing:
                     torch.cuda.synchronize() if device.type == 'cuda' else None
                     wavelet_time = perf_counter() - wavelet_start
                     timing_stats.add_wavelet_time(wavelet_time)
-                    
-                    # Save first sample in batch using patient-specific directory (for detailed inspection)
-                    sample_idx = 0
-                    sample_slice_idx, sample_patient_id = extract_patient_info(slice_indices, batch_idx, sample_idx)
-                    
-                    # Create patient-specific subdirectory for wavelets
-                    patient_wavelet_dir = get_patient_output_dir(predictions_dir, sample_patient_id, sample_slice_idx)
-                    
-                    # Save wavelet coefficients with clean filenames
-                    np.save(
-                        patient_wavelet_dir / 'wavelet_input.npy',
-                        input_wavelets[sample_idx].cpu().numpy()
-                    )
-                    np.save(
-                        patient_wavelet_dir / 'wavelet_output.npy',
-                        output_wavelets[sample_idx].cpu().numpy()
-                    )
-                    np.save(
-                        patient_wavelet_dir / 'wavelet_target.npy',
-                        target_wavelets[sample_idx].cpu().numpy()
-                    )
-
-                    # Create wavelet visualizations with clean filenames
-                    visualize_wavelet_decomposition(
-                        input_wavelets[sample_idx],
-                        f'Input Wavelet Decomposition - {sample_patient_id} - ALL 8 Channels',
-                        patient_wavelet_dir / 'wavelet_input_viz.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        output_wavelets[sample_idx],
-                        f'Output Wavelet Decomposition - {sample_patient_id}',
-                        patient_wavelet_dir / 'wavelet_output_viz.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        target_wavelets[sample_idx],
-                        f'Target Wavelet Decomposition - {sample_patient_id}',
-                        patient_wavelet_dir / 'wavelet_target_viz.png'
-                    )
+                
+                # Debug: Confirm wavelet computation on first batch
+                if batch_idx == 0:
+                    print(f"✓ Computed wavelets for batch 0: input_shape={input_wavelets.shape}, output_shape={output_wavelets.shape}, target_shape={target_wavelets.shape}")
             else:
                 # Debug: Log on first batch
                 if batch_idx == 0:
@@ -390,7 +362,7 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                 }
                 
                 # Add wavelet visualizations if available (use pre-computed wavelets from batch)
-                if has_wavelets:
+                if has_wavelets and input_wavelets is not None:
                     # Use the wavelets already computed for this batch (no recomputation needed)
                     # Save wavelets using our utility
                     save_slice_outputs(
@@ -428,10 +400,14 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
                     table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
                     
-                    # Debug: Log on first sample
-                    if batch_idx == 0 and i == 0:
-                        print(f"✓ Added wavelet images to table for sample {patient_id}")
+                    # Debug: Log on first few samples to confirm wavelets are being processed
+                    if batch_idx < 3 and i == 0:
+                        print(f"✓ Batch {batch_idx}: Added wavelet images to table for {patient_id} (slice {slice_idx})")
                 else:
+                    # Debug: Log why wavelets are missing (only for first batch to avoid spam)
+                    if batch_idx == 0 and i == 0:
+                        print(f"⚠ Batch {batch_idx}: No wavelets added (has_wavelets={has_wavelets}, input_wavelets is None={input_wavelets is None})")
+                    
                     table_row['wavelet_input'] = None
                     table_row['wavelet_output'] = None
                     table_row['wavelet_target'] = None
