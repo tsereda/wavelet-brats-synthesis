@@ -259,7 +259,13 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             
             # Time wavelet transforms if this is a wavelet model
             # Separate timing from computation to ensure wavelets are available for ALL samples in table
-            if save_wavelets and hasattr(model, 'dwt2d_batch'):
+            has_wavelets = save_wavelets and hasattr(model, 'dwt2d_batch')
+            
+            if has_wavelets:
+                # Debug: Log on first batch
+                if batch_idx == 0:
+                    print(f"✓ Wavelet model detected - will compute wavelets for all batches")
+                
                 # Time wavelet computation only for first 10 batches (for performance metrics)
                 if batch_idx < 10:
                     wavelet_start = perf_counter()
@@ -317,6 +323,10 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                         f'Target Wavelet Decomposition - {sample_patient_id}',
                         patient_wavelet_dir / 'wavelet_target_viz.png'
                     )
+            else:
+                # Debug: Log on first batch
+                if batch_idx == 0:
+                    print(f"ℹ No wavelets will be computed (save_wavelets={save_wavelets}, has_dwt2d_batch={hasattr(model, 'dwt2d_batch')})")
             
             # Time metric calculation
             metric_start = perf_counter()
@@ -380,7 +390,7 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                 }
                 
                 # Add wavelet visualizations if available (use pre-computed wavelets from batch)
-                if save_wavelets and hasattr(model, 'dwt2d_batch'):
+                if has_wavelets:
                     # Use the wavelets already computed for this batch (no recomputation needed)
                     # Save wavelets using our utility
                     save_slice_outputs(
@@ -417,6 +427,10 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
                     table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
                     table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
+                    
+                    # Debug: Log on first sample
+                    if batch_idx == 0 and i == 0:
+                        print(f"✓ Added wavelet images to table for sample {patient_id}")
                 else:
                     table_row['wavelet_input'] = None
                     table_row['wavelet_output'] = None
@@ -480,6 +494,10 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
     # Create and log W&B table with all predictions
     print(f"\n" + "="*60)
     print(f"Creating W&B table with {len(table_data)} samples...")
+    
+    # Debug: Check wavelet data availability
+    samples_with_wavelets = sum(1 for row in table_data if row.get('wavelet_input') is not None)
+    print(f"Samples with wavelet data: {samples_with_wavelets}/{len(table_data)}")
     print("="*60)
     
     if wandb.run is not None and len(table_data) > 0:
@@ -493,8 +511,12 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
         ]
         
         # Add wavelet columns if we have wavelet data
-        if save_wavelets and any(row.get('wavelet_input') is not None for row in table_data):
+        has_wavelet_data = any(row.get('wavelet_input') is not None for row in table_data)
+        if has_wavelet_data:
             columns.extend(["wavelet_input", "wavelet_output", "wavelet_target"])
+            print(f"✓ Adding wavelet columns to table (found {samples_with_wavelets} samples with wavelets)")
+        else:
+            print(f"⚠ No wavelet columns will be added (no samples have wavelet data)")
         
         # Build table data rows
         table_rows = []
@@ -516,8 +538,8 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                 row["reconstruction"]
             ]
             
-            # Add wavelet images if available
-            if save_wavelets and any(r.get('wavelet_input') is not None for r in table_data):
+            # Add wavelet images if columns exist
+            if has_wavelet_data:
                 table_row.extend([
                     row.get("wavelet_input"),
                     row.get("wavelet_output"),
