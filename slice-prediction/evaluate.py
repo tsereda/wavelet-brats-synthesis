@@ -258,25 +258,29 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
             timing_stats.add_samples(inputs.shape[0])
             
             # Time wavelet transforms if this is a wavelet model
+            # Separate timing from computation to ensure wavelets are available for ALL samples in table
             if save_wavelets and hasattr(model, 'dwt2d_batch'):
-                # Only time for first 10 batches to avoid overhead
+                # Time wavelet computation only for first 10 batches (for performance metrics)
                 if batch_idx < 10:
                     wavelet_start = perf_counter()
-                    
-                    # Get wavelet decomposition of input (ALL 8 CHANNELS)
-                    input_wavelets = model.dwt2d_batch(inputs)
-                    
-                    # Get wavelet decomposition of output
-                    output_wavelets = model.dwt2d_batch(outputs)
-                    
-                    # Get wavelet decomposition of ground truth
-                    target_wavelets = model.dwt2d_batch(targets)
-                    
+                
+                # But ALWAYS compute wavelets for all batches (needed for W&B table)
+                # Get wavelet decomposition of input (ALL 8 CHANNELS)
+                input_wavelets = model.dwt2d_batch(inputs)
+                
+                # Get wavelet decomposition of output
+                output_wavelets = model.dwt2d_batch(outputs)
+                
+                # Get wavelet decomposition of ground truth
+                target_wavelets = model.dwt2d_batch(targets)
+                
+                # Complete timing for first 10 batches
+                if batch_idx < 10:
                     torch.cuda.synchronize() if device.type == 'cuda' else None
                     wavelet_time = perf_counter() - wavelet_start
                     timing_stats.add_wavelet_time(wavelet_time)
                     
-                    # Save first sample in batch using patient-specific directory
+                    # Save first sample in batch using patient-specific directory (for detailed inspection)
                     sample_idx = 0
                     sample_slice_idx, sample_patient_id = extract_patient_info(slice_indices, batch_idx, sample_idx)
                     
@@ -375,13 +379,9 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     "reconstruction": wandb.Image(str(panel_path)),
                 }
                 
-                # Add wavelet visualizations if available (for all samples when save_wavelets=True)
+                # Add wavelet visualizations if available (use pre-computed wavelets from batch)
                 if save_wavelets and hasattr(model, 'dwt2d_batch'):
-                    # Compute wavelets for this sample
-                    input_wavelets = model.dwt2d_batch(inputs[i:i+1])
-                    output_wavelets = model.dwt2d_batch(outputs[i:i+1])
-                    target_wavelets = model.dwt2d_batch(targets[i:i+1])
-                    
+                    # Use the wavelets already computed for this batch (no recomputation needed)
                     # Save wavelets using our utility
                     save_slice_outputs(
                         patient_dir=patient_dir,
@@ -391,24 +391,24 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                         slice_idx=slice_idx,
                         patient_id=patient_id,
                         batch_idx=batch_idx,
-                        input_wavelets=input_wavelets[0],
-                        output_wavelets=output_wavelets[0],
-                        target_wavelets=target_wavelets[0]
+                        input_wavelets=input_wavelets[i],
+                        output_wavelets=output_wavelets[i],
+                        target_wavelets=target_wavelets[i]
                     )
                     
                     # Create wavelet visualizations
                     visualize_wavelet_decomposition(
-                        input_wavelets[0],
+                        input_wavelets[i],
                         f'Input Wavelets - {patient_id}',
                         patient_dir / 'wavelet_input_viz.png'
                     )
                     visualize_wavelet_decomposition(
-                        output_wavelets[0],
+                        output_wavelets[i],
                         f'Output Wavelets - {patient_id}',
                         patient_dir / 'wavelet_output_viz.png'
                     )
                     visualize_wavelet_decomposition(
-                        target_wavelets[0],
+                        target_wavelets[i],
                         f'Target Wavelets - {patient_id}',
                         patient_dir / 'wavelet_target_viz.png'
                     )
