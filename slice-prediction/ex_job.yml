@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-5
+  name: midslice-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -45,7 +45,7 @@ spec:
             
             echo "=== Preprocessing Training Data ==="
             python preprocess_slices_to_tensors.py \
-              --data_dir brats23test \
+              --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
               --output_dir ./preprocessed_slices \
               --img_size 256 \
               --triplets_per_patient 5 \
@@ -74,7 +74,7 @@ spec:
 
             echo "=== Starting WandB Sweep Agent ==="
             # Run WandB sweep agent (trials will read from ./preprocessed_slices and ./preprocessed_slices_val)
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/mziscf6o
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/5mfl25i8
 
         env:
         - name: WANDB_API_KEY
@@ -105,7 +105,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-5
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory
