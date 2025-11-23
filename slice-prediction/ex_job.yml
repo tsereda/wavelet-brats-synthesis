@@ -45,7 +45,7 @@ spec:
             
             echo "=== Preprocessing Training Data ==="
             python preprocess_slices_to_tensors.py \
-              --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
+              --data_dir brats23test \
               --output_dir ./preprocessed_slices \
               --img_size 256 \
               --triplets_per_patient 5 \

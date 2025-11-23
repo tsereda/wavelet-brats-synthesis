@@ -9,3 +9,13 @@ k8s/training_pods/wandb-sweep-agent-*.yml
 k8s/training_pods/wandb-sweep-job-*.yml
 slice-prediction/wandb/
 slice-prediction/figures/
+slice-prediction/brats23test.tar.gz
+slice-prediction/brats23test/
+slice-prediction/preprocessed_slices/
+.gitignore
+slice-prediction/__pycache__/
+slice-prediction/results/
+slice-prediction/checkpoints/
+slice-prediction/cpuextras
+slice-prediction/brats23test.tar
+slice-prediction/models/

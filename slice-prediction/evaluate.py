@@ -777,8 +777,80 @@ def get_args():
                        help='Disable saving wavelet coefficients and visualizations')
     parser.add_argument('--timing_only', action='store_true',
                        help='Only measure timing, skip full evaluation')
+    parser.add_argument('--test_mode', action='store_true',
+                       help='Quick validation: 2 patients, reduced settings, auto-optimized')
     return parser.parse_args()
 
+
+def setup_device_and_optimizations(args):
+    """Setup device (always auto) and apply optimizations"""
+    
+    # Always auto-detect device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        gpu_name = torch.cuda.get_device_name()
+        print(f"[DEVICE] Auto-detected: GPU ({gpu_name})")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+        print(f"[DEVICE] Auto-detected: Apple Silicon MPS")
+    else:
+        device = torch.device('cpu')
+        print(f"[DEVICE] Auto-detected: CPU ({torch.get_num_threads()} threads)")
+    
+    # Apply optimizations
+    if device.type == 'cpu':
+        apply_cpu_optimizations(args)
+    
+    if args.test_mode:
+        apply_test_mode_settings(args, device)
+        
+    return device
+
+def apply_cpu_optimizations(args):
+    """Apply CPU optimizations only when needed"""
+    total_cores = torch.get_num_threads()
+    
+    # Only optimize threads if PyTorch is using too many
+    if total_cores > 8:  # Only intervene for high-core systems
+        optimal_threads = max(4, total_cores // 2)
+        torch.set_num_threads(optimal_threads)
+        print(f"[CPU] Optimized threads: {total_cores} -> {optimal_threads}")
+    
+    # Conservative batch sizes for CPU
+    original_batch = args.batch_size
+    if args.batch_size > 4:
+        args.batch_size = 4
+        print(f"[CPU] Reduced batch_size: {original_batch} -> {args.batch_size}")
+    
+    # Warn about wavelets if being used
+    if hasattr(args, 'wavelet') and args.wavelet != 'none':
+        print(f"[WARNING] {args.wavelet} wavelets will be significantly slower on CPU")
+        print(f"[TIP] Consider: --wavelet none for CPU evaluation")
+
+def apply_test_mode_settings(args, device):
+    """Apply test mode settings for evaluation"""
+    print(f"[TEST] Test mode activated")
+    
+    # Force small dataset
+    original_patients = getattr(args, 'num_patients', 'all')
+    args.num_patients = 2
+    print(f"[TEST] Patients: {original_patients} -> 2")
+    
+    # Conservative batch sizes for test mode
+    original_batch = args.batch_size
+    if device.type == 'cpu':
+        args.batch_size = min(2, args.batch_size)
+    else:
+        args.batch_size = min(4, args.batch_size)
+    
+    if original_batch != args.batch_size:
+        print(f"[TEST] Batch size: {original_batch} -> {args.batch_size}")
+    
+    # Time estimates
+    if device.type == 'cpu':
+        print(f"[TEST] Estimated time: 5-15 minutes (CPU)")
+    else:
+        print(f"[TEST] Estimated time: 1-3 minutes (GPU)")
 
 def measure_timing_only(model, data_loader, device, num_batches=100):
     """
@@ -833,17 +905,28 @@ def main():
     """CLI entry point"""
     args = get_args()
     
-    # Initialize wandb
+    # NEW: Smart device setup and optimizations
+    device = setup_device_and_optimizations(args)
+    
+    # Initialize wandb with test mode tags
     run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
+    wandb_config = vars(args)
+    wandb_config['device_type'] = device.type
+    wandb_tags = ['evaluation']
+    if args.test_mode:
+        wandb_tags.append('test_mode')
+    
     wandb.init(
         project="brats-middleslice-wavelet-sweep",
         name=run_name,
-        config=vars(args),
-        tags=["evaluation"]
+        config=wandb_config,
+        tags=wandb_tags
     )
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
+    # Load dataset
+    print("Loading dataset...")
     
     # Load dataset
     print("Loading dataset...")
@@ -855,11 +938,15 @@ def main():
         cache_size=50  # prevent OOM by limiting volume cache
     )
     
+    # Create data loader with CPU-friendly settings
+    pin_memory = device.type != 'cpu'  # Only pin memory for GPU
+    num_workers = 0 if device.type == 'cpu' else 4  # Safer worker count for CPU
     data_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,  # Don't shuffle for reproducible evaluation
-        num_workers=4
+        num_workers=num_workers,
+        pin_memory=pin_memory
     )
     
     # Load model

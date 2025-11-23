@@ -669,6 +669,8 @@ def get_args():
                        help='Directory with preprocessed .pt slice files (created by preprocess_slices_to_tensors.py)')
     parser.add_argument('--val_preprocessed_dir', type=str, default=None,
                        help='Directory with preprocessed .pt slice files for validation (created by preprocess_slices_to_tensors.py)')
+    parser.add_argument('--test_mode', action='store_true',
+                       help='Quick validation: 2 patients, reduced epochs, auto-optimized')
     # NOTE: patient-level splitting has been removed; use explicit preprocessed train/val dirs
     return parser.parse_args()
 
@@ -952,6 +954,96 @@ def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, ep
             print(f"✗ Error in wavelet logging: {e}")
 
 
+def setup_device_and_optimizations(args):
+    """Setup device (always auto) and apply optimizations"""
+    
+    # Always auto-detect device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        gpu_name = torch.cuda.get_device_name()
+        print(f"[DEVICE] Auto-detected: GPU ({gpu_name})")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+        print(f"[DEVICE] Auto-detected: Apple Silicon MPS")
+    else:
+        device = torch.device('cpu')
+        print(f"[DEVICE] Auto-detected: CPU ({torch.get_num_threads()} threads)")
+    
+    # Apply optimizations
+    if device.type == 'cpu':
+        apply_cpu_optimizations(args)
+    
+    if args.test_mode:
+        apply_test_mode_settings(args, device)
+        
+    return device
+
+def apply_cpu_optimizations(args):
+    """Apply CPU optimizations only when needed"""
+    total_cores = torch.get_num_threads()
+    
+    # Only optimize threads if PyTorch is using too many
+    if total_cores > 8:  # Only intervene for high-core systems
+        optimal_threads = max(4, total_cores // 2)
+        torch.set_num_threads(optimal_threads)
+        print(f"[CPU] Optimized threads: {total_cores} -> {optimal_threads}")
+    
+    # Conservative batch sizes for CPU
+    original_batch = args.batch_size
+    if args.batch_size > 4:
+        args.batch_size = 4
+        print(f"[CPU] Reduced batch_size: {original_batch} -> {args.batch_size}")
+    
+    # Reasonable worker count
+    if hasattr(args, 'num_workers') and args.num_workers > 4:
+        args.num_workers = min(4, max(1, total_cores // 4))
+        print(f"[CPU] Adjusted workers: -> {args.num_workers}")
+    
+    # Warn about wavelets if being used
+    if hasattr(args, 'wavelet') and args.wavelet != 'none':
+        print(f"[WARNING] {args.wavelet} wavelets will be significantly slower on CPU")
+        print(f"[TIP] Consider: --wavelet none for CPU training")
+
+def apply_test_mode_settings(args, device):
+    """Apply test mode settings"""
+    print(f"[TEST] Test mode activated")
+    
+    # Force small dataset
+    original_patients = getattr(args, 'num_patients', 'all')
+    args.num_patients = 2
+    print(f"[TEST] Patients: {original_patients} -> 2")
+    
+    # Reduce training time  
+    original_epochs = args.epochs
+    args.epochs = 3 if device.type == 'cpu' else 5
+    print(f"[TEST] Epochs: {original_epochs} -> {args.epochs}")
+    
+    # Conservative batch sizes for test mode
+    original_batch = args.batch_size
+    if device.type == 'cpu':
+        args.batch_size = min(2, args.batch_size)
+        if hasattr(args, 'eval_batch_size'):
+            args.eval_batch_size = min(4, args.eval_batch_size)
+    else:
+        args.batch_size = min(4, args.batch_size)
+        if hasattr(args, 'eval_batch_size'):
+            args.eval_batch_size = min(8, args.eval_batch_size)
+    
+    if original_batch != args.batch_size:
+        print(f"[TEST] Batch size: {original_batch} -> {args.batch_size}")
+    
+    # More frequent feedback
+    if hasattr(args, 'timing_frequency'):
+        args.timing_frequency = min(10, args.timing_frequency)
+        print(f"[TEST] Timing frequency: -> {args.timing_frequency}")
+    
+    # Time estimates
+    if device.type == 'cpu':
+        print(f"[TEST] Estimated time: 10-30 minutes (CPU)")
+    else:
+        print(f"[TEST] Estimated time: 3-8 minutes (GPU)")
+
+
 def measure_inference_timing(model, data_loader, device, num_batches=100):
     """
     Measure detailed inference timing statistics
@@ -1027,6 +1119,9 @@ def measure_inference_timing(model, data_loader, device, num_batches=100):
 def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
     
+    # NEW: Smart device setup and optimizations
+    device = setup_device_and_optimizations(args)
+    
     # Determine if using wavelet
     use_wavelet = args.wavelet != 'none'
     
@@ -1036,9 +1131,13 @@ def main(args):
     else:
         run_name = f"{args.model_type}_nowavelet_{int(time())}"
     
-    wandb.init(project="brats-middleslice-wavelet-sweep", config=vars(args), name=run_name)
+    # Add test mode tags to wandb config
+    wandb_config = vars(args)
+    wandb_config['device_type'] = device.type
+    wandb_tags = ['test_mode'] if args.test_mode else []
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wandb.init(project="brats-middleslice-wavelet-sweep", config=wandb_config, name=run_name, tags=wandb_tags)
+    
     log_info(f"Using device: {device}", wandb_kv={'system/device': str(device)})
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -1110,6 +1209,9 @@ def main(args):
             print(f"Failed to load FastTensorSliceDataset from {args.val_preprocessed_dir}: {e}")
             val_dataset = None
 
+    # Update pin_memory to be CPU-friendly
+    pin_mem = device.type != 'cpu'
+    
     data_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -1125,7 +1227,7 @@ def main(args):
             batch_size=args.eval_batch_size,
             shuffle=False,
             num_workers=args.num_workers,
-            pin_memory=True if torch.cuda.is_available() else False,
+            pin_memory=pin_mem,
             persistent_workers=persistent
         )
     else:
@@ -1550,7 +1652,7 @@ def main(args):
             batch_size=args.batch_size,
             shuffle=False,
             num_workers=args.num_workers,
-            pin_memory=True if torch.cuda.is_available() else False,
+            pin_memory=device.type != 'cpu',
             persistent_workers=(args.num_workers > 0)
         )
     
@@ -1597,7 +1699,7 @@ def main(args):
                 batch_size=args.eval_batch_size,  # Larger batch for faster eval
                 shuffle=False,  # Don't shuffle for reproducible evaluation
                 num_workers=args.num_workers,
-                pin_memory=True if torch.cuda.is_available() else False,
+                pin_memory=device.type != 'cpu',
                 persistent_workers=(args.num_workers > 0)
             )
         
