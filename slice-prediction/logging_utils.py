@@ -1,14 +1,15 @@
 import numpy as np
 import cv2
 import torch
-from typing import List
+from typing import List, Optional
 
 def create_reconstruction_log_panel(
     inputs_sample: torch.Tensor,      # Model input (Prev/Next slices), shape [8, H, W]
     target_sample: torch.Tensor,      # Ground Truth (Real middle slice), shape [4, H, W]
     output_sample: torch.Tensor,      # Model Prediction (Reconstructed middle slice), shape [4, H, W]
     slice_idx: int,
-    batch_idx: int
+    batch_idx: int,
+    patient_id: Optional[str] = None
 ) -> np.ndarray:
     modalities = ["t1", "t1ce", "t2", "flair"]
     all_rows = []
@@ -23,13 +24,12 @@ def create_reconstruction_log_panel(
         
         pred_middle_clipped_scaled = (np.clip(pred_middle_float, 0, 1) * 255).astype(np.uint8)
         gt_middle_scaled = (gt_middle_float * 255).astype(np.uint8)
-
+        
+        # Keep difference in 0-1 range like matplotlib version
         abs_diff_float = np.abs(pred_middle_float - gt_middle_float)
-        
-        max_diff_for_viz = 0.4 
-        scaled_diff = np.clip((abs_diff_float / max_diff_for_viz) * 255, 0, 255)
-        abs_diff_uint8 = scaled_diff.astype(np.uint8)
-        
+        # Clip to 0.3 max like the matplotlib version, then normalize to 0-1 for colormap
+        abs_diff_normalized = np.clip(abs_diff_float, 0, 0.3) / 0.3
+        abs_diff_uint8 = (abs_diff_normalized * 255).astype(np.uint8)
         abs_diff_bgr = cv2.applyColorMap(abs_diff_uint8, cv2.COLORMAP_HOT)
         
         prev_bgr = cv2.cvtColor(prev_slice, cv2.COLOR_GRAY2BGR)
@@ -49,17 +49,23 @@ def create_reconstruction_log_panel(
         font_color = (200, 200, 200)
         thickness = 1
         column_titles = ["Input (Z-1)", "Input (Z+1)", "Prediction (Z)", "Ground Truth (Z)", "Abs Difference"]
-
+        
         for j, title in enumerate(column_titles):
             (text_width, _), _ = cv2.getTextSize(title, font, font_scale, thickness)
             text_x = (col_width * j) + ((col_width - text_width) // 2)
             cv2.putText(header, title, (text_x, 20), font, font_scale, font_color, thickness)
-
+        
         all_rows.append(np.vstack([header, row]))
-
+    
     final_panel = np.vstack(all_rows)
     main_header = np.full((40, final_panel.shape[1], 3), 60, dtype=np.uint8)
-    title = f"Slice Reconstruction - Batch #{batch_idx}, Middle Slice #{slice_idx}"
+    
+    # Prioritize patient_id in title
+    if patient_id is not None:
+        title = f"Slice Reconstruction - {patient_id} (Slice #{slice_idx})"
+    else:
+        title = f"Slice Reconstruction - Batch #{batch_idx}, Middle Slice #{slice_idx}"
+    
     cv2.putText(main_header, title, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
     
     return np.vstack([main_header, final_panel])

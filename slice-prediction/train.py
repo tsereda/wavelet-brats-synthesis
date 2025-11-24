@@ -12,6 +12,7 @@ from collections import OrderedDict
 from threading import Lock
 import argparse
 from time import time, perf_counter
+from pathlib import Path
 import torch.multiprocessing
 import cv2
 import wandb
@@ -20,6 +21,7 @@ from monai.networks.nets import SwinUNETR, UNETR, BasicUNet
 from torch.nn import L1Loss, MSELoss
 from transforms import get_train_transforms
 from logging_utils import create_reconstruction_log_panel
+from utils import extract_patient_info
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 
@@ -185,6 +187,9 @@ class BraTS2D5Dataset(Dataset):
                     raise FileNotFoundError(f"No segmentation file found in {patient_name}")
                 patient_files['label'] = seg_matches[0]
 
+                # Preserve original patient identifier (folder basename)
+                # so callers can save artifacts using the original dataset numbering.
+                patient_files['_patient_id'] = patient_name
                 # Validate files for obvious corruption (gzip integrity and non-zero size)
                 is_valid, error_msg = self._validate_patient_files(patient_files, patient_name)
                 if is_valid:
@@ -324,7 +329,9 @@ class BraTS2D5Dataset(Dataset):
                         continue
                     brain_slice = proc['t1c'][0, :, :, slice_idx]
                     if torch.mean(brain_slice) > 50.0:
-                        self.slice_map.append((i, slice_idx))
+                        # Store patient id alongside volume and slice index
+                        patient_id = patient_files.get('_patient_id', f'patient_{i}')
+                        self.slice_map.append((i, slice_idx, patient_id))
 
                 del proc
 
@@ -427,7 +434,8 @@ class BraTS2D5Dataset(Dataset):
 
     def __getitem__(self, index):
         start = perf_counter()
-        volume_idx, slice_idx = self.slice_map[index]
+        # slice_map entries are (volume_idx, slice_idx, patient_id)
+        volume_idx, slice_idx, patient_id = self.slice_map[index]
         patient_data = self._get_volume(volume_idx)
 
         img_modalities = torch.cat([patient_data['t1n'], patient_data['t1c'],
@@ -453,7 +461,7 @@ class BraTS2D5Dataset(Dataset):
             input_tensor = torch.cat([prev_slice, next_slice], dim=0)
             elapsed = perf_counter() - start
             self._record_getitem_time(elapsed)
-            return input_tensor, target_tensor, slice_idx
+            return input_tensor, target_tensor, (int(slice_idx), patient_id)
 
         except IndexError as e:
             # Fallback: log and use middle slice of volume
@@ -473,7 +481,7 @@ class BraTS2D5Dataset(Dataset):
             elapsed = perf_counter() - start
             self._record_getitem_time(elapsed)
             print(f"Using fallback middle slice: {middle_slice}")
-            return input_tensor, target_tensor, middle_slice
+            return input_tensor, target_tensor, (int(middle_slice), patient_id if 'patient_id' in locals() else f'patient_{volume_idx}')
 
 
 class SimpleCSVTripletDataset(Dataset):
@@ -601,7 +609,17 @@ class SimpleCSVTripletDataset(Dataset):
                     pass
                 # Return the first successfully loaded sample (may be different from
                 # the originally requested index if it was corrupted).
-                return input_tensor, target_slice, slice_mid
+                # Preserve a patient identifier for CSV rows - prefer containing
+                # directory name, fall back to filename stem.
+                try:
+                    patient_dir = os.path.dirname(str(row['t1c']))
+                    patient_id = os.path.basename(patient_dir) if patient_dir else os.path.basename(str(row['t1c']))
+                    if not patient_id:
+                        patient_id = os.path.splitext(os.path.basename(str(row['t1c'])))[0]
+                except Exception:
+                    patient_id = f"csvrow_{idx}"
+
+                return input_tensor, target_slice, (int(slice_mid), patient_id)
 
             except Exception as e:
                 # Log the corrupted row and file paths, then skip it.
@@ -649,6 +667,11 @@ def get_args():
                        help='Optional CSV index of triplets (created by preprocess_dataset.py)')
     parser.add_argument('--preprocessed_dir', type=str, default=None,
                        help='Directory with preprocessed .pt slice files (created by preprocess_slices_to_tensors.py)')
+    parser.add_argument('--val_preprocessed_dir', type=str, default=None,
+                       help='Directory with preprocessed .pt slice files for validation (created by preprocess_slices_to_tensors.py)')
+    parser.add_argument('--test_mode', action='store_true',
+                       help='Quick validation: 2 patients, reduced epochs, auto-optimized')
+    # NOTE: patient-level splitting has been removed; use explicit preprocessed train/val dirs
     return parser.parse_args()
 
 
@@ -872,7 +895,7 @@ def visualize_wavelet_decomposition(coeffs, title, num_modalities=4):
     return fig
 
 
-def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, epoch):
+def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, epoch, sample_id=None):
     """
     Create and log wavelet decomposition visualizations to WandB
     Only works for wavelet models - FIXED TO SHOW ALL INPUT COMPONENTS
@@ -909,22 +932,116 @@ def log_wavelet_visualizations(model, inputs, outputs, targets, wavelet_name, ep
                 wandb.log({f"wavelet_filters/{wavelet_name}": wandb.Image(filter_image)})
 
             # Log decompositions
-            input_fig = visualize_wavelet_decomposition(input_wavelets[0], f'Input Wavelets (Epoch {epoch})', num_modalities=8)
+            title_suffix = f"Epoch {epoch}"
+            if sample_id is not None:
+                title_suffix = f"{title_suffix} | Sample {sample_id}"
+
+            input_fig = visualize_wavelet_decomposition(input_wavelets[0], f'Input Wavelets ({title_suffix})', num_modalities=8)
             input_image = fig_to_pil(input_fig)
-            wandb.log({f"wavelets/input_epoch_{epoch}": wandb.Image(input_image)})
+            wandb.log({f"wavelets/input_epoch_{epoch}_{sample_id if sample_id is not None else 'sample'}": wandb.Image(input_image)})
 
-            output_fig = visualize_wavelet_decomposition(output_wavelets[0], f'Output Wavelets (Epoch {epoch})', num_modalities=4)
+            output_fig = visualize_wavelet_decomposition(output_wavelets[0], f'Output Wavelets ({title_suffix})', num_modalities=4)
             output_image = fig_to_pil(output_fig)
-            wandb.log({f"wavelets/output_epoch_{epoch}": wandb.Image(output_image)})
+            wandb.log({f"wavelets/output_epoch_{epoch}_{sample_id if sample_id is not None else 'sample'}": wandb.Image(output_image)})
 
-            target_fig = visualize_wavelet_decomposition(target_wavelets[0], f'Target Wavelets (Epoch {epoch})', num_modalities=4)
+            target_fig = visualize_wavelet_decomposition(target_wavelets[0], f'Target Wavelets ({title_suffix})', num_modalities=4)
             target_image = fig_to_pil(target_fig)
-            wandb.log({f"wavelets/target_epoch_{epoch}": wandb.Image(target_image)})
+            wandb.log({f"wavelets/target_epoch_{epoch}_{sample_id if sample_id is not None else 'sample'}": wandb.Image(target_image)})
 
             print(f"✓ Wavelet visualizations logged to WandB")
 
         except Exception as e:
             print(f"✗ Error in wavelet logging: {e}")
+
+
+def setup_device_and_optimizations(args):
+    """Setup device (always auto) and apply optimizations"""
+    
+    # Always auto-detect device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        gpu_name = torch.cuda.get_device_name()
+        print(f"[DEVICE] Auto-detected: GPU ({gpu_name})")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+        print(f"[DEVICE] Auto-detected: Apple Silicon MPS")
+    else:
+        device = torch.device('cpu')
+        print(f"[DEVICE] Auto-detected: CPU ({torch.get_num_threads()} threads)")
+    
+    # Apply optimizations
+    if device.type == 'cpu':
+        apply_cpu_optimizations(args)
+    
+    if args.test_mode:
+        apply_test_mode_settings(args, device)
+        
+    return device
+
+def apply_cpu_optimizations(args):
+    """Apply CPU optimizations only when needed"""
+    total_cores = torch.get_num_threads()
+    
+    # Only optimize threads if PyTorch is using too many
+    if total_cores > 8:  # Only intervene for high-core systems
+        optimal_threads = max(4, total_cores // 2)
+        torch.set_num_threads(optimal_threads)
+        print(f"[CPU] Optimized threads: {total_cores} -> {optimal_threads}")
+    
+    # Conservative batch sizes for CPU
+    original_batch = args.batch_size
+    if args.batch_size > 4:
+        args.batch_size = 4
+        print(f"[CPU] Reduced batch_size: {original_batch} -> {args.batch_size}")
+    
+    # Reasonable worker count
+    if hasattr(args, 'num_workers') and args.num_workers > 4:
+        args.num_workers = min(4, max(1, total_cores // 4))
+        print(f"[CPU] Adjusted workers: -> {args.num_workers}")
+    
+    # Warn about wavelets if being used
+    if hasattr(args, 'wavelet') and args.wavelet != 'none':
+        print(f"[WARNING] {args.wavelet} wavelets will be significantly slower on CPU")
+        print(f"[TIP] Consider: --wavelet none for CPU training")
+
+def apply_test_mode_settings(args, device):
+    """Apply test mode settings"""
+    print(f"[TEST] Test mode activated")
+    
+    # Force small dataset
+    original_patients = getattr(args, 'num_patients', 'all')
+    args.num_patients = 2
+    print(f"[TEST] Patients: {original_patients} -> 2")
+    
+    # Reduce training time  
+    original_epochs = args.epochs
+    args.epochs = 3 if device.type == 'cpu' else 5
+    print(f"[TEST] Epochs: {original_epochs} -> {args.epochs}")
+    
+    # Conservative batch sizes for test mode
+    original_batch = args.batch_size
+    if device.type == 'cpu':
+        args.batch_size = min(2, args.batch_size)
+        if hasattr(args, 'eval_batch_size'):
+            args.eval_batch_size = min(4, args.eval_batch_size)
+    else:
+        args.batch_size = min(4, args.batch_size)
+        if hasattr(args, 'eval_batch_size'):
+            args.eval_batch_size = min(8, args.eval_batch_size)
+    
+    if original_batch != args.batch_size:
+        print(f"[TEST] Batch size: {original_batch} -> {args.batch_size}")
+    
+    # More frequent feedback
+    if hasattr(args, 'timing_frequency'):
+        args.timing_frequency = min(10, args.timing_frequency)
+        print(f"[TEST] Timing frequency: -> {args.timing_frequency}")
+    
+    # Time estimates
+    if device.type == 'cpu':
+        print(f"[TEST] Estimated time: 10-30 minutes (CPU)")
+    else:
+        print(f"[TEST] Estimated time: 3-8 minutes (GPU)")
 
 
 def measure_inference_timing(model, data_loader, device, num_batches=100):
@@ -1002,6 +1119,9 @@ def measure_inference_timing(model, data_loader, device, num_batches=100):
 def main(args):
     torch.multiprocessing.set_sharing_strategy('file_system')
     
+    # NEW: Smart device setup and optimizations
+    device = setup_device_and_optimizations(args)
+    
     # Determine if using wavelet
     use_wavelet = args.wavelet != 'none'
     
@@ -1011,9 +1131,13 @@ def main(args):
     else:
         run_name = f"{args.model_type}_nowavelet_{int(time())}"
     
-    wandb.init(project="brats-middleslice-wavelet-sweep", config=vars(args), name=run_name)
+    # Add test mode tags to wandb config
+    wandb_config = vars(args)
+    wandb_config['device_type'] = device.type
+    wandb_tags = ['test_mode'] if args.test_mode else []
     
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    wandb.init(project="brats-middleslice-wavelet-sweep", config=wandb_config, name=run_name, tags=wandb_tags)
+    
     log_info(f"Using device: {device}", wandb_kv={'system/device': str(device)})
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -1068,22 +1192,57 @@ def main(args):
     # DataLoader workers are controlled by CLI --num_workers. Default is 0 (safe).
     # When increasing workers, set cache_size to match number of workers to
     # avoid excessive cache usage.
+    pin_mem = True if torch.cuda.is_available() else False
+    persistent = (args.num_workers > 0)
+
+    # Create train and optional validation DataLoaders using explicit datasets
+    # Train dataset is the one we loaded above into `dataset`.
+    train_dataset = dataset
+    val_dataset = None
+    # If a separate validation preprocessed directory is provided, load it
+    if getattr(args, 'val_preprocessed_dir', None):
+        try:
+            from preprocessed_dataset import FastTensorSliceDataset
+            print(f"Using preprocessed validation directory: {args.val_preprocessed_dir}")
+            val_dataset = FastTensorSliceDataset(args.val_preprocessed_dir)
+        except Exception as e:
+            print(f"Failed to load FastTensorSliceDataset from {args.val_preprocessed_dir}: {e}")
+            val_dataset = None
+
+    # Update pin_memory to be CPU-friendly
+    pin_mem = device.type != 'cpu'
+    
     data_loader = DataLoader(
-        dataset,
+        train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
-        persistent_workers=(args.num_workers > 0)
+        pin_memory=pin_mem,
+        persistent_workers=persistent
     )
 
-    # Log DataLoader configuration
+    if val_dataset is not None:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.eval_batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=pin_mem,
+            persistent_workers=persistent
+        )
+    else:
+        val_loader = None
+
+    # Keep `dataset` variable for backward compatibility (points to train dataset)
+    dataset = train_dataset
+
+    # Log DataLoader configuration (best-effort)
     try:
         dl_meta = {
             'dataloader/batch_size': args.batch_size,
             'dataloader/num_workers': args.num_workers,
-            'dataloader/pin_memory': bool(torch.cuda.is_available()),
-            'dataloader/persistent_workers': (args.num_workers > 0),
+            'dataloader/pin_memory': pin_mem,
+            'dataloader/persistent_workers': persistent,
             'dataset/length': len(dataset)
         }
         log_info(f"DataLoader created: batch_size={args.batch_size}, num_workers={args.num_workers}", wandb_kv=dl_meta)
@@ -1094,13 +1253,9 @@ def main(args):
     model = get_model(args.model_type, args.wavelet, args.img_size, device)
     wandb.watch(model, log="all", log_freq=100)
     
-    # Loss function
-    if use_wavelet:
-        loss_function = MSELoss()
-        print("Using MSE loss (for wavelet domain processing)")
-    else:
-        loss_function = L1Loss()
-        print("Using L1 loss (MAE)")
+
+    loss_function = MSELoss()
+
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
@@ -1169,10 +1324,19 @@ def main(args):
             
             # Print dimensions on first batch of first epoch
             if epoch == 0 and i == 0:
+                # Display sample slice indices using centralized utility
+                try:
+                    preview_slices = []
+                    for idx, s in enumerate(slice_indices[:5]):
+                        slice_idx, _ = extract_patient_info(slice_indices, 0, idx)
+                        preview_slices.append(slice_idx)
+                except Exception:
+                    preview_slices = ['N/A']
+
                 print(f"\n>>> Data Dimensions:")
                 print(f"    Input: {inputs.shape} (batch, channels, height, width)")
                 print(f"    Target: {targets.shape}")
-                print(f"    Batch contains slices: {slice_indices.tolist()[:5]}...\n")
+                print(f"    Batch contains slices: {preview_slices}...\n")
             
             optimizer.zero_grad()
             
@@ -1246,16 +1410,19 @@ def main(args):
                 
                 # Create reconstruction visualization
                 with torch.no_grad():
+                    # Extract patient info for the first sample using centralized utility
+                    first_slice, first_patient = extract_patient_info(slice_indices, i, 0)
+
                     panel = create_reconstruction_log_panel(
                         inputs[0], targets[0], outputs[0], 
-                        slice_indices[0].item(), i
+                        first_slice, i, patient_id=first_patient
                     )
                     wandb.log({"reconstruction_preview": wandb.Image(panel)})
                 
                 # Log wavelet decompositions (only for wavelet models, only first batch of epoch)
                 if i == 0 and use_wavelet:
                     log_wavelet_visualizations(
-                        model, inputs, outputs, targets, args.wavelet, epoch
+                        model, inputs, outputs, targets, args.wavelet, epoch, sample_id=first_slice
                     )
             
             # Report timing stats periodically
@@ -1302,9 +1469,33 @@ def main(args):
             "epoch_time_seconds": epoch_time,
         })
         
-        # Save best checkpoint
-        if avg_epoch_loss < best_loss:
-            best_loss = avg_epoch_loss
+        # Compute validation loss (if val_loader exists) and use it for checkpointing when possible
+        val_loss = None
+        if 'val_loader' in locals() and val_loader is not None:
+            try:
+                model.eval()
+                total_val = 0.0
+                val_batches = 0
+                with torch.no_grad():
+                    for vb in val_loader:
+                        vin, vtarget, _ = vb
+                        vin = vin.to(device)
+                        vtarget = vtarget.to(device)
+                        vout = model(vin)
+                        total_val += loss_function(vout, vtarget).item()
+                        val_batches += 1
+                if val_batches > 0:
+                    val_loss = total_val / val_batches
+                    wandb.log({'val_loss': val_loss})
+                    print(f"Validation loss: {val_loss:.6f}")
+            except Exception as e:
+                print(f"Warning: validation pass failed: {e}")
+
+        # Use validation loss for checkpointing when available; otherwise fall back to training loss
+        metric_for_checkpoint = val_loss if val_loss is not None else avg_epoch_loss
+
+        if metric_for_checkpoint < best_loss:
+            best_loss = metric_for_checkpoint
             if use_wavelet:
                 checkpoint_name = f"{args.model_type}_wavelet_{args.wavelet}_best.pth"
             else:
@@ -1314,7 +1505,7 @@ def main(args):
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
-                'loss': best_loss,
+                'loss': float(best_loss),
                 'config': vars(args)
             }, checkpoint_path)
             log_info(f"Saved best checkpoint to {checkpoint_path}", wandb_kv={'checkpoint/path': checkpoint_path, 'checkpoint/best_loss': float(best_loss)})
@@ -1339,8 +1530,66 @@ def main(args):
                 log_info(f"Logged best checkpoint to WandB Artifact: {artifact_name}", wandb_kv={'artifact/name': artifact_name})
             except Exception as e:
                 # Don't crash training if WandB artifact upload fails; warn and continue
-                    log_warn(f"Failed to log checkpoint artifact to WandB: {e}")
+                log_warn(f"Failed to log checkpoint artifact to WandB: {e}")
     
+    # Save one final sample at end of training for figure generation
+    try:
+        print("Saving final training sample for figure generation...")
+        model.eval()
+        with torch.no_grad():
+            # Get one batch
+            final_batch = next(iter(data_loader))
+            inputs, targets, slice_indices = final_batch
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            
+            # Use first sample
+            # Extract slice and patient id robustly from collated slice_indices
+            try:
+                first_info = slice_indices[0]
+                if isinstance(first_info, (list, tuple)):
+                    final_slice_idx = int(first_info[0])
+                    final_patient_orig = str(first_info[1])
+                else:
+                    try:
+                        final_slice_idx = int(first_info.item())
+                    except Exception:
+                        final_slice_idx = int(first_info)
+                    final_patient_orig = f"batch0_sample0_slice{final_slice_idx}"
+            except Exception:
+                final_slice_idx = -1
+                final_patient_orig = f"final_epoch{args.epochs}_slice{final_slice_idx}"
+            final_patient_id = f"final_epoch{args.epochs}_{final_patient_orig}"
+            
+            # Save everything for this sample
+            final_dir = Path(args.output_dir) / "final_sample"
+            final_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Raw data
+            np.savez(final_dir / f"sample_data_{final_patient_id}.npz",
+                input=inputs[0].cpu().numpy(),
+                target=targets[0].cpu().numpy(),
+                output=outputs[0].cpu().numpy(),
+                slice_idx=final_slice_idx,
+                patient_id=final_patient_orig
+            )
+            
+            # Wavelets if available
+            if hasattr(model, 'dwt2d_batch'):
+                input_wavelets = model.dwt2d_batch(inputs[0:1])
+                output_wavelets = model.dwt2d_batch(outputs[0:1]) 
+                target_wavelets = model.dwt2d_batch(targets[0:1])
+                
+                np.savez(final_dir / f"wavelets_{final_patient_id}.npz",
+                    input_wavelets=input_wavelets[0].cpu().numpy(),
+                    output_wavelets=output_wavelets[0].cpu().numpy(), 
+                    target_wavelets=target_wavelets[0].cpu().numpy()
+                )
+            
+            print(f"✓ Final sample saved as {final_patient_id}")
+    except Exception as e:
+        print(f"Warning: failed to save final sample: {e}")
+
     # Final training timing summary
     final_timing = timing_stats.get_stats()
     print(f"\n" + "="*60)
@@ -1394,15 +1643,18 @@ def main(args):
         raise
     model.load_state_dict(checkpoint['model_state_dict'])
     
-    # Create inference dataloader (no shuffle for reproducibility)
-    inference_loader = DataLoader(
-        dataset, 
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=True if torch.cuda.is_available() else False,
-        persistent_workers=(args.num_workers > 0)
-    )
+    # Create inference dataloader (prefer validation split when present)
+    if 'val_loader' in locals() and val_loader is not None:
+        inference_loader = val_loader
+    else:
+        inference_loader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=device.type != 'cpu',
+            persistent_workers=(args.num_workers > 0)
+        )
     
     # Measure inference timing
     inference_timing = measure_inference_timing(model, inference_loader, device, num_batches=100)
@@ -1438,15 +1690,18 @@ def main(args):
         print("Running evaluation on best checkpoint...")
         print("="*60)
         
-        # Create evaluation dataloader (no shuffle for reproducibility)
-        eval_loader = DataLoader(
-            dataset, 
-            batch_size=args.eval_batch_size,  # Larger batch for faster eval
-            shuffle=False,  # Don't shuffle for reproducible evaluation
-            num_workers=args.num_workers,
-            pin_memory=True if torch.cuda.is_available() else False,
-            persistent_workers=(args.num_workers > 0)
-        )
+        # Create evaluation dataloader (prefer val split when present)
+        if 'val_loader' in locals() and val_loader is not None:
+            eval_loader = val_loader
+        else:
+            eval_loader = DataLoader(
+                dataset,
+                batch_size=args.eval_batch_size,  # Larger batch for faster eval
+                shuffle=False,  # Don't shuffle for reproducible evaluation
+                num_workers=args.num_workers,
+                pin_memory=device.type != 'cpu',
+                persistent_workers=(args.num_workers > 0)
+            )
         
         # Import and run evaluation
         try:

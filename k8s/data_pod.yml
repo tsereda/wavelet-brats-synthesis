@@ -26,6 +26,7 @@ spec:
         - |
           sudo apt update && sudo apt install zip
           # pip install --upgrade synapseclient 
+          #sudo apt-get update && sudo apt-get install -y p7zip-full wget git
 
           # run the below in kubectl exec -- bash s
           # synapse get syn51669979  

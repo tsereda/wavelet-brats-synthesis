@@ -3,12 +3,14 @@
 Evaluation script for middleslice reconstruction
 Calculates MSE and SSIM for model predictions
 WITH FIXED SSIM CALCULATION, COMPLETE WAVELET VISUALIZATION, AND TIMING STATS!
+FIXED: Updated to BraTS2023 GLI naming convention (t1n, t1c, t2w, t2f)
 """
 
 import torch
 import numpy as np
 import argparse
 import os
+import cv2
 from pathlib import Path
 from torch.utils.data import DataLoader
 from skimage.metrics import structural_similarity as ssim
@@ -21,6 +23,8 @@ from time import perf_counter
 
 from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
+from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
+from logging_utils import create_reconstruction_log_panel
 
 
 # Timing stats tracker for evaluation
@@ -90,11 +94,11 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
     C = total_channels // 4
 
     if C == 8:  # Input
-        modalities = ['T1(Z-1)', 'T1ce(Z-1)', 'T2(Z-1)', 'FLAIR(Z-1)',
-                      'T1(Z+1)', 'T1ce(Z+1)', 'T2(Z+1)', 'FLAIR(Z+1)']
+        modalities = ['T1n(Z-1)', 'T1c(Z-1)', 'T2w(Z-1)', 'T2f(Z-1)',
+                      'T1n(Z+1)', 'T1c(Z+1)', 'T2w(Z+1)', 'T2f(Z+1)']
         show_C = 8
     else:
-        modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+        modalities = ['T1n', 'T1c', 'T2w', 'T2f']
         show_C = min(C, 4)
 
     fig = plt.figure(figsize=(16, 4 * show_C))
@@ -137,6 +141,7 @@ def calculate_metrics(prediction, ground_truth):
     """
     Calculate MSE and SSIM between prediction and ground truth
     FIXED: Uses stable data_range for SSIM calculation
+    FIXED: Updated to BraTS2023 GLI naming (t1n, t1c, t2w, t2f)
     
     Args:
         prediction: torch.Tensor [4, H, W] - predicted middle slice
@@ -173,18 +178,18 @@ def calculate_metrics(prediction, ground_truth):
     return {
         'mse': mse_avg,
         'ssim': ssim_avg,
-        'mse_t1': mse_per_modality[0],
-        'mse_t1ce': mse_per_modality[1],
-        'mse_t2': mse_per_modality[2],
-        'mse_flair': mse_per_modality[3],
-        'ssim_t1': ssim_scores[0],
-        'ssim_t1ce': ssim_scores[1],
-        'ssim_t2': ssim_scores[2],
-        'ssim_flair': ssim_scores[3],
+        'mse_t1n': mse_per_modality[0],   # FIXED: Changed from mse_t1
+        'mse_t1c': mse_per_modality[1],   # FIXED: Changed from mse_t1ce
+        'mse_t2w': mse_per_modality[2],   # FIXED: Changed from mse_t2
+        'mse_t2f': mse_per_modality[3],   # FIXED: Changed from mse_flair
+        'ssim_t1n': ssim_scores[0],       # FIXED: Changed from ssim_t1
+        'ssim_t1c': ssim_scores[1],       # FIXED: Changed from ssim_t1ce
+        'ssim_t2w': ssim_scores[2],       # FIXED: Changed from ssim_t2
+        'ssim_t2f': ssim_scores[3],       # FIXED: Changed from ssim_flair
     }
 
 
-def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
+def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
     """
     Evaluate model on entire dataset WITH COMPLETE TIMING STATS
     
@@ -221,9 +226,12 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
     # For logging sample predictions to wandb
     sample_logged = False
     
-    # Track running per-modality metrics for WandB
-    running_mse_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
-    running_ssim_per_mod = {'t1': [], 't1ce': [], 't2': [], 'flair': []}
+    # Track running per-modality metrics for WandB - FIXED naming
+    running_mse_per_mod = {'t1n': [], 't1c': [], 't2w': [], 't2f': []}
+    running_ssim_per_mod = {'t1n': [], 't1c': [], 't2w': [], 't2f': []}
+    
+    # Collect data for W&B table
+    table_data = []
     
     with torch.no_grad():
         for batch_idx, batch_data in enumerate(tqdm(data_loader)):
@@ -250,57 +258,47 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
             timing_stats.add_samples(inputs.shape[0])
             
             # Time wavelet transforms if this is a wavelet model
-            if save_wavelets and hasattr(model, 'dwt2d_batch'):
-                # Only time for first 10 batches to avoid overhead
-                if batch_idx < 10:
+            # Separate timing from computation to ensure wavelets are available for ALL samples in table
+            has_wavelets = save_wavelets and hasattr(model, 'dwt2d_batch')
+            
+            # Initialize wavelet variables (will be None if not computed)
+            input_wavelets = None
+            output_wavelets = None
+            target_wavelets = None
+            
+            if has_wavelets:
+                # Debug: Log on first batch
+                if batch_idx == 0:
+                    print(f"✓ Wavelet model detected - will compute wavelets for all batches")
+                
+                # Time wavelet computation only for first 10 batches (for performance metrics)
+                measure_timing = batch_idx < 10
+                if measure_timing:
                     wavelet_start = perf_counter()
-                    
-                    # Get wavelet decomposition of input (ALL 8 CHANNELS)
-                    input_wavelets = model.dwt2d_batch(inputs)
-                    
-                    # Get wavelet decomposition of output
-                    output_wavelets = model.dwt2d_batch(outputs)
-                    
-                    # Get wavelet decomposition of ground truth
-                    target_wavelets = model.dwt2d_batch(targets)
-                    
+                
+                # But ALWAYS compute wavelets for all batches (needed for W&B table)
+                # Get wavelet decomposition of input (ALL 8 CHANNELS)
+                input_wavelets = model.dwt2d_batch(inputs)
+                
+                # Get wavelet decomposition of output
+                output_wavelets = model.dwt2d_batch(outputs)
+                
+                # Get wavelet decomposition of ground truth
+                target_wavelets = model.dwt2d_batch(targets)
+                
+                # Complete timing for first 10 batches
+                if measure_timing:
                     torch.cuda.synchronize() if device.type == 'cuda' else None
                     wavelet_time = perf_counter() - wavelet_start
                     timing_stats.add_wavelet_time(wavelet_time)
-                    
-                    # Save first sample in batch
-                    sample_idx = 0
-                    
-                    # Save coefficients as .npy files
-                    np.save(
-                        wavelet_dir / f'batch{batch_idx}_input_wavelets.npy',
-                        input_wavelets[sample_idx].cpu().numpy()
-                    )
-                    np.save(
-                        wavelet_dir / f'batch{batch_idx}_output_wavelets.npy',
-                        output_wavelets[sample_idx].cpu().numpy()
-                    )
-                    np.save(
-                        wavelet_dir / f'batch{batch_idx}_target_wavelets.npy',
-                        target_wavelets[sample_idx].cpu().numpy()
-                    )
-                    
-                    # Create visualizations - NOW SHOWING ALL INPUT COMPONENTS
-                    visualize_wavelet_decomposition(
-                        input_wavelets[sample_idx],
-                        f'Input Wavelet Decomposition (Batch {batch_idx}) - ALL 8 Channels',
-                        wavelet_viz_dir / f'batch{batch_idx}_input_wavelets_ALL8.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        output_wavelets[sample_idx],
-                        f'Output Wavelet Decomposition (Batch {batch_idx})',
-                        wavelet_viz_dir / f'batch{batch_idx}_output_wavelets.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        target_wavelets[sample_idx],
-                        f'Target Wavelet Decomposition (Batch {batch_idx})',
-                        wavelet_viz_dir / f'batch{batch_idx}_target_wavelets.png'
-                    )
+                
+                # Debug: Confirm wavelet computation on first batch
+                if batch_idx == 0:
+                    print(f"✓ Computed wavelets for batch 0: input_shape={input_wavelets.shape}, output_shape={output_wavelets.shape}, target_shape={target_wavelets.shape}")
+            else:
+                # Debug: Log on first batch
+                if batch_idx == 0:
+                    print(f"ℹ No wavelets will be computed (save_wavelets={save_wavelets}, has_dwt2d_batch={hasattr(model, 'dwt2d_batch')})")
             
             # Time metric calculation
             metric_start = perf_counter()
@@ -309,79 +307,129 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
             batch_size = inputs.shape[0]
             for i in range(batch_size):
                 metrics = calculate_metrics(outputs[i], targets[i])
-                metrics['slice_idx'] = slice_indices[i].item()
+                
+                # Extract slice index and patient ID using centralized utility
+                slice_idx, patient_id = extract_patient_info(slice_indices, batch_idx, i)
+                
+                metrics['slice_idx'] = slice_idx
+                metrics['patient_id'] = patient_id
                 metrics['batch_idx'] = batch_idx
                 all_metrics.append(metrics)
                 
-                # Track per-modality metrics for running average
-                for mod in ['t1', 't1ce', 't2', 'flair']:
+                # Track per-modality metrics for running average - FIXED naming
+                for mod in ['t1n', 't1c', 't2w', 't2f']:
                     running_mse_per_mod[mod].append(metrics[f'mse_{mod}'])
                     running_ssim_per_mod[mod].append(metrics[f'ssim_{mod}'])
                 
-                # Optionally save predictions
-                if batch_idx < 10:  # Save first 10 batches for inspection
-                    pred_path = predictions_dir / f'batch{batch_idx}_sample{i}.npy'
-                    np.save(pred_path, outputs[i].cpu().numpy())
+                # Save all predictions using patient-specific directories and add to table
+                patient_dir = get_patient_output_dir(predictions_dir, patient_id, slice_idx)
                 
-                # Log first sample to wandb
-                if batch_idx == 0 and i == 0 and not sample_logged:
-                    # Create comparison visualization
-                    fig, axes = plt.subplots(4, 5, figsize=(15, 12))
-                    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+                # Save slice outputs
+                saved_files = save_slice_outputs(
+                    patient_dir=patient_dir,
+                    inputs=inputs[i],
+                    target=targets[i],
+                    output=outputs[i],
+                    slice_idx=slice_idx,
+                    patient_id=patient_id,
+                    batch_idx=batch_idx
+                )
+                
+                # Create reconstruction panel for this sample
+                panel = create_reconstruction_log_panel(
+                    inputs[i], targets[i], outputs[i],
+                    slice_idx, batch_idx, patient_id=patient_id
+                )
+                panel_path = patient_dir / 'reconstruction_panel.png'
+                cv2.imwrite(str(panel_path), panel)
+                
+                # Prepare table row
+                table_row = {
+                    "patient_id": patient_id,
+                    "slice_idx": slice_idx,
+                    "batch_idx": batch_idx,
+                    "mse": float(metrics['mse']),
+                    "ssim": float(metrics['ssim']),
+                    "mse_t1n": float(metrics['mse_t1n']),
+                    "mse_t1c": float(metrics['mse_t1c']),
+                    "mse_t2w": float(metrics['mse_t2w']),
+                    "mse_t2f": float(metrics['mse_t2f']),
+                    "ssim_t1n": float(metrics['ssim_t1n']),
+                    "ssim_t1c": float(metrics['ssim_t1c']),
+                    "ssim_t2w": float(metrics['ssim_t2w']),
+                    "ssim_t2f": float(metrics['ssim_t2f']),
+                    "reconstruction": wandb.Image(str(panel_path)),
+                }
+                
+                # Add wavelet visualizations if available (use pre-computed wavelets from batch)
+                if has_wavelets and input_wavelets is not None:
+                    # Use the wavelets already computed for this batch (no recomputation needed)
+                    # Save wavelets using our utility
+                    save_slice_outputs(
+                        patient_dir=patient_dir,
+                        inputs=inputs[i],
+                        target=targets[i],
+                        output=outputs[i],
+                        slice_idx=slice_idx,
+                        patient_id=patient_id,
+                        batch_idx=batch_idx,
+                        input_wavelets=input_wavelets[i],
+                        output_wavelets=output_wavelets[i],
+                        target_wavelets=target_wavelets[i]
+                    )
                     
-                    for mod_idx, mod_name in enumerate(modalities):
-                        # Input Z-1
-                        axes[mod_idx, 0].imshow(inputs[i, mod_idx].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 0].set_title(f'{mod_name} Input (Z-1)' if mod_idx == 0 else '')
-                        axes[mod_idx, 0].axis('off')
-                        
-                        # Input Z+1
-                        axes[mod_idx, 1].imshow(inputs[i, mod_idx+4].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 1].set_title(f'Input (Z+1)' if mod_idx == 0 else '')
-                        axes[mod_idx, 1].axis('off')
-                        
-                        # Prediction
-                        axes[mod_idx, 2].imshow(outputs[i, mod_idx].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 2].set_title(f'Prediction (Z)' if mod_idx == 0 else '')
-                        axes[mod_idx, 2].axis('off')
-                        
-                        # Ground truth
-                        axes[mod_idx, 3].imshow(targets[i, mod_idx].cpu().numpy(), cmap='gray')
-                        axes[mod_idx, 3].set_title(f'Ground Truth (Z)' if mod_idx == 0 else '')
-                        axes[mod_idx, 3].axis('off')
-                        
-                        # Error map
-                        error = np.abs(outputs[i, mod_idx].cpu().numpy() - targets[i, mod_idx].cpu().numpy())
-                        im = axes[mod_idx, 4].imshow(error, cmap='hot', vmin=0, vmax=0.3)
-                        axes[mod_idx, 4].set_title(f'|Error|' if mod_idx == 0 else '')
-                        axes[mod_idx, 4].axis('off')
+                    # Create wavelet visualizations
+                    visualize_wavelet_decomposition(
+                        input_wavelets[i],
+                        f'Input Wavelets - {patient_id}',
+                        patient_dir / 'wavelet_input_viz.png'
+                    )
+                    visualize_wavelet_decomposition(
+                        output_wavelets[i],
+                        f'Output Wavelets - {patient_id}',
+                        patient_dir / 'wavelet_output_viz.png'
+                    )
+                    visualize_wavelet_decomposition(
+                        target_wavelets[i],
+                        f'Target Wavelets - {patient_id}',
+                        patient_dir / 'wavelet_target_viz.png'
+                    )
                     
-                    plt.suptitle(f'Sample Prediction (Slice {slice_indices[i].item()})')
-                    plt.tight_layout()
+                    # Add to table row
+                    table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
+                    table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
+                    table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
                     
-                    # Save and log to wandb
-                    sample_path = predictions_dir / 'sample_prediction.png'
-                    plt.savefig(sample_path, dpi=150, bbox_inches='tight')
-                    wandb.log({"eval/sample_prediction": wandb.Image(str(sample_path))})
-                    plt.close()
+                    # Debug: Log on first few samples to confirm wavelets are being processed
+                    if batch_idx < 3 and i == 0:
+                        print(f"✓ Batch {batch_idx}: Added wavelet images to table for {patient_id} (slice {slice_idx})")
+                else:
+                    # Debug: Log why wavelets are missing (only for first batch to avoid spam)
+                    if batch_idx == 0 and i == 0:
+                        print(f"⚠ Batch {batch_idx}: No wavelets added (has_wavelets={has_wavelets}, input_wavelets is None={input_wavelets is None})")
                     
-                    sample_logged = True
+                    table_row['wavelet_input'] = None
+                    table_row['wavelet_output'] = None
+                    table_row['wavelet_target'] = None
+                
+                # Add row to table data
+                table_data.append(table_row)
             
             metric_time = perf_counter() - metric_start
             timing_stats.add_metric_time(metric_time)
             
-            # Log running metrics every 10 batches
+            # Log running metrics every 10 batches - FIXED naming
             if batch_idx % 10 == 0 and batch_idx > 0:
                 current_timing = timing_stats.get_stats()
                 wandb.log({
-                    "eval/running_mse_t1": np.mean(running_mse_per_mod['t1']),
-                    "eval/running_mse_t1ce": np.mean(running_mse_per_mod['t1ce']),
-                    "eval/running_mse_t2": np.mean(running_mse_per_mod['t2']),
-                    "eval/running_mse_flair": np.mean(running_mse_per_mod['flair']),
-                    "eval/running_ssim_t1": np.mean(running_ssim_per_mod['t1']),
-                    "eval/running_ssim_t1ce": np.mean(running_ssim_per_mod['t1ce']),
-                    "eval/running_ssim_t2": np.mean(running_ssim_per_mod['t2']),
-                    "eval/running_ssim_flair": np.mean(running_ssim_per_mod['flair']),
+                    "eval/running_mse_t1n": np.mean(running_mse_per_mod['t1n']),
+                    "eval/running_mse_t1c": np.mean(running_mse_per_mod['t1c']),
+                    "eval/running_mse_t2w": np.mean(running_mse_per_mod['t2w']),
+                    "eval/running_mse_t2f": np.mean(running_mse_per_mod['t2f']),
+                    "eval/running_ssim_t1n": np.mean(running_ssim_per_mod['t1n']),
+                    "eval/running_ssim_t1c": np.mean(running_ssim_per_mod['t1c']),
+                    "eval/running_ssim_t2w": np.mean(running_ssim_per_mod['t2w']),
+                    "eval/running_ssim_t2f": np.mean(running_ssim_per_mod['t2f']),
                     "eval/progress": batch_idx / len(data_loader),
                     "eval/timing/avg_forward_time_ms": current_timing['avg_forward_time_ms'],
                     "eval/timing/samples_per_second": current_timing['samples_per_second']
@@ -419,6 +467,68 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
             "eval/final_timing/total_wavelet_time_s": final_timing['total_wavelet_time_s'],
         })
     
+    # Create and log W&B table with all predictions
+    print(f"\n" + "="*60)
+    print(f"Creating W&B table with {len(table_data)} samples...")
+    
+    # Debug: Check wavelet data availability
+    samples_with_wavelets = sum(1 for row in table_data if row.get('wavelet_input') is not None)
+    print(f"Samples with wavelet data: {samples_with_wavelets}/{len(table_data)}")
+    print("="*60)
+    
+    if wandb.run is not None and len(table_data) > 0:
+        # Define table columns
+        columns = [
+            "patient_id", "slice_idx", "batch_idx",
+            "mse", "ssim",
+            "mse_t1n", "mse_t1c", "mse_t2w", "mse_t2f",
+            "ssim_t1n", "ssim_t1c", "ssim_t2w", "ssim_t2f",
+            "reconstruction"
+        ]
+        
+        # Add wavelet columns if we have wavelet data
+        has_wavelet_data = any(row.get('wavelet_input') is not None for row in table_data)
+        if has_wavelet_data:
+            columns.extend(["wavelet_input", "wavelet_output", "wavelet_target"])
+            print(f"✓ Adding wavelet columns to table (found {samples_with_wavelets} samples with wavelets)")
+        else:
+            print(f"⚠ No wavelet columns will be added (no samples have wavelet data)")
+        
+        # Build table data rows
+        table_rows = []
+        for row in table_data:
+            table_row = [
+                row["patient_id"],
+                row["slice_idx"],
+                row["batch_idx"],
+                row["mse"],
+                row["ssim"],
+                row["mse_t1n"],
+                row["mse_t1c"],
+                row["mse_t2w"],
+                row["mse_t2f"],
+                row["ssim_t1n"],
+                row["ssim_t1c"],
+                row["ssim_t2w"],
+                row["ssim_t2f"],
+                row["reconstruction"]
+            ]
+            
+            # Add wavelet images if columns exist
+            if has_wavelet_data:
+                table_row.extend([
+                    row.get("wavelet_input"),
+                    row.get("wavelet_output"),
+                    row.get("wavelet_target")
+                ])
+            
+            table_rows.append(table_row)
+        
+        # Create and log table
+        predictions_table = wandb.Table(columns=columns, data=table_rows)
+        wandb.log({"eval/predictions_table": predictions_table})
+        print(f"✓ Logged predictions table with {len(table_data)} samples to W&B")
+    
     # Aggregate metrics
     mse_values = [m['mse'] for m in all_metrics]
     ssim_values = [m['ssim'] for m in all_metrics]
@@ -431,8 +541,8 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=False):
         'num_samples': len(all_metrics)
     }
     
-    # Per-modality stats
-    for mod in ['t1', 't1ce', 't2', 'flair']:
+    # Per-modality stats - FIXED naming
+    for mod in ['t1n', 't1c', 't2w', 't2f']:
         mse_mod = [m[f'mse_{mod}'] for m in all_metrics]
         ssim_mod = [m[f'ssim_{mod}'] for m in all_metrics]
         results[f'mse_{mod}_mean'] = np.mean(mse_mod)
@@ -476,7 +586,7 @@ def save_results(results, all_metrics, output_dir):
 
 
 def print_results(results):
-    """Print evaluation results to console"""
+    """Print evaluation results to console - FIXED naming"""
     print("\n" + "="*50)
     print("EVALUATION RESULTS")
     print("="*50)
@@ -486,19 +596,19 @@ def print_results(results):
     print(f"Evaluation time: {results.get('eval_time_seconds', 0):.1f} seconds")
     print(f"Throughput: {results.get('eval_throughput_samples_per_sec', 0):.1f} samples/sec")
     print("\nPer-modality MSE:")
-    print(f"  T1:    {results['mse_t1_mean']:.6f} ± {results['mse_t1_std']:.6f}")
-    print(f"  T1ce:  {results['mse_t1ce_mean']:.6f} ± {results['mse_t1ce_std']:.6f}")
-    print(f"  T2:    {results['mse_t2_mean']:.6f} ± {results['mse_t2_std']:.6f}")
-    print(f"  FLAIR: {results['mse_flair_mean']:.6f} ± {results['mse_flair_std']:.6f}")
+    print(f"  T1n:   {results['mse_t1n_mean']:.6f} ± {results['mse_t1n_std']:.6f}")
+    print(f"  T1c:   {results['mse_t1c_mean']:.6f} ± {results['mse_t1c_std']:.6f}")
+    print(f"  T2w:   {results['mse_t2w_mean']:.6f} ± {results['mse_t2w_std']:.6f}")
+    print(f"  T2f:   {results['mse_t2f_mean']:.6f} ± {results['mse_t2f_std']:.6f}")
     print("\nPer-modality SSIM:")
-    print(f"  T1:    {results['ssim_t1_mean']:.4f} ± {results['ssim_t1_std']:.4f}")
-    print(f"  T1ce:  {results['ssim_t1ce_mean']:.4f} ± {results['ssim_t1ce_std']:.4f}")
-    print(f"  T2:    {results['ssim_t2_mean']:.4f} ± {results['ssim_t2_std']:.4f}")
-    print(f"  FLAIR: {results['ssim_flair_mean']:.4f} ± {results['ssim_flair_std']:.4f}")
+    print(f"  T1n:   {results['ssim_t1n_mean']:.4f} ± {results['ssim_t1n_std']:.4f}")
+    print(f"  T1c:   {results['ssim_t1c_mean']:.4f} ± {results['ssim_t1c_std']:.4f}")
+    print(f"  T2w:   {results['ssim_t2w_mean']:.4f} ± {results['ssim_t2w_std']:.4f}")
+    print(f"  T2f:   {results['ssim_t2f_mean']:.4f} ± {results['ssim_t2f_std']:.4f}")
     print("="*50)
 
 
-def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_name, save_wavelets=False):
+def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_name, save_wavelets=True):
     """
     Main evaluation function that can be called from other scripts
     WITH COMPLETE TIMING STATS AND FIXED WAVELET VISUALIZATION
@@ -519,7 +629,7 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
     # Run evaluation
     results, all_metrics = evaluate_model(model, data_loader, device, output_dir, save_wavelets)
     
-    # Log comprehensive results to wandb
+    # Log comprehensive results to wandb - FIXED naming
     wandb.log({
         # Overall metrics
         "eval/mse_mean": results['mse_mean'],
@@ -529,29 +639,29 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
         "eval/num_samples": results['num_samples'],
         
         # Per-modality MSE
-        "eval/mse_t1_mean": results['mse_t1_mean'],
-        "eval/mse_t1_std": results['mse_t1_std'],
-        "eval/mse_t1ce_mean": results['mse_t1ce_mean'],
-        "eval/mse_t1ce_std": results['mse_t1ce_std'],
-        "eval/mse_t2_mean": results['mse_t2_mean'],
-        "eval/mse_t2_std": results['mse_t2_std'],
-        "eval/mse_flair_mean": results['mse_flair_mean'],
-        "eval/mse_flair_std": results['mse_flair_std'],
+        "eval/mse_t1n_mean": results['mse_t1n_mean'],
+        "eval/mse_t1n_std": results['mse_t1n_std'],
+        "eval/mse_t1c_mean": results['mse_t1c_mean'],
+        "eval/mse_t1c_std": results['mse_t1c_std'],
+        "eval/mse_t2w_mean": results['mse_t2w_mean'],
+        "eval/mse_t2w_std": results['mse_t2w_std'],
+        "eval/mse_t2f_mean": results['mse_t2f_mean'],
+        "eval/mse_t2f_std": results['mse_t2f_std'],
         
         # Per-modality SSIM
-        "eval/ssim_t1_mean": results['ssim_t1_mean'],
-        "eval/ssim_t1_std": results['ssim_t1_std'],
-        "eval/ssim_t1ce_mean": results['ssim_t1ce_mean'],
-        "eval/ssim_t1ce_std": results['ssim_t1ce_std'],
-        "eval/ssim_t2_mean": results['ssim_t2_mean'],
-        "eval/ssim_t2_std": results['ssim_t2_std'],
-        "eval/ssim_flair_mean": results['ssim_flair_mean'],
-        "eval/ssim_flair_std": results['ssim_flair_std'],
+        "eval/ssim_t1n_mean": results['ssim_t1n_mean'],
+        "eval/ssim_t1n_std": results['ssim_t1n_std'],
+        "eval/ssim_t1c_mean": results['ssim_t1c_mean'],
+        "eval/ssim_t1c_std": results['ssim_t1c_std'],
+        "eval/ssim_t2w_mean": results['ssim_t2w_mean'],
+        "eval/ssim_t2w_std": results['ssim_t2w_std'],
+        "eval/ssim_t2f_mean": results['ssim_t2f_mean'],
+        "eval/ssim_t2f_std": results['ssim_t2f_std'],
     })
     
-    # Create per-modality comparison chart
+    # Create per-modality comparison chart - FIXED naming
     fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    modalities = ['T1', 'T1ce', 'T2', 'FLAIR']
+    modalities = ['T1n', 'T1c', 'T2w', 'T2f']
     
     # MSE comparison
     mse_values = [results[f'mse_{m.lower()}_mean'] for m in modalities]
@@ -579,13 +689,13 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
     # Log example wavelet visualizations to wandb
     if save_wavelets:
         wavelet_viz_dir = Path(output_dir) / 'wavelet_visualizations'
-        # Log ALL input wavelet visualizations (showing Z-1 and Z+1 components)
-        for img_path in sorted(wavelet_viz_dir.glob('batch0_input_wavelets_ALL8.png')):
+        # Log input wavelet visualizations (match any patient-specific file)
+        for img_path in sorted(wavelet_viz_dir.glob('*input_wavelets_ALL8*.png')):
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
-        # Log output and target wavelets
-        for img_path in sorted(wavelet_viz_dir.glob('batch0_*output_wavelets.png'))[:3]:
+        # Log output and target wavelets (patient-specific or batch-named)
+        for img_path in sorted(wavelet_viz_dir.glob('*output_wavelets*.png'))[:6]:
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
-        for img_path in sorted(wavelet_viz_dir.glob('batch0_*target_wavelets.png'))[:3]:
+        for img_path in sorted(wavelet_viz_dir.glob('*target_wavelets*.png'))[:6]:
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
     
     # Save results to CSV
@@ -663,12 +773,84 @@ def get_args():
                        help='Model architecture')
     parser.add_argument('--wavelet', type=str, default='haar',
                        help='Wavelet type (for wavelet model type)')
-    parser.add_argument('--save_wavelets', action='store_true',
-                       help='Save wavelet coefficients and visualizations (wavelet models only)')
+    parser.add_argument('--no_save_wavelets', action='store_true',
+                       help='Disable saving wavelet coefficients and visualizations')
     parser.add_argument('--timing_only', action='store_true',
                        help='Only measure timing, skip full evaluation')
+    parser.add_argument('--test_mode', action='store_true',
+                       help='Quick validation: 2 patients, reduced settings, auto-optimized')
     return parser.parse_args()
 
+
+def setup_device_and_optimizations(args):
+    """Setup device (always auto) and apply optimizations"""
+    
+    # Always auto-detect device
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        gpu_name = torch.cuda.get_device_name()
+        print(f"[DEVICE] Auto-detected: GPU ({gpu_name})")
+    elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+        device = torch.device('mps')
+        print(f"[DEVICE] Auto-detected: Apple Silicon MPS")
+    else:
+        device = torch.device('cpu')
+        print(f"[DEVICE] Auto-detected: CPU ({torch.get_num_threads()} threads)")
+    
+    # Apply optimizations
+    if device.type == 'cpu':
+        apply_cpu_optimizations(args)
+    
+    if args.test_mode:
+        apply_test_mode_settings(args, device)
+        
+    return device
+
+def apply_cpu_optimizations(args):
+    """Apply CPU optimizations only when needed"""
+    total_cores = torch.get_num_threads()
+    
+    # Only optimize threads if PyTorch is using too many
+    if total_cores > 8:  # Only intervene for high-core systems
+        optimal_threads = max(4, total_cores // 2)
+        torch.set_num_threads(optimal_threads)
+        print(f"[CPU] Optimized threads: {total_cores} -> {optimal_threads}")
+    
+    # Conservative batch sizes for CPU
+    original_batch = args.batch_size
+    if args.batch_size > 4:
+        args.batch_size = 4
+        print(f"[CPU] Reduced batch_size: {original_batch} -> {args.batch_size}")
+    
+    # Warn about wavelets if being used
+    if hasattr(args, 'wavelet') and args.wavelet != 'none':
+        print(f"[WARNING] {args.wavelet} wavelets will be significantly slower on CPU")
+        print(f"[TIP] Consider: --wavelet none for CPU evaluation")
+
+def apply_test_mode_settings(args, device):
+    """Apply test mode settings for evaluation"""
+    print(f"[TEST] Test mode activated")
+    
+    # Force small dataset
+    original_patients = getattr(args, 'num_patients', 'all')
+    args.num_patients = 2
+    print(f"[TEST] Patients: {original_patients} -> 2")
+    
+    # Conservative batch sizes for test mode
+    original_batch = args.batch_size
+    if device.type == 'cpu':
+        args.batch_size = min(2, args.batch_size)
+    else:
+        args.batch_size = min(4, args.batch_size)
+    
+    if original_batch != args.batch_size:
+        print(f"[TEST] Batch size: {original_batch} -> {args.batch_size}")
+    
+    # Time estimates
+    if device.type == 'cpu':
+        print(f"[TEST] Estimated time: 5-15 minutes (CPU)")
+    else:
+        print(f"[TEST] Estimated time: 1-3 minutes (GPU)")
 
 def measure_timing_only(model, data_loader, device, num_batches=100):
     """
@@ -723,17 +905,28 @@ def main():
     """CLI entry point"""
     args = get_args()
     
-    # Initialize wandb
+    # NEW: Smart device setup and optimizations
+    device = setup_device_and_optimizations(args)
+    
+    # Initialize wandb with test mode tags
     run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
+    wandb_config = vars(args)
+    wandb_config['device_type'] = device.type
+    wandb_tags = ['evaluation']
+    if args.test_mode:
+        wandb_tags.append('test_mode')
+    
     wandb.init(
         project="brats-middleslice-wavelet-sweep",
         name=run_name,
-        config=vars(args),
-        tags=["evaluation"]
+        config=wandb_config,
+        tags=wandb_tags
     )
     
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
+    
+    # Load dataset
+    print("Loading dataset...")
     
     # Load dataset
     print("Loading dataset...")
@@ -745,11 +938,15 @@ def main():
         cache_size=50  # prevent OOM by limiting volume cache
     )
     
+    # Create data loader with CPU-friendly settings
+    pin_memory = device.type != 'cpu'  # Only pin memory for GPU
+    num_workers = 0 if device.type == 'cpu' else 4  # Safer worker count for CPU
     data_loader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,  # Don't shuffle for reproducible evaluation
-        num_workers=4
+        num_workers=num_workers,
+        pin_memory=pin_memory
     )
     
     # Load model
@@ -758,9 +955,9 @@ def main():
     
     # Check if we should save wavelets
     is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
-    save_wavelets = args.save_wavelets and is_wavelet_model
-    if args.save_wavelets and not is_wavelet_model:
-        print("Warning: --save_wavelets only works with wavelet models. Ignoring.")
+    save_wavelets = (not args.no_save_wavelets) and is_wavelet_model
+    if (not args.no_save_wavelets) and not is_wavelet_model:
+        print("Warning: wavelet saving only works with wavelet models. Ignoring.")
     
     # Quick timing-only evaluation if requested
     if args.timing_only:

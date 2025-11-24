@@ -19,6 +19,9 @@ parameters:
   
   preprocessed_dir:
     value: "./preprocessed_slices"
+
+  val_preprocessed_dir:
+    value: "./preprocessed_slices_val"
   
   epochs:
     value: 100
@@ -34,3 +37,9 @@ parameters:
 
   num_workers:
     value: 16
+
+  eval_batch_size:
+    value: 16
+
+  timing_frequency:
+    value: 50

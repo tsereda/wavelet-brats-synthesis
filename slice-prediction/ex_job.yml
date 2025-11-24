@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-1
+  name: midslice-4
   namespace: gai-lina-group
   labels:
     app: tim.wandb-sweep
@@ -34,21 +34,47 @@ spec:
             pip install einops>=0.7.0
             pip install blobfile
             pip install scikit-image
+            pip install PyWavelets
           
-            git clone -b exp https://github.com/tsereda/wavelet-brats-synthesis.git
+            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
             cd wavelet-brats-synthesis/slice-prediction
 
-
+            echo "=== Extracting Training Data ==="
             7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar.gz -O.
             7z x ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData.tar -o.
-            pip install PyWavelets
+            
+            echo "=== Preprocessing Training Data ==="
             python preprocess_slices_to_tensors.py \
               --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-TrainingData \
               --output_dir ./preprocessed_slices \
-              --img_size 256
+              --img_size 256 \
+              --triplets_per_patient 5 \
+              --seed 42
 
-            # Run WandB sweep agent (trials will read from ./preprocessed_slices)
-            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/1wfhjnkh
+            echo "=== Extracting Validation Data ==="
+            7z x /data/BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+            7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
+
+            echo "=== Preprocessing Validation Data ==="
+            python preprocess_slices_to_tensors.py \
+              --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
+              --output_dir ./preprocessed_slices_val \
+              --img_size 256 \
+              --triplets_per_patient 5 \
+              --seed 42
+
+            echo "=== Checking Preprocessed Data ==="
+            echo "Training data:"
+            ls -la ./preprocessed_slices/ | head -10
+            echo "Total training files: $(find ./preprocessed_slices -name "*.pt" | wc -l)"
+            
+            echo "Validation data:"
+            ls -la ./preprocessed_slices_val/ | head -10
+            echo "Total validation files: $(find ./preprocessed_slices_val -name "*.pt" | wc -l)"
+
+            echo "=== Starting WandB Sweep Agent ==="
+            # Run WandB sweep agent (trials will read from ./preprocessed_slices and ./preprocessed_slices_val)
+            wandb agent timgsereda/wavelet-brats-synthesis-slice-prediction/5mfl25i8
 
         env:
         - name: WANDB_API_KEY
@@ -79,7 +105,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-1
+          claimName: brats2025-4
       - name: shm
         emptyDir:
           medium: Memory
