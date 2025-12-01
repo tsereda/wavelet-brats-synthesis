@@ -52,7 +52,7 @@ spec:
               --seed 42
 
             echo "=== Extracting Validation Data ==="
-            7z x /data/BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+            7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
             7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
 
             echo "=== Preprocessing Validation Data ==="
