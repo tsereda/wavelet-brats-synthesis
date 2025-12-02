@@ -149,8 +149,11 @@ def process_single_patient_optimized(args_tuple):
         # Load transforms
         transforms = get_transforms_lazy(img_size, spacing)
         
+        # Filter out None values before applying transforms
+        patient_files_for_transforms = {k: v for k, v in patient_files.items() if v is not None}
+        
         # Apply transforms (same as original)
-        processed = transforms(patient_files)
+        processed = transforms(patient_files_for_transforms)
         
         # Concatenate modalities (same as original)
         img_modalities = torch.cat([
