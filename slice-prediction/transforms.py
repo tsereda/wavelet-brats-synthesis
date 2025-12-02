@@ -1,4 +1,3 @@
-# transforms.py
 from monai.transforms import (
     Compose,
     LoadImaged,
@@ -28,10 +27,13 @@ def get_train_transforms(image_size, spacing):
     return Compose([
         # Load NIfTI files - allow missing keys for validation data
         LoadImaged(keys=keys, allow_missing_keys=True),
+        
         # Ensure channel-first format [C, H, W, D]
         EnsureChannelFirstd(keys=keys, allow_missing_keys=True),
+        
         # Reorient to standard orientation
         Orientationd(keys=keys, axcodes="RAS", allow_missing_keys=True),
+        
         # Resample to target spacing
         Spacingd(
             keys=keys,
@@ -39,6 +41,7 @@ def get_train_transforms(image_size, spacing):
             mode=("bilinear", "bilinear", "bilinear", "bilinear", "nearest"),
             allow_missing_keys=True,
         ),
+        
         # Normalize intensity for imaging modalities (only modalities, not label)
         ScaleIntensityRanged(
             keys=["t1n", "t1c", "t2w", "t2f"],
@@ -48,6 +51,7 @@ def get_train_transforms(image_size, spacing):
             b_max=1.0,
             clip=True,
         ),
+        
         # Crop to foreground (remove empty space)
         CropForegroundd(
             keys=keys,
@@ -55,6 +59,7 @@ def get_train_transforms(image_size, spacing):
             margin=10,
             allow_missing_keys=True,
         ),
+        
         # Resize spatial dimensions (H, W) - depth stays same
         Resized(
             keys=keys,
@@ -62,6 +67,7 @@ def get_train_transforms(image_size, spacing):
             mode=("trilinear", "trilinear", "trilinear", "trilinear", "nearest"),
             allow_missing_keys=True,
         ),
+        
         # Convert to PyTorch tensors
         EnsureTyped(keys=keys, allow_missing_keys=True),
     ])
