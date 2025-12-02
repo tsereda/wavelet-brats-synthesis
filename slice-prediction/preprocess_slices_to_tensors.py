@@ -34,10 +34,30 @@ from pathlib import Path
 import threading
 
 # Import transforms lazily to avoid multiprocessing issues
-def get_transforms_lazy(img_size, spacing):
+def get_transforms_lazy(img_size, spacing, has_segmentation=True):
     """Lazy import of transforms to avoid multiprocessing pickle issues"""
     from transforms import get_train_transforms
-    return get_train_transforms((img_size, img_size), spacing)
+    
+    # Get the transforms
+    transforms = get_train_transforms((img_size, img_size), spacing)
+    
+    # If no segmentation, modify LoadImaged transform to allow missing keys
+    if not has_segmentation:
+        try:
+            # Find LoadImaged transform and set allow_missing_keys=True
+            for i, transform in enumerate(transforms.transforms):
+                if hasattr(transform, '__class__') and 'LoadImaged' in transform.__class__.__name__:
+                    # Create new LoadImaged with allow_missing_keys=True
+                    from monai.transforms import LoadImaged
+                    keys = ["t1n", "t1c", "t2w", "t2f", "label"]
+                    transforms.transforms[i] = LoadImaged(keys=keys, allow_missing_keys=True)
+                    break
+        except Exception as e:
+            # If modification fails, fallback to original approach
+            print(f"Warning: Could not modify LoadImaged transform: {e}")
+            pass
+    
+    return transforms
 
 
 def validate_patient_files(patient_files):
@@ -147,13 +167,11 @@ def process_single_patient_optimized(args_tuple):
             return patient_name, 0, [], [], f"Validation failed: {err}"
         
         # Load transforms
-        transforms = get_transforms_lazy(img_size, spacing)
+        has_segmentation = seg is not None
+        transforms = get_transforms_lazy(img_size, spacing, has_segmentation)
         
-        # Filter out None values before applying transforms
-        patient_files_for_transforms = {k: v for k, v in patient_files.items() if v is not None}
-        
-        # Apply transforms (same as original)
-        processed = transforms(patient_files_for_transforms)
+        # Apply transforms - pass patient_files directly since we've configured transforms to handle missing keys
+        processed = transforms(patient_files)
         
         # Concatenate modalities (same as original)
         img_modalities = torch.cat([
