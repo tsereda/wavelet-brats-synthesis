@@ -7,6 +7,7 @@ Key optimizations:
 2. Optimized I/O: os.listdir() instead of glob() (2-3x speedup)
 3. Progress tracking with ETA estimation
 4. Memory-efficient processing with cleanup
+5. Optional segmentation support for validation datasets
 
 This is a direct replacement for your original script with the same CLI interface.
 
@@ -40,8 +41,11 @@ def get_transforms_lazy(img_size, spacing):
 
 
 def validate_patient_files(patient_files):
-    """Fast validation optimized for speed"""
+    """Fast validation optimized for speed - segmentation is optional"""
     for key, filepath in patient_files.items():
+        if key == 'label' and filepath is None:
+            # Skip validation for missing segmentation files
+            continue
         if filepath is None:
             return False, f"Missing file {key}"
         try:
@@ -129,7 +133,7 @@ def process_single_patient_optimized(args_tuple):
                 raise FileNotFoundError(f"Missing *-{suffix} in {patient_name}")
             modalities[suffix] = os.path.join(patient_dir, matches[0])
         
-        # Find segmentation
+        # Find segmentation (optional)
         seg = None
         seg_matches = [f for f in files if 'seg.nii' in f or 'label.nii' in f]
         if seg_matches:
@@ -255,7 +259,7 @@ def main():
 
     # OPTIMIZATION: Determine optimal number of processes
     if args.num_processes is None:
-        args.num_processes = min(mp.cpu_count() - 1, 30)  # Leave one core free, cap at 8
+        args.num_processes = min(mp.cpu_count() - 1, 30)  # Leave one core free, cap at 30
         if args.num_processes < 1:
             args.num_processes = 1
     
