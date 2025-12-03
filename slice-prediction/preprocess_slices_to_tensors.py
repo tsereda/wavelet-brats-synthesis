@@ -174,8 +174,7 @@ def process_single_patient_optimized(args_tuple):
         
         depth = img_modalities.shape[3]
         
-        # Select slices based on strategy
-        strategy, triplets_per_patient, triplet_margin = args_tuple[5:8]
+        # Select slices based on strategy (variables already unpacked from args_tuple at function start)
         selected_slices = select_slices_by_strategy(
             depth, 
             strategy=strategy,
