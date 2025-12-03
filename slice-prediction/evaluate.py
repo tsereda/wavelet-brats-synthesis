@@ -50,7 +50,7 @@ def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Unio
         run = api.run(f"{wandb_entity}/{wandb_project}/{run_id}")
         artifacts = run.logged_artifacts()
         for artifact in artifacts:
-            if artifact.type == 'model' and any('best' in alias for alias in artifact.aliases):
+            if artifact.type == 'model' and any(alias in ['best', 'latest'] for alias in artifact.aliases):
                 print(f"Downloading checkpoint from run {run_id}: {artifact.name}")
                 artifact_dir = artifact.download(root=download_dir)
                 # Find .pth file in downloaded directory
@@ -69,7 +69,7 @@ def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Unio
             try:
                 artifacts = run.logged_artifacts()
                 for artifact in artifacts:
-                    if artifact.type == 'model' and any('best' in alias for alias in artifact.aliases):
+                    if artifact.type == 'model' and any(alias in ['best', 'latest'] for alias in artifact.aliases):
                         print(f"Downloading checkpoint from run {run.name}: {artifact.name}")
                         artifact_dir = artifact.download(root=f"{download_dir}/{run.id}")
                         ckpt_files = list(Path(artifact_dir).glob('*.pth'))
