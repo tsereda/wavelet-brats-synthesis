@@ -355,7 +355,7 @@ def main():
     print(f"CSV index: {csv_path}")
     
     # NEW: Optimization summary
-    print(f"\n🎉 OPTIMIZATION RESULTS:")
+    print(f"\nOPTIMIZATION RESULTS:")
     print(f"✅ Processing rate: {len(patients)/elapsed:.1f} patients/sec")
     print(f"✅ Expected speedup vs original: ~{args.num_processes}x")
     print(f"✅ Total time: {elapsed/60:.1f} minutes (vs estimated {len(patients)*2.0/60:.1f}min original)")

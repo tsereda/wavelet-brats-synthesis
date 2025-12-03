@@ -140,7 +140,7 @@ spec:
           --output_dir "${NNUNET_OUTPUT_DIR}"
 
         echo "---"
-        echo "🎉 NNUNet conversion complete!"
+        echo "NNUNet conversion complete!"
         echo "Your augmented and converted dataset is ready at: ${NNUNET_OUTPUT_DIR}"
 
 
