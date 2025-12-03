@@ -76,33 +76,50 @@ def build_patient_list(data_dir):
     return patient_dirs
 
 
-def select_non_overlapping_triplets(depth, num_triplets=5, margin=3):
+def select_slices_by_strategy(depth, strategy='random', num_triplets=5, margin=3):
     """
-    OPTIMIZED triplet selection using numpy
-    Same logic as original but faster implementation
+    Select slices based on sampling strategy
+    
+    Args:
+        depth: total depth of volume
+        strategy: 'random', 'every_other', or 'all_valid'
+        num_triplets: number of slices for random sampling
+        margin: minimum spacing for random sampling
+    
+    Returns:
+        list of selected slice indices
     """
     # Conservative bounds (same as original)
     safe_start = max(1, int(0.1 * depth))
     safe_end = min(depth - 2, int(0.8 * depth))
     
-    if safe_end - safe_start < num_triplets * margin:
-        # Not enough room - sample what we can
-        valid_indices = list(range(safe_start, safe_end + 1))
-        return random.sample(valid_indices, min(num_triplets, len(valid_indices)))
+    if strategy == 'every_other':
+        # For evaluation: every other slice
+        return list(range(safe_start, safe_end, 2))
     
-    # OPTIMIZATION: Use numpy for efficient selection
-    available = np.arange(safe_start, safe_end + 1)
-    np.random.shuffle(available)  # Shuffle for randomness
+    elif strategy == 'all_valid':
+        # For research: all valid slices
+        return list(range(safe_start, safe_end))
     
-    selected = []
-    for idx in available:
-        # Check if far enough from all previously selected
-        if all(abs(idx - s) >= margin for s in selected):
-            selected.append(int(idx))  # Convert numpy int to Python int
-            if len(selected) >= num_triplets:
-                break
-    
-    return sorted(selected)
+    else:  # random (original behavior)
+        if safe_end - safe_start < num_triplets * margin:
+            # Not enough room - sample what we can
+            valid_indices = list(range(safe_start, safe_end + 1))
+            return random.sample(valid_indices, min(num_triplets, len(valid_indices)))
+        
+        # OPTIMIZATION: Use numpy for efficient selection
+        available = np.arange(safe_start, safe_end + 1)
+        np.random.shuffle(available)  # Shuffle for randomness
+        
+        selected = []
+        for idx in available:
+            # Check if far enough from all previously selected
+            if all(abs(idx - s) >= margin for s in selected):
+                selected.append(int(idx))  # Convert numpy int to Python int
+                if len(selected) >= num_triplets:
+                    break
+        
+        return sorted(selected)
 
 
 def process_single_patient_optimized(args_tuple):
@@ -110,7 +127,7 @@ def process_single_patient_optimized(args_tuple):
     OPTIMIZED single patient processing function for multiprocessing
     This replaces the main loop from the original script
     """
-    patient_dir, img_size, spacing, triplets_per_patient, triplet_margin, output_dir, seed = args_tuple
+    patient_dir, img_size, spacing, strategy, triplets_per_patient, triplet_margin, output_dir, seed = args_tuple
     patient_name = os.path.basename(patient_dir)
     
     # Set seed for this process
@@ -157,9 +174,11 @@ def process_single_patient_optimized(args_tuple):
         
         depth = img_modalities.shape[3]
         
-        # Select triplets (optimized version)
-        selected_slices = select_non_overlapping_triplets(
+        # Select slices based on strategy
+        strategy, triplets_per_patient, triplet_margin = args_tuple[5:8]
+        selected_slices = select_slices_by_strategy(
             depth, 
+            strategy=strategy,
             num_triplets=triplets_per_patient,
             margin=triplet_margin
         )
@@ -238,6 +257,9 @@ def main():
                         help='Minimum spacing between triplet centers')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
+    parser.add_argument('--sampling', type=str, default='random',
+                        choices=['random', 'every_other', 'all_valid'],
+                        help='Slice sampling strategy: random (training), every_other (eval), all_valid (research)')
     # NEW OPTIMIZATION PARAMETERS (optional)
     parser.add_argument('--num_processes', type=int, default=None,
                         help='Number of processes for parallel processing (default: auto)')
@@ -269,7 +291,12 @@ def main():
     total_saved = 0
 
     # Print same messages as original + optimization info
-    print(f"Preprocessing with {args.triplets_per_patient} random triplets per patient")
+    if args.sampling == 'random':
+        print(f"Preprocessing with {args.triplets_per_patient} random triplets per patient")
+    elif args.sampling == 'every_other':
+        print(f"Preprocessing with every_other slice sampling (for evaluation)")
+    else:
+        print(f"Preprocessing with all_valid slice sampling (for research)")
     print(f"Using seed: {args.seed}")
     print(f"🚀 OPTIMIZATION: Using {args.num_processes} processes for {len(patients)} patients")
 
@@ -283,7 +310,7 @@ def main():
     # Prepare arguments for multiprocessing
     process_args = [
         (patient_dir, args.img_size, tuple(args.spacing), 
-         args.triplets_per_patient, args.triplet_margin, str(out_dir), args.seed)
+         args.sampling, args.triplets_per_patient, args.triplet_margin, str(out_dir), args.seed)
         for patient_dir in patients
     ]
     

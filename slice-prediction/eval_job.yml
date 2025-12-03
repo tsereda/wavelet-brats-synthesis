@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-eval-3
+  name: midslice-eval-2
   namespace: gai-lina-group
   labels:
     app: tim.wandb-eval
@@ -44,12 +44,12 @@ spec:
             7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
             7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
 
-            echo "=== Preprocessing Validation Data ==="
+            echo "=== Preprocessing Validation Data (every_other) ==="
             python preprocess_slices_to_tensors.py \
               --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
               --output_dir ./preprocessed_slices_val \
               --img_size 256 \
-              --triplets_per_patient 5 \
+              --sampling every_other \
               --seed 42
 
             echo "=== Checking Preprocessed Data ==="
@@ -103,7 +103,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-3
+          claimName: brats2025-2
       - name: shm
         emptyDir:
           medium: Memory

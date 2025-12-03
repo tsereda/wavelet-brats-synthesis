@@ -31,79 +31,6 @@ from logging_utils import create_reconstruction_log_panel
 from typing import Union
 
 
-class FullVolumeDataset(Dataset):
-    """Dataset that generates all valid slice predictions from complete volumes"""
-    
-    def __init__(self, data_dir, image_size=(256, 256), spacing=(1.0, 1.0, 1.0)):
-        self.transforms = get_train_transforms(image_size, spacing)
-        self.patient_dirs = sorted(glob.glob(os.path.join(data_dir, "BraTS*")))
-        self.slice_index = []
-        self._build_slice_index()
-    
-    def _build_slice_index(self):
-        for patient_idx, patient_dir in enumerate(self.patient_dirs):
-            patient_name = os.path.basename(patient_dir)
-            try:
-                patient_files = self._get_patient_files(patient_dir)
-                if not patient_files:
-                    continue
-                
-                processed = self.transforms(patient_files)
-                img_modalities = torch.cat([
-                    processed['t1n'], processed['t1c'], 
-                    processed['t2w'], processed['t2f']
-                ], dim=0)
-                
-                depth = img_modalities.shape[3]
-                
-                # Generate predictions for every other slice
-                for z in range(1, depth - 1, 2):
-                    if torch.mean(img_modalities[:, :, :, z]) > 0.01:  # has brain content
-                        self.slice_index.append((patient_idx, z, patient_name))
-                
-                del processed, img_modalities
-                
-            except Exception as e:
-                print(f"Error processing {patient_name}: {e}")
-        
-        print(f"Full volume dataset: {len(self.slice_index)} predictions from {len(self.patient_dirs)} patients")
-    
-    def _get_patient_files(self, patient_dir):
-        patient_files = {}
-        for key, suffix in [('t1n', 't1n'), ('t1c', 't1c'), ('t2w', 't2w'), ('t2f', 't2f')]:
-            matches = glob.glob(os.path.join(patient_dir, f"*-{suffix}.nii*"))
-            if not matches:
-                return None
-            patient_files[key] = matches[0]
-        
-        seg_matches = glob.glob(os.path.join(patient_dir, "*seg.nii*"))
-        if seg_matches:
-            patient_files['label'] = seg_matches[0]
-        return patient_files
-    
-    def __len__(self):
-        return len(self.slice_index)
-    
-    def __getitem__(self, idx):
-        patient_idx, slice_idx, patient_name = self.slice_index[idx]
-        patient_dir = self.patient_dirs[patient_idx]
-        
-        patient_files = self._get_patient_files(patient_dir)
-        processed = self.transforms(patient_files)
-        
-        img_modalities = torch.cat([
-            processed['t1n'], processed['t1c'],
-            processed['t2w'], processed['t2f']
-        ], dim=0)
-        
-        prev_slice = img_modalities[:, :, :, slice_idx - 1]
-        target_slice = img_modalities[:, :, :, slice_idx]
-        next_slice = img_modalities[:, :, :, slice_idx + 1]
-        
-        input_tensor = torch.cat([prev_slice, next_slice], dim=0)
-        return input_tensor, target_slice, (slice_idx, patient_name)
-
-
 def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Union[str, None]=None, download_dir: str = './wandb_checkpoints', wandb_entity: str = 'timgsereda', wandb_project: str = 'brats-middleslice-wavelet-sweep'):
     """
     Download checkpoint from W&B sweep or run
@@ -966,8 +893,6 @@ def get_args():
                        help='Only measure timing, skip full evaluation')
     parser.add_argument('--test_mode', action='store_true',
                        help='Quick validation: 2 patients, reduced settings, auto-optimized')
-    parser.add_argument('--full_volume', action='store_true',
-                       help='Evaluate all valid slices in each volume')
     return parser.parse_args()
 
 
@@ -1095,15 +1020,10 @@ def main():
     args = get_args()
     
     # Validate dataset arguments
-    # Full volume mode can work with either raw data or preprocessed data
-    # if args.full_volume:
-    #     if not args.data_dir:
-    #         raise ValueError("--data_dir is required for full volume evaluation")
-    if not args.full_volume:
-        if not args.preprocessed_dir and not args.data_dir:
-            raise ValueError("Must provide either --preprocessed_dir or --data_dir")
-        if args.preprocessed_dir and args.data_dir:
-            print("Warning: Both --preprocessed_dir and --data_dir provided. Using --preprocessed_dir (faster)")
+    if not args.preprocessed_dir and not args.data_dir:
+        raise ValueError("Must provide either --preprocessed_dir or --data_dir")
+    if args.preprocessed_dir and args.data_dir:
+        print("Warning: Both --preprocessed_dir and --data_dir provided. Using --preprocessed_dir (faster)")
 
     # If user asked to evaluate an entire training sweep, download and evaluate all "best" artifacts
     if args.wandb_sweep_id:
@@ -1241,16 +1161,7 @@ def main():
     print(f"Using device: {device}")
     # Load dataset and dataloader
     print("Loading dataset...")
-    if args.full_volume:
-        if not args.data_dir:
-            raise ValueError("--data_dir is required for full volume evaluation")
-        print(f"Using FULL VOLUME evaluation: {args.data_dir}")
-        dataset = FullVolumeDataset(
-            data_dir=args.data_dir,
-            image_size=(args.img_size, args.img_size),
-            spacing=(1.0, 1.0, 1.0)
-        )
-    elif args.preprocessed_dir:
+    if args.preprocessed_dir:
         print(f"Using preprocessed dataset: {args.preprocessed_dir}")
         dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
         print(f"Loaded {len(dataset)} preprocessed samples")
