@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-eval-4
+  name: midslice-eval-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-eval
@@ -37,7 +37,7 @@ spec:
             pip install PyWavelets
             pip install pandas
           
-            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+            git clone -b fullvolumeeval https://github.com/tsereda/wavelet-brats-synthesis.git
             cd wavelet-brats-synthesis/slice-prediction
 
             echo "=== Extracting Validation Data ==="
@@ -61,6 +61,8 @@ spec:
             # Evaluate all checkpoints from the training sweep
             python evaluate.py \
               --wandb_sweep_id 5mfl25i8 \
+              --wandb_entity timgsereda \
+              --wandb_project wavelet-brats-synthesis-slice-prediction \
               --data_dir ./preprocessed_slices_val \
               --output ./sweep_eval_results \
               --batch_size 16 \
@@ -100,7 +102,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-4
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory

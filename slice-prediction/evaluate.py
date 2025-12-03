@@ -28,7 +28,7 @@ from logging_utils import create_reconstruction_log_panel
 from typing import Union
 
 
-def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Union[str, None]=None, download_dir: str = './wandb_checkpoints'):
+def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Union[str, None]=None, download_dir: str = './wandb_checkpoints', wandb_entity: str = 'timgsereda', wandb_project: str = 'brats-middleslice-wavelet-sweep'):
     """
     Download checkpoint from W&B sweep or run
     
@@ -36,6 +36,8 @@ def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Unio
         sweep_id: W&B sweep ID (e.g., "5mfl25i8")
         run_id: W&B run ID (if you want specific run instead of sweep)
         download_dir: Where to save checkpoints
+        wandb_entity: W&B entity/username
+        wandb_project: W&B project name
     
     Returns:
         Path to downloaded checkpoint OR list of checkpoint dicts when sweep_id provided
@@ -45,7 +47,7 @@ def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Unio
     
     if run_id:
         # Single run mode
-        run = api.run(f"timgsereda/brats-middleslice-wavelet-sweep/{run_id}")
+        run = api.run(f"{wandb_entity}/{wandb_project}/{run_id}")
         artifacts = run.logged_artifacts()
         for artifact in artifacts:
             if artifact.type == 'model' and any('best' in alias for alias in artifact.aliases):
@@ -59,7 +61,7 @@ def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Unio
     
     elif sweep_id:
         # Sweep mode - download all checkpoints
-        sweep = api.sweep(f"timgsereda/brats-middleslice-wavelet-sweep/{sweep_id}")
+        sweep = api.sweep(f"{wandb_entity}/{wandb_project}/{sweep_id}")
         runs = sweep.runs
         
         checkpoints = []
@@ -829,6 +831,10 @@ def get_args():
                        help='W&B run ID to evaluate single checkpoint')
     parser.add_argument('--download_dir', type=str, default='./wandb_checkpoints',
                        help='Directory to cache downloaded checkpoints')
+    parser.add_argument('--wandb_entity', type=str, default='timgsereda',
+                       help='W&B entity/username')
+    parser.add_argument('--wandb_project', type=str, default='brats-middleslice-wavelet-sweep',
+                       help='W&B project name')
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to BraTS dataset')
     parser.add_argument('--output', type=str, default='./results/swin',
@@ -981,7 +987,9 @@ def main():
         print(f"Evaluating all checkpoints from sweep: {args.wandb_sweep_id}")
         checkpoints = download_checkpoint_from_wandb(
             sweep_id=args.wandb_sweep_id,
-            download_dir=args.download_dir
+            download_dir=args.download_dir,
+            wandb_entity=args.wandb_entity,
+            wandb_project=args.wandb_project
         )
 
         all_results = []
@@ -1071,12 +1079,14 @@ def main():
         print(f"Downloading checkpoint from run: {args.wandb_run_id}")
         args.checkpoint = download_checkpoint_from_wandb(
             run_id=args.wandb_run_id,
-            download_dir=args.download_dir
+            download_dir=args.download_dir,
+            wandb_entity=args.wandb_entity,
+            wandb_project=args.wandb_project
         )
         # Try extract training run config
         try:
             api = wandb.Api()
-            run = api.run(f"timgsereda/brats-middleslice-wavelet-sweep/{args.wandb_run_id}")
+            run = api.run(f"{args.wandb_entity}/{args.wandb_project}/{args.wandb_run_id}")
             # prefer run config where available
             args.model_type = getattr(args, 'model_type', None) or run.config.get('model_type', 'swin')
             args.wavelet = getattr(args, 'wavelet', None) or run.config.get('wavelet', 'none')
