@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-eval-2
+  name: midslice-eval-3
   namespace: gai-lina-group
   labels:
     app: tim.wandb-eval
@@ -60,6 +60,7 @@ spec:
             echo "=== Evaluating All Checkpoints from Sweep ==="
             # Evaluate all checkpoints from the training sweep
             python evaluate.py \
+              --full_volume \
               --wandb_sweep_id 5mfl25i8 \
               --wandb_entity timgsereda \
               --wandb_project wavelet-brats-synthesis-slice-prediction \
@@ -102,7 +103,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-2
+          claimName: brats2025-3
       - name: shm
         emptyDir:
           medium: Memory
