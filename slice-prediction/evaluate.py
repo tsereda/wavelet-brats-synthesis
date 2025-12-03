@@ -22,6 +22,7 @@ import wandb
 from time import perf_counter
 
 from train import BraTS2D5Dataset
+from preprocessed_dataset import FastTensorSliceDataset
 from monai.networks.nets import SwinUNETR
 from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
 from logging_utils import create_reconstruction_log_panel
@@ -835,8 +836,10 @@ def get_args():
                        help='W&B entity/username')
     parser.add_argument('--wandb_project', type=str, default='brats-middleslice-wavelet-sweep',
                        help='W&B project name')
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to BraTS dataset')
+    parser.add_argument('--data_dir', type=str, required=False, default=None,
+                       help='Path to BraTS dataset (for raw data)')
+    parser.add_argument('--preprocessed_dir', type=str, required=False, default=None,
+                       help='Path to preprocessed .pt files (faster, recommended)')
     parser.add_argument('--output', type=str, default='./results/swin',
                        help='Output directory for results')
     parser.add_argument('--batch_size', type=int, default=16,
@@ -981,6 +984,12 @@ def measure_timing_only(model, data_loader, device, num_batches=100):
 def main():
     """CLI entry point"""
     args = get_args()
+    
+    # Validate dataset arguments
+    if not args.preprocessed_dir and not args.data_dir:
+        raise ValueError("Must provide either --preprocessed_dir or --data_dir")
+    if args.preprocessed_dir and args.data_dir:
+        print("Warning: Both --preprocessed_dir and --data_dir provided. Using --preprocessed_dir (faster)")
 
     # If user asked to evaluate an entire training sweep, download and evaluate all "best" artifacts
     if args.wandb_sweep_id:
@@ -1019,13 +1028,20 @@ def main():
 
             # Load dataset
             print("Loading dataset...")
-            dataset = BraTS2D5Dataset(
-                data_dir=args.data_dir,
-                image_size=(args.img_size, args.img_size),
-                spacing=(1.0, 1.0, 1.0),
-                num_patients=args.num_patients,
-                cache_size=50
-            )
+            if args.preprocessed_dir:
+                print(f"Using preprocessed dataset: {args.preprocessed_dir}")
+                dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
+                print(f"Loaded {len(dataset)} preprocessed samples")
+            else:
+                print(f"Using raw BraTS dataset: {args.data_dir}")
+                dataset = BraTS2D5Dataset(
+                    data_dir=args.data_dir,
+                    image_size=(args.img_size, args.img_size),
+                    spacing=(1.0, 1.0, 1.0),
+                    num_patients=args.num_patients,
+                    cache_size=50
+                )
+                print(f"Loaded {len(dataset)} raw BraTS slices")
 
             data_loader = DataLoader(
                 dataset,
@@ -1111,13 +1127,21 @@ def main():
     print(f"Using device: {device}")
     # Load dataset and dataloader
     print("Loading dataset...")
-    dataset = BraTS2D5Dataset(
-        data_dir=args.data_dir,
-        image_size=(args.img_size, args.img_size),
-        spacing=(1.0, 1.0, 1.0),
-        num_patients=args.num_patients,
-        cache_size=50  # prevent OOM by limiting volume cache
-    )
+    if args.preprocessed_dir:
+        print(f"Using preprocessed dataset: {args.preprocessed_dir}")
+        dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
+        print(f"Loaded {len(dataset)} preprocessed samples")
+    else:
+        print(f"Using raw BraTS dataset: {args.data_dir}")
+        dataset = BraTS2D5Dataset(
+            data_dir=args.data_dir,
+            image_size=(args.img_size, args.img_size),
+            spacing=(1.0, 1.0, 1.0),
+            num_patients=args.num_patients,
+            cache_size=50  # prevent OOM by limiting volume cache
+        )
+        print(f"Loaded {len(dataset)} raw BraTS slices")
+    
     pin_memory = device.type != 'cpu'
     num_workers = 0 if device.type == 'cpu' else 4
     data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)

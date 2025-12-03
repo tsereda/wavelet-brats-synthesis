@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-eval-1
+  name: midslice-eval-2
   namespace: gai-lina-group
   labels:
     app: tim.wandb-eval
@@ -63,7 +63,7 @@ spec:
               --wandb_sweep_id 5mfl25i8 \
               --wandb_entity timgsereda \
               --wandb_project wavelet-brats-synthesis-slice-prediction \
-              --data_dir ./preprocessed_slices_val \
+              --preprocessed_dir ./preprocessed_slices_val \
               --output ./sweep_eval_results \
               --batch_size 16 \
               --img_size 256 \
@@ -102,7 +102,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-1
+          claimName: brats2025-2
       - name: shm
         emptyDir:
           medium: Memory
