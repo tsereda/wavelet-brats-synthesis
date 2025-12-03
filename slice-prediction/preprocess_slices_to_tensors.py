@@ -7,6 +7,7 @@ Key optimizations:
 2. Optimized I/O: os.listdir() instead of glob() (2-3x speedup)
 3. Progress tracking with ETA estimation
 4. Memory-efficient processing with cleanup
+5. Optional segmentation support for validation datasets
 
 This is a direct replacement for your original script with the same CLI interface.
 
@@ -21,11 +22,10 @@ Usage (same as original):
 import os
 import glob
 import argparse
-import gzip
 import csv
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from time import time, perf_counter
+from time import time
 import torch
 import random
 import numpy as np
@@ -40,7 +40,7 @@ def get_transforms_lazy(img_size, spacing):
 
 
 def validate_patient_files(patient_files):
-    """Fast validation optimized for speed"""
+    """Fast validation optimized for speed - segmentation is optional"""
     for key, filepath in patient_files.items():
         if filepath is None:
             return False, f"Missing file {key}"
@@ -129,13 +129,12 @@ def process_single_patient_optimized(args_tuple):
                 raise FileNotFoundError(f"Missing *-{suffix} in {patient_name}")
             modalities[suffix] = os.path.join(patient_dir, matches[0])
         
-        # Find segmentation
-        seg = None
+        # FIXED: Build patient_files dictionary properly to avoid None values
+        patient_files = dict(modalities)  # Start with modalities
         seg_matches = [f for f in files if 'seg.nii' in f or 'label.nii' in f]
         if seg_matches:
-            seg = os.path.join(patient_dir, seg_matches[0])
-        
-        patient_files = {**modalities, 'label': seg}
+            patient_files['label'] = os.path.join(patient_dir, seg_matches[0])
+        # Note: If no segmentation found, 'label' key is simply not included
         
         # Validate files
         ok, err = validate_patient_files(patient_files)
@@ -145,7 +144,7 @@ def process_single_patient_optimized(args_tuple):
         # Load transforms
         transforms = get_transforms_lazy(img_size, spacing)
         
-        # Apply transforms (same as original)
+        # Apply transforms - now works with missing label due to allow_missing_keys=True
         processed = transforms(patient_files)
         
         # Concatenate modalities (same as original)
@@ -255,7 +254,7 @@ def main():
 
     # OPTIMIZATION: Determine optimal number of processes
     if args.num_processes is None:
-        args.num_processes = min(mp.cpu_count() - 1, 30)  # Leave one core free, cap at 8
+        args.num_processes = min(mp.cpu_count() - 1, 30)  # Leave one core free, cap at 30
         if args.num_processes < 1:
             args.num_processes = 1
     

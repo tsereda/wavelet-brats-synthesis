@@ -19,3 +19,7 @@ slice-prediction/checkpoints/
 slice-prediction/cpuextras
 slice-prediction/brats23test.tar
 slice-prediction/models/
+figures/
+/root/wavelet-brats-synthesis/slice-prediction/wavelet_analysis.png
+analysis_report.md
+slice-prediction/analysis/wandb_export_2025-12-01T15_02_30.111-06_00.csv
