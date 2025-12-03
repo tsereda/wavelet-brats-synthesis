@@ -1095,10 +1095,11 @@ def main():
     args = get_args()
     
     # Validate dataset arguments
-    if args.full_volume:
-        if not args.data_dir:
-            raise ValueError("--data_dir is required for full volume evaluation")
-    else:
+    # Full volume mode can work with either raw data or preprocessed data
+    # if args.full_volume:
+    #     if not args.data_dir:
+    #         raise ValueError("--data_dir is required for full volume evaluation")
+    if not args.full_volume:
         if not args.preprocessed_dir and not args.data_dir:
             raise ValueError("Must provide either --preprocessed_dir or --data_dir")
         if args.preprocessed_dir and args.data_dir:
