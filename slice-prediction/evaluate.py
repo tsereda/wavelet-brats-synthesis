@@ -778,36 +778,67 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
 
 
 def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
-    """Load trained model"""
+    """Load trained model - now supports all model types from training"""
+    from monai.networks.nets import UNETR, BasicUNet
+    
+    # Determine if we need wavelet wrapper (use training logic)
+    use_wavelet = wavelet_name != 'none'
+    
+    # Create base model based on architecture type
     if model_type == 'swin':
-        model = SwinUNETR(
+        base_model = SwinUNETR(
             in_channels=8,
             out_channels=4,
             feature_size=24,
             spatial_dims=2
-        ).to(device)
+        )
         print("Loaded Swin-UNETR model")
     
-    elif model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']:
-        from models.wavelet_diffusion import WaveletDiffusion
-        
-        # Determine wavelet type from model_type if specified
-        if model_type == 'wavelet_haar':
-            wavelet_name = 'haar'
-        elif model_type == 'wavelet_db2':
-            wavelet_name = 'db2'
-        # else use the wavelet_name parameter
-        
-        model = WaveletDiffusion(
-            wavelet_name=wavelet_name,
+    elif model_type == 'unet':
+        base_model = BasicUNet(
+            spatial_dims=2,
             in_channels=8,
             out_channels=4,
-            timesteps=100
-        ).to(device)
-        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
+            features=(32, 32, 64, 128, 256, 32),
+            act='ReLU',
+            norm='batch',
+            dropout=0.0
+        )
+        print("Loaded BasicUNet model")
+    
+    elif model_type == 'unetr':
+        base_model = UNETR(
+            in_channels=8,
+            out_channels=4,
+            img_size=(img_size, img_size),
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            proj_type='conv',
+            norm_name='instance',
+            res_block=True,
+            dropout_rate=0.0,
+            spatial_dims=2
+        )
+        print("Loaded UNETR model")
     
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. Supported: 'swin', 'unet', 'unetr'")
+    
+    # Apply wavelet wrapper if used during training
+    if use_wavelet:
+        from models.wavelet_wrapper import WaveletWrapper
+        model = WaveletWrapper(
+            base_model=base_model,
+            wavelet_name=wavelet_name,
+            in_channels=8,
+            out_channels=4
+        ).to(device)
+        print(f"Applied wavelet wrapper: {wavelet_name}")
+    else:
+        model = base_model.to(device)
+        print("Using standard spatial domain processing (no wavelet)")
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -849,10 +880,11 @@ def get_args():
     parser.add_argument('--img_size', type=int, default=256,
                        help='Image size')
     parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'wavelet_haar', 'wavelet_db2', 'wavelet'],
+                       choices=['swin', 'unet', 'unetr'],
                        help='Model architecture')
-    parser.add_argument('--wavelet', type=str, default='haar',
-                       help='Wavelet type (for wavelet model type)')
+    parser.add_argument('--wavelet', type=str, default='none',
+                       choices=['none', 'haar', 'db2'],
+                       help='Wavelet type (use "none" for standard spatial domain)')
     parser.add_argument('--no_save_wavelets', action='store_true',
                        help='Disable saving wavelet coefficients and visualizations')
     parser.add_argument('--timing_only', action='store_true',
@@ -1152,11 +1184,12 @@ def main():
     print(f"Loading model from {args.checkpoint}...")
     model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
 
-    # Decide about wavelet saving
-    is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
+    # Decide about wavelet saving (wavelets are used when wavelet != 'none')
+    is_wavelet_model = args.wavelet != 'none'
     save_wavelets = (not args.no_save_wavelets) and is_wavelet_model
     if (not args.no_save_wavelets) and not is_wavelet_model:
-        print("Warning: wavelet saving only works with wavelet models. Ignoring.")
+        print("Info: No wavelet processing enabled (wavelet='none'). Wavelet visualizations will be skipped.")
+
 
     # Timing-only mode
     if args.timing_only:
