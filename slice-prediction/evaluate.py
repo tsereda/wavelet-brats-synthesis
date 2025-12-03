@@ -199,7 +199,7 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        print(f"  Saved: {output_path}")
+    #     print(f"  Saved: {output_path}")
 
     plt.close()
 
