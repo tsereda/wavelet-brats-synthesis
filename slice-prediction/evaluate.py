@@ -25,6 +25,70 @@ from train import BraTS2D5Dataset
 from monai.networks.nets import SwinUNETR
 from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
 from logging_utils import create_reconstruction_log_panel
+from typing import Union
+
+
+def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Union[str, None]=None, download_dir: str = './wandb_checkpoints'):
+    """
+    Download checkpoint from W&B sweep or run
+    
+    Args:
+        sweep_id: W&B sweep ID (e.g., "5mfl25i8")
+        run_id: W&B run ID (if you want specific run instead of sweep)
+        download_dir: Where to save checkpoints
+    
+    Returns:
+        Path to downloaded checkpoint OR list of checkpoint dicts when sweep_id provided
+    """
+    api = wandb.Api()
+    Path(download_dir).mkdir(parents=True, exist_ok=True)
+    
+    if run_id:
+        # Single run mode
+        run = api.run(f"timgsereda/brats-middleslice-wavelet-sweep/{run_id}")
+        artifacts = run.logged_artifacts()
+        for artifact in artifacts:
+            if artifact.type == 'model' and any('best' in alias for alias in artifact.aliases):
+                print(f"Downloading checkpoint from run {run_id}: {artifact.name}")
+                artifact_dir = artifact.download(root=download_dir)
+                # Find .pth file in downloaded directory
+                ckpt_files = list(Path(artifact_dir).glob('*.pth'))
+                if ckpt_files:
+                    return str(ckpt_files[0])
+        raise RuntimeError(f"No best checkpoint found in run {run_id}")
+    
+    elif sweep_id:
+        # Sweep mode - download all checkpoints
+        sweep = api.sweep(f"timgsereda/brats-middleslice-wavelet-sweep/{sweep_id}")
+        runs = sweep.runs
+        
+        checkpoints = []
+        for run in runs:
+            try:
+                artifacts = run.logged_artifacts()
+                for artifact in artifacts:
+                    if artifact.type == 'model' and any('best' in alias for alias in artifact.aliases):
+                        print(f"Downloading checkpoint from run {run.name}: {artifact.name}")
+                        artifact_dir = artifact.download(root=f"{download_dir}/{run.id}")
+                        ckpt_files = list(Path(artifact_dir).glob('*.pth'))
+                        if ckpt_files:
+                            checkpoints.append({
+                                'path': str(ckpt_files[0]),
+                                'run_id': run.id,
+                                'run_name': run.name,
+                                'config': run.config
+                            })
+            except Exception as e:
+                print(f"Warning: Failed to download from run {getattr(run, 'name', str(run))}: {e}")
+                continue
+        
+        if not checkpoints:
+            raise RuntimeError(f"No checkpoints found in sweep {sweep_id}")
+        
+        return checkpoints
+    
+    else:
+        raise ValueError("Must provide either sweep_id or run_id")
 
 
 # Timing stats tracker for evaluation
@@ -756,8 +820,15 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
 
 def get_args():
     parser = argparse.ArgumentParser(description="Evaluate middleslice reconstruction model")
-    parser.add_argument('--checkpoint', type=str, required=True, 
-                       help='Path to model checkpoint')
+    parser.add_argument('--checkpoint', type=str, required=False, default=None,
+                       help='Path to model checkpoint (local). If not provided, use --wandb_run_id or --wandb_sweep_id')
+    # NEW: W&B integration arguments
+    parser.add_argument('--wandb_sweep_id', type=str, default=None,
+                       help='W&B sweep ID to evaluate all checkpoints (e.g., "5mfl25i8")')
+    parser.add_argument('--wandb_run_id', type=str, default=None,
+                       help='W&B run ID to evaluate single checkpoint')
+    parser.add_argument('--download_dir', type=str, default='./wandb_checkpoints',
+                       help='Directory to cache downloaded checkpoints')
     parser.add_argument('--data_dir', type=str, required=True,
                        help='Path to BraTS dataset')
     parser.add_argument('--output', type=str, default='./results/swin',
@@ -904,31 +975,131 @@ def measure_timing_only(model, data_loader, device, num_batches=100):
 def main():
     """CLI entry point"""
     args = get_args()
-    
-    # NEW: Smart device setup and optimizations
+
+    # If user asked to evaluate an entire training sweep, download and evaluate all "best" artifacts
+    if args.wandb_sweep_id:
+        print(f"Evaluating all checkpoints from sweep: {args.wandb_sweep_id}")
+        checkpoints = download_checkpoint_from_wandb(
+            sweep_id=args.wandb_sweep_id,
+            download_dir=args.download_dir
+        )
+
+        all_results = []
+        for ckpt_info in checkpoints:
+            print(f"\n{'='*60}")
+            print(f"Evaluating: {ckpt_info['run_name']}")
+            print(f"Config: {ckpt_info['config']}")
+            print(f"{'='*60}")
+
+            # set checkpoint path and derive model config
+            args.checkpoint = ckpt_info['path']
+            model_type = ckpt_info['config'].get('model_type', 'swin')
+            wavelet = ckpt_info['config'].get('wavelet', 'none')
+
+            # Setup device and dataset per-run
+            device = setup_device_and_optimizations(args)
+
+            # Initialize a distinct W&B run per evaluation
+            run_name = f"eval_{ckpt_info['run_name']}"
+            wandb.init(
+                project="brats-middleslice-wavelet-sweep",
+                name=run_name,
+                config=ckpt_info['config'],
+                tags=['evaluation', 'sweep_eval', f"sweep_{args.wandb_sweep_id}"],
+                group=f"sweep_{args.wandb_sweep_id}"
+            )
+
+            # Load dataset
+            print("Loading dataset...")
+            dataset = BraTS2D5Dataset(
+                data_dir=args.data_dir,
+                image_size=(args.img_size, args.img_size),
+                spacing=(1.0, 1.0, 1.0),
+                num_patients=args.num_patients,
+                cache_size=50
+            )
+
+            data_loader = DataLoader(
+                dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=0,
+                pin_memory=(device.type != 'cpu')
+            )
+
+            # Load model and run evaluation
+            print(f"Loading model from {args.checkpoint}...")
+            model = load_model(args.checkpoint, model_type, wavelet, args.img_size, device)
+
+            output_dir = f"{args.output}/{ckpt_info['run_id']}"
+            results, _ = run_evaluation(
+                model=model,
+                data_loader=data_loader,
+                device=device,
+                output_dir=output_dir,
+                model_type=model_type,
+                wavelet_name=wavelet,
+                save_wavelets=(wavelet != 'none')
+            )
+
+            # record metadata
+            results['run_id'] = ckpt_info['run_id']
+            results['run_name'] = ckpt_info['run_name']
+            results['model_type'] = model_type
+            results['wavelet'] = wavelet
+            all_results.append(results)
+
+            print_results(results)
+            wandb.finish()
+
+        # Summarize sweep results and write CSV
+        print(f"\n{'='*60}")
+        print("SWEEP EVALUATION SUMMARY")
+        print(f"{'='*60}")
+        import pandas as pd
+        df = pd.DataFrame(all_results)
+        print(df[['run_name', 'model_type', 'wavelet', 'mse_mean', 'ssim_mean']])
+
+        comparison_path = Path(args.output) / f"sweep_{args.wandb_sweep_id}_comparison.csv"
+        Path(args.output).mkdir(parents=True, exist_ok=True)
+        df.to_csv(comparison_path, index=False)
+        print(f"\nComparison saved to: {comparison_path}")
+        return
+
+    # Single-run download via --wandb_run_id
+    if args.wandb_run_id:
+        print(f"Downloading checkpoint from run: {args.wandb_run_id}")
+        args.checkpoint = download_checkpoint_from_wandb(
+            run_id=args.wandb_run_id,
+            download_dir=args.download_dir
+        )
+        # Try extract training run config
+        try:
+            api = wandb.Api()
+            run = api.run(f"timgsereda/brats-middleslice-wavelet-sweep/{args.wandb_run_id}")
+            # prefer run config where available
+            args.model_type = getattr(args, 'model_type', None) or run.config.get('model_type', 'swin')
+            args.wavelet = getattr(args, 'wavelet', None) or run.config.get('wavelet', 'none')
+            args.img_size = getattr(args, 'img_size', None) or run.config.get('img_size', args.img_size)
+            print(f"Model config: {args.model_type}, wavelet={args.wavelet}")
+        except Exception as e:
+            print(f"Warning: couldn't fetch run metadata: {e}")
+
+    # Continue normal single-checkpoint evaluation (local checkpoint or downloaded run checkpoint)
+    # Device + optimizations
     device = setup_device_and_optimizations(args)
-    
-    # Initialize wandb with test mode tags
+
+    # Initialize W&B (if not already initialized above for per-run loop)
     run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
     wandb_config = vars(args)
     wandb_config['device_type'] = device.type
     wandb_tags = ['evaluation']
     if args.test_mode:
         wandb_tags.append('test_mode')
-    
-    wandb.init(
-        project="brats-middleslice-wavelet-sweep",
-        name=run_name,
-        config=wandb_config,
-        tags=wandb_tags
-    )
-    
+    wandb.init(project="brats-middleslice-wavelet-sweep", name=run_name, config=wandb_config, tags=wandb_tags)
+
     print(f"Using device: {device}")
-    
-    # Load dataset
-    print("Loading dataset...")
-    
-    # Load dataset
+    # Load dataset and dataloader
     print("Loading dataset...")
     dataset = BraTS2D5Dataset(
         data_dir=args.data_dir,
@@ -937,32 +1108,25 @@ def main():
         num_patients=args.num_patients,
         cache_size=50  # prevent OOM by limiting volume cache
     )
-    
-    # Create data loader with CPU-friendly settings
-    pin_memory = device.type != 'cpu'  # Only pin memory for GPU
-    num_workers = 0 if device.type == 'cpu' else 4  # Safer worker count for CPU
-    data_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,  # Don't shuffle for reproducible evaluation
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
-    
+    pin_memory = device.type != 'cpu'
+    num_workers = 0 if device.type == 'cpu' else 4
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+
     # Load model
+    if not args.checkpoint:
+        raise ValueError("No checkpoint provided. Use --checkpoint, --wandb_run_id or --wandb_sweep_id.")
     print(f"Loading model from {args.checkpoint}...")
     model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
-    
-    # Check if we should save wavelets
+
+    # Decide about wavelet saving
     is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
     save_wavelets = (not args.no_save_wavelets) and is_wavelet_model
     if (not args.no_save_wavelets) and not is_wavelet_model:
         print("Warning: wavelet saving only works with wavelet models. Ignoring.")
-    
-    # Quick timing-only evaluation if requested
+
+    # Timing-only mode
     if args.timing_only:
         timing_results = measure_timing_only(model, data_loader, device)
-        
         print(f"\n" + "="*60)
         print("TIMING-ONLY RESULTS")
         print("="*60)
@@ -973,22 +1137,17 @@ def main():
         print(f"Throughput: {timing_results['samples_per_second']:.1f} samples/second")
         print(f"Total samples: {timing_results['total_samples']}")
         print("="*60)
-        
         wandb.log({
             "timing_only/avg_forward_time_ms": timing_results['avg_forward_time_ms'],
             "timing_only/avg_data_load_time_ms": timing_results['avg_data_load_time_ms'],
             "timing_only/samples_per_second": timing_results['samples_per_second'],
             "timing_only/total_samples": timing_results['total_samples'],
         })
-        
         if timing_results['avg_wavelet_time_ms'] > 0:
-            wandb.log({
-                "timing_only/avg_wavelet_time_ms": timing_results['avg_wavelet_time_ms']
-            })
-        
+            wandb.log({"timing_only/avg_wavelet_time_ms": timing_results['avg_wavelet_time_ms']})
         wandb.finish()
         return
-    
+
     # Run full evaluation
     print("Running full evaluation with timing statistics...")
     results, all_metrics = run_evaluation(
@@ -1000,10 +1159,7 @@ def main():
         wavelet_name=args.wavelet,
         save_wavelets=save_wavelets
     )
-    
-    # Print results
     print_results(results)
-    
     wandb.finish()
 
 

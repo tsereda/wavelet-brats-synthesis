@@ -1,0 +1,109 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: midslice-eval-4
+  namespace: gai-lina-group
+  labels:
+    app: tim.wandb-eval
+spec:
+  template:
+    spec:
+      nodeSelector:
+        nautilus.io/linstor: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+      containers:
+      - name: eval-sweep
+        image: nvcr.io/nvidia/pytorch:24.09-py3
+      
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+            pip install wandb monai
+            pip install nibabel>=5.0.0
+            apt update
+            apt install p7zip-full -y
+
+            # Reinstall monai with nibabel support
+            pip install --upgrade "monai[nibabel]>=1.3.0"
+            pip install einops>=0.7.0
+            pip install blobfile
+            pip install scikit-image
+            pip install PyWavelets
+            pip install pandas
+          
+            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+            cd wavelet-brats-synthesis/slice-prediction
+
+            echo "=== Extracting Validation Data ==="
+            7z x /data/ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar.gz -O.
+            7z x ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData.tar -o.
+
+            echo "=== Preprocessing Validation Data ==="
+            python preprocess_slices_to_tensors.py \
+              --data_dir ASNR-MICCAI-BraTS2023-GLI-MET-ValidationData \
+              --output_dir ./preprocessed_slices_val \
+              --img_size 256 \
+              --triplets_per_patient 5 \
+              --seed 42
+
+            echo "=== Checking Preprocessed Data ==="
+            echo "Validation data:"
+            ls -la ./preprocessed_slices_val/ | head -10
+            echo "Total validation files: $(find ./preprocessed_slices_val -name "*.pt" | wc -l)"
+
+            echo "=== Evaluating All Checkpoints from Sweep ==="
+            # Evaluate all checkpoints from the training sweep
+            python evaluate.py \
+              --wandb_sweep_id 5mfl25i8 \
+              --data_dir ./preprocessed_slices_val \
+              --output ./sweep_eval_results \
+              --batch_size 16 \
+              --img_size 256 \
+              --download_dir ./wandb_checkpoints
+
+            echo "=== Evaluation Complete ==="
+            echo "Results saved to ./sweep_eval_results/"
+            ls -la ./sweep_eval_results/
+
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: WANDB_ENTITY
+          value: "timgsereda"
+        - name: WANDB_PROJECT
+          value: "brats-middleslice-wavelet-sweep"
+        resources:
+          requests:
+            memory: "50Gi"
+            cpu: "30"
+            nvidia.com/a100: "1"
+          limits:
+            memory: "60Gi"
+            cpu: "36"
+            nvidia.com/a100: "1"
+      
+        volumeMounts:
+        - name: data-volume
+          mountPath: /data
+        - name: shm
+          mountPath: /dev/shm
+    
+      volumes:
+      - name: data-volume
+        persistentVolumeClaim:
+          claimName: brats2025-4
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+
+      restartPolicy: Never
