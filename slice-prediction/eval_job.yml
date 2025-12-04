@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-eval-2
+  name: midslice-eval-1
   namespace: gai-lina-group
   labels:
     app: tim.wandb-eval
@@ -56,11 +56,11 @@ spec:
             echo "Validation data:"
             ls -la ./preprocessed_slices_val/ | head -10
             echo "Total validation files: $(find ./preprocessed_slices_val -name "*.pt" | wc -l)"
+            mkdir sqeep_eval_results
 
             echo "=== Evaluating All Checkpoints from Sweep ==="
             # Evaluate all checkpoints from the training sweep
             python evaluate.py \
-              --full_volume \
               --wandb_sweep_id 5mfl25i8 \
               --wandb_entity timgsereda \
               --wandb_project wavelet-brats-synthesis-slice-prediction \
@@ -103,7 +103,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-2
+          claimName: brats2025-1
       - name: shm
         emptyDir:
           medium: Memory
