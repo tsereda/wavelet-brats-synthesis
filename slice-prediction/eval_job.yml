@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: midslice-eval-2
+  name: midslice-eval-3
   namespace: gai-lina-group
   labels:
     app: tim.wandb-eval
@@ -103,7 +103,7 @@ spec:
       volumes:
       - name: data-volume
         persistentVolumeClaim:
-          claimName: brats2025-2
+          claimName: brats2025-3
       - name: shm
         emptyDir:
           medium: Memory

@@ -481,21 +481,21 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     )
                     
                     # Create wavelet visualizations
-                    visualize_wavelet_decomposition(
-                        input_wavelets[i],
-                        f'Input Wavelets - {patient_id}',
-                        patient_dir / 'wavelet_input_viz.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        output_wavelets[i],
-                        f'Output Wavelets - {patient_id}',
-                        patient_dir / 'wavelet_output_viz.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        target_wavelets[i],
-                        f'Target Wavelets - {patient_id}',
-                        patient_dir / 'wavelet_target_viz.png'
-                    )
+                    # visualize_wavelet_decomposition(
+                    #     input_wavelets[i],
+                    #     f'Input Wavelets - {patient_id}',
+                    #     patient_dir / 'wavelet_input_viz.png'
+                    # )
+                    # visualize_wavelet_decomposition(
+                    #     output_wavelets[i],
+                    #     f'Output Wavelets - {patient_id}',
+                    #     patient_dir / 'wavelet_output_viz.png'
+                    # )
+                    # visualize_wavelet_decomposition(
+                    #     target_wavelets[i],
+                    #     f'Target Wavelets - {patient_id}',
+                    #     patient_dir / 'wavelet_target_viz.png'
+                    # )
                     
                     # Add to table row
                     table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
