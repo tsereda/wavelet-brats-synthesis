@@ -498,13 +498,13 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     # )
                     
                     # Add to table row
-                    table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
-                    table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
-                    table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
+                    #table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
+                    #table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
+                    #table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
                     
                     # Debug: Log on first few samples to confirm wavelets are being processed
-                    if batch_idx < 3 and i == 0:
-                        print(f"✓ Batch {batch_idx}: Added wavelet images to table for {patient_id} (slice {slice_idx})")
+                    #if batch_idx < 3 and i == 0:
+                    #    print(f"✓ Batch {batch_idx}: Added wavelet images to table for {patient_id} (slice {slice_idx})")
                 else:
                     # Debug: Log why wavelets are missing (only for first batch to avoid spam)
                     if batch_idx == 0 and i == 0:
