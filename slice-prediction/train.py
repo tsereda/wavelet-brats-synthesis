@@ -1526,8 +1526,8 @@ def main(args):
                 })
                 artifact.add_file(checkpoint_path)
                 # log_artifact uploads the file to the current run's artifacts
-                # Ensure the artifact gets a "best" alias so evaluators can find it easily
-                wandb.log_artifact(artifact, aliases=["best", "latest"])
+                # Only use "best" alias for actual best checkpoints, not all checkpoints
+                wandb.log_artifact(artifact, aliases=["best"])
                 log_info(f"Logged best checkpoint to WandB Artifact: {artifact_name}", wandb_kv={'artifact/name': artifact_name})
             except Exception as e:
                 # Don't crash training if WandB artifact upload fails; warn and continue

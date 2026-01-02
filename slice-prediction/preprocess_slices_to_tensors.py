@@ -78,28 +78,36 @@ def build_patient_list(data_dir):
 
 def select_slices_by_strategy(depth, strategy='random', num_triplets=5, margin=3):
     """
-    Select slices based on sampling strategy
-    
+    Select slice indices according to a configurable sampling strategy.
+
+    This function supersedes the previous `select_non_overlapping_triplets`
+    helper by supporting multiple strategies:
+        - 'random': select up to `num_triplets` slices within a safe range,
+          enforcing at least `margin` slices of separation between any two
+          selected indices (non-overlapping triplet-style behavior).
+        - 'every_other': select every second slice within the safe range.
+        - 'all_valid': select all slices within the safe range.
+
     Args:
-        depth: total depth of volume
-        strategy: 'random', 'every_other', or 'all_valid'
-        num_triplets: number of slices for random sampling
-        margin: minimum spacing for random sampling
-    
+        depth: Total depth (number of slices) in the volume.
+        strategy: Sampling strategy to use: 'random', 'every_other', or 'all_valid'.
+        num_triplets: Maximum number of slices to select for 'random' sampling.
+        margin: Minimum spacing (in slice indices) between randomly selected slices.
+
     Returns:
-        list of selected slice indices
+        list of selected slice indices according to the chosen strategy.
     """
     # Conservative bounds (same as original)
     safe_start = max(1, int(0.1 * depth))
     safe_end = min(depth - 2, int(0.8 * depth))
     
     if strategy == 'every_other':
-        # For evaluation: every other slice
-        return list(range(safe_start, safe_end, 2))
+        # For evaluation: every other slice (inclusive of safe_end)
+        return list(range(safe_start, safe_end + 1, 2))
     
     elif strategy == 'all_valid':
-        # For research: all valid slices
-        return list(range(safe_start, safe_end))
+        # For research: all valid slices (inclusive of safe_end)
+        return list(range(safe_start, safe_end + 1))
     
     else:  # random (original behavior)
         if safe_end - safe_start < num_triplets * margin:
@@ -174,7 +182,7 @@ def process_single_patient_optimized(args_tuple):
         
         depth = img_modalities.shape[3]
         
-        # Select slices based on strategy (variables already unpacked from args_tuple at function start)
+        # Select slices based on the configured strategy
         selected_slices = select_slices_by_strategy(
             depth, 
             strategy=strategy,
