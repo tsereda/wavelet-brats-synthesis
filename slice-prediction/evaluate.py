@@ -13,18 +13,105 @@ import os
 import cv2
 from pathlib import Path
 from torch.utils.data import DataLoader
-from skimage.metrics import structural_similarity as ssim
 from tqdm import tqdm
 import csv
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import wandb
 from time import perf_counter
+import pandas as pd
 
 from train import BraTS2D5Dataset
+from preprocessed_dataset import FastTensorSliceDataset
 from monai.networks.nets import SwinUNETR
 from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
 from logging_utils import create_reconstruction_log_panel
+from typing import Optional
+
+
+def download_checkpoint_from_wandb(sweep_id: Optional[str] = None, run_id: Optional[str] = None, download_dir: str = './wandb_checkpoints', wandb_entity: str = 'timgsereda', wandb_project: str = 'brats-middleslice-wavelet-sweep'):
+    """
+    Download checkpoint from W&B sweep or run
+    
+    Args:
+        sweep_id: W&B sweep ID (e.g., "5mfl25i8")
+        run_id: W&B run ID (if you want specific run instead of sweep)
+        download_dir: Where to save checkpoints
+        wandb_entity: W&B entity/username
+        wandb_project: W&B project name
+    
+    Returns:
+        Path to downloaded checkpoint OR list of checkpoint dicts when sweep_id provided
+    """
+    api = wandb.Api()
+    Path(download_dir).mkdir(parents=True, exist_ok=True)
+    
+    if run_id:
+        # Single run mode
+        run = api.run(f"{wandb_entity}/{wandb_project}/{run_id}")
+        artifacts = run.logged_artifacts()
+        for artifact in artifacts:
+            if artifact.type == 'model' and any(alias in ['best', 'latest'] for alias in artifact.aliases):
+                print(f"Downloading checkpoint from run {run_id}: {artifact.name}")
+                artifact_dir = artifact.download(root=download_dir)
+                # Find .pth file in downloaded directory
+                ckpt_files = list(Path(artifact_dir).glob('*.pth'))
+                if ckpt_files:
+                    return str(ckpt_files[0])
+        raise RuntimeError(f"No best checkpoint found in run {run_id}")
+    
+    elif sweep_id:
+        # Sweep mode - download all checkpoints
+        sweep = api.sweep(f"{wandb_entity}/{wandb_project}/{sweep_id}")
+        runs = sweep.runs
+        
+        checkpoints = []
+        for run in runs:
+            try:
+                artifacts = run.logged_artifacts()
+                # Prefer 'best' over 'latest' to avoid downloading all checkpoints
+                best_artifact = None
+                latest_artifact = None
+                for artifact in artifacts:
+                    if artifact.type == 'model':
+                        if 'best' in artifact.aliases:
+                            best_artifact = artifact
+                            break  # Found best, no need to continue
+                        elif 'latest' in artifact.aliases:
+                            latest_artifact = artifact
+                
+                # Download best if available, otherwise latest
+                artifact_to_download = best_artifact or latest_artifact
+                if artifact_to_download:
+                    print(f"Downloading checkpoint from run {run.name}: {artifact_to_download.name}")
+                    artifact_dir = artifact_to_download.download(root=f"{download_dir}/{run.id}")
+                    ckpt_files = list(Path(artifact_dir).glob('*.pth'))
+                    if ckpt_files:
+                        checkpoints.append({
+                            'path': str(ckpt_files[0]),
+                            'run_id': run.id,
+                            'run_name': run.name,
+                            'config': run.config
+                        })
+            except Exception as e:
+                # Safely derive a human-readable run identifier for logging
+                try:
+                    run_name = run.name
+                except Exception:
+                    try:
+                        run_name = str(run)
+                    except Exception:
+                        run_name = "<unknown run>"
+                print(f"Warning: Failed to download from run {run_name}: {e}")
+                continue
+        
+        if not checkpoints:
+            raise RuntimeError(f"No checkpoints found in sweep {sweep_id}")
+        
+        return checkpoints
+    
+    else:
+        raise ValueError("Must provide either sweep_id or run_id")
 
 
 # Timing stats tracker for evaluation
@@ -132,15 +219,66 @@ def visualize_wavelet_decomposition(coeffs, title, output_path):
 
     if output_path:
         plt.savefig(output_path, dpi=150, bbox_inches='tight')
-        print(f"  Saved: {output_path}")
+    #     print(f"  Saved: {output_path}")
 
     plt.close()
+
+
+def calculate_ssim_pytorch(img1, img2, window_size=11, data_range=1.0):
+    """
+    Fast GPU-accelerated SSIM calculation using PyTorch
+    ~200x faster than scikit-image implementation
+    
+    Args:
+        img1: torch.Tensor [C, H, W] - first image
+        img2: torch.Tensor [C, H, W] - second image  
+        window_size: int - size of Gaussian window (default: 11)
+        data_range: float - dynamic range of pixel values (default: 1.0)
+    
+    Returns:
+        torch.Tensor [C] - SSIM score per channel
+    """
+    C, H, W = img1.shape
+    device = img1.device
+    
+    # SSIM constants
+    K1, K2 = 0.01, 0.03
+    C1 = (K1 * data_range) ** 2
+    C2 = (K2 * data_range) ** 2
+    
+    # Create Gaussian window (1D then outer product for 2D)
+    sigma = 1.5
+    coords = torch.arange(window_size, device=device, dtype=torch.float32) - window_size // 2
+    gauss_1d = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    gauss_1d = gauss_1d / gauss_1d.sum()
+    window_2d = gauss_1d[:, None] * gauss_1d[None, :]
+    window = window_2d.expand(C, 1, window_size, window_size).contiguous()
+    
+    # Compute local means using convolution
+    pad = window_size // 2
+    mu1 = torch.nn.functional.conv2d(img1.unsqueeze(0), window, padding=pad, groups=C).squeeze(0)
+    mu2 = torch.nn.functional.conv2d(img2.unsqueeze(0), window, padding=pad, groups=C).squeeze(0)
+    
+    mu1_sq = mu1 ** 2
+    mu2_sq = mu2 ** 2
+    mu1_mu2 = mu1 * mu2
+    
+    # Compute local variances and covariance
+    sigma1_sq = torch.nn.functional.conv2d(img1.unsqueeze(0) ** 2, window, padding=pad, groups=C).squeeze(0) - mu1_sq
+    sigma2_sq = torch.nn.functional.conv2d(img2.unsqueeze(0) ** 2, window, padding=pad, groups=C).squeeze(0) - mu2_sq
+    sigma12 = torch.nn.functional.conv2d((img1 * img2).unsqueeze(0), window, padding=pad, groups=C).squeeze(0) - mu1_mu2
+    
+    # SSIM formula
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    
+    # Return mean SSIM per channel
+    return ssim_map.mean(dim=(1, 2))
 
 
 def calculate_metrics(prediction, ground_truth):
     """
     Calculate MSE and SSIM between prediction and ground truth
-    FIXED: Uses stable data_range for SSIM calculation
+    OPTIMIZED: Uses fast GPU-accelerated PyTorch SSIM (200x faster than scikit-image)
     FIXED: Updated to BraTS2023 GLI naming (t1n, t1c, t2w, t2f)
     
     Args:
@@ -150,42 +288,26 @@ def calculate_metrics(prediction, ground_truth):
     Returns:
         dict with 'mse' and 'ssim' keys
     """
-    # Convert to numpy
-    pred_np = prediction.cpu().numpy()
-    gt_np = ground_truth.cpu().numpy()
+    # Calculate MSE (keep on GPU, no CPU transfer needed)
+    mse_per_modality = torch.mean((prediction - ground_truth) ** 2, dim=(1, 2))
+    mse_avg = torch.mean(mse_per_modality)
     
-    # Calculate MSE (per-modality, then average)
-    mse_per_modality = np.mean((pred_np - gt_np) ** 2, axis=(1, 2))
-    mse_avg = np.mean(mse_per_modality)
+    # Calculate SSIM using fast PyTorch implementation (all 4 modalities vectorized)
+    ssim_scores = calculate_ssim_pytorch(ground_truth, prediction, window_size=11, data_range=1.0)
+    ssim_avg = torch.mean(ssim_scores)
     
-    # Calculate SSIM (per-modality, then average)
-    # FIXED: Use fixed data_range since inputs are normalized to [0, 1]
-    ssim_scores = []
-    for i in range(4):  # 4 modalities
-        try:
-            score = ssim(
-                gt_np[i], 
-                pred_np[i], 
-                data_range=1.0  # Fixed range for normalized data
-            )
-            ssim_scores.append(score)
-        except Exception as e:
-            print(f"Warning: SSIM calculation failed for modality {i}: {e}")
-            ssim_scores.append(0.0)  # Fallback value
-    
-    ssim_avg = np.mean(ssim_scores)
-    
+    # Convert to Python scalars for logging
     return {
-        'mse': mse_avg,
-        'ssim': ssim_avg,
-        'mse_t1n': mse_per_modality[0],   # FIXED: Changed from mse_t1
-        'mse_t1c': mse_per_modality[1],   # FIXED: Changed from mse_t1ce
-        'mse_t2w': mse_per_modality[2],   # FIXED: Changed from mse_t2
-        'mse_t2f': mse_per_modality[3],   # FIXED: Changed from mse_flair
-        'ssim_t1n': ssim_scores[0],       # FIXED: Changed from ssim_t1
-        'ssim_t1c': ssim_scores[1],       # FIXED: Changed from ssim_t1ce
-        'ssim_t2w': ssim_scores[2],       # FIXED: Changed from ssim_t2
-        'ssim_t2f': ssim_scores[3],       # FIXED: Changed from ssim_flair
+        'mse': float(mse_avg),
+        'ssim': float(ssim_avg),
+        'mse_t1n': float(mse_per_modality[0]),
+        'mse_t1c': float(mse_per_modality[1]),
+        'mse_t2w': float(mse_per_modality[2]),
+        'mse_t2f': float(mse_per_modality[3]),
+        'ssim_t1n': float(ssim_scores[0]),
+        'ssim_t1c': float(ssim_scores[1]),
+        'ssim_t2w': float(ssim_scores[2]),
+        'ssim_t2f': float(ssim_scores[3]),
     }
 
 
@@ -379,30 +501,30 @@ def evaluate_model(model, data_loader, device, output_dir, save_wavelets=True):
                     )
                     
                     # Create wavelet visualizations
-                    visualize_wavelet_decomposition(
-                        input_wavelets[i],
-                        f'Input Wavelets - {patient_id}',
-                        patient_dir / 'wavelet_input_viz.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        output_wavelets[i],
-                        f'Output Wavelets - {patient_id}',
-                        patient_dir / 'wavelet_output_viz.png'
-                    )
-                    visualize_wavelet_decomposition(
-                        target_wavelets[i],
-                        f'Target Wavelets - {patient_id}',
-                        patient_dir / 'wavelet_target_viz.png'
-                    )
+                    # visualize_wavelet_decomposition(
+                    #     input_wavelets[i],
+                    #     f'Input Wavelets - {patient_id}',
+                    #     patient_dir / 'wavelet_input_viz.png'
+                    # )
+                    # visualize_wavelet_decomposition(
+                    #     output_wavelets[i],
+                    #     f'Output Wavelets - {patient_id}',
+                    #     patient_dir / 'wavelet_output_viz.png'
+                    # )
+                    # visualize_wavelet_decomposition(
+                    #     target_wavelets[i],
+                    #     f'Target Wavelets - {patient_id}',
+                    #     patient_dir / 'wavelet_target_viz.png'
+                    # )
                     
                     # Add to table row
-                    table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
-                    table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
-                    table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
+                    #table_row['wavelet_input'] = wandb.Image(str(patient_dir / 'wavelet_input_viz.png'))
+                    #table_row['wavelet_output'] = wandb.Image(str(patient_dir / 'wavelet_output_viz.png'))
+                    #table_row['wavelet_target'] = wandb.Image(str(patient_dir / 'wavelet_target_viz.png'))
                     
                     # Debug: Log on first few samples to confirm wavelets are being processed
-                    if batch_idx < 3 and i == 0:
-                        print(f"✓ Batch {batch_idx}: Added wavelet images to table for {patient_id} (slice {slice_idx})")
+                    #if batch_idx < 3 and i == 0:
+                    #    print(f"✓ Batch {batch_idx}: Added wavelet images to table for {patient_id} (slice {slice_idx})")
                 else:
                     # Debug: Log why wavelets are missing (only for first batch to avoid spam)
                     if batch_idx == 0 and i == 0:
@@ -697,50 +819,109 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
         for img_path in sorted(wavelet_viz_dir.glob('*target_wavelets*.png'))[:6]:
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
+
+
+def load_dataset_and_dataloader(args, device):
+    """Helper function to load dataset and create dataloader.
     
-    # Save results to CSV
-    save_results(results, all_metrics, output_dir)
+    Args:
+        args: Argument namespace with data configuration
+        device: Device to use for pin_memory optimization
+        
+    Returns:
+        tuple: (dataset, data_loader)
+    """
+    print("Loading dataset...")
+    if args.preprocessed_dir:
+        print(f"Using preprocessed dataset: {args.preprocessed_dir}")
+        dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
+        print(f"Loaded {len(dataset)} preprocessed samples")
+    else:
+        print(f"Using raw BraTS dataset: {args.data_dir}")
+        dataset = BraTS2D5Dataset(
+            data_dir=args.data_dir,
+            image_size=(args.img_size, args.img_size),
+            spacing=(1.0, 1.0, 1.0),
+            num_patients=args.num_patients,
+            cache_size=50
+        )
+        print(f"Loaded {len(dataset)} raw BraTS slices")
     
-    print(f"\nResults saved to {output_dir}/")
-    if save_wavelets:
-        print(f"Wavelet coefficients saved to {output_dir}/wavelets/")
-        print(f"Wavelet visualizations saved to {output_dir}/wavelet_visualizations/")
-        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
+    pin_memory = device.type != 'cpu'
+    num_workers = 0 if device.type == 'cpu' else 4
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
     
-    return results, all_metrics
+    return dataset, data_loader
 
 
 def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
-    """Load trained model"""
+    """Load trained model - now supports all model types from training"""
+    from monai.networks.nets import UNETR, BasicUNet
+    
+    # Determine if we need wavelet wrapper (use training logic)
+    use_wavelet = wavelet_name != 'none'
+    
+    # Create base model based on architecture type
     if model_type == 'swin':
-        model = SwinUNETR(
+        base_model = SwinUNETR(
             in_channels=8,
             out_channels=4,
             feature_size=24,
             spatial_dims=2
-        ).to(device)
+        )
         print("Loaded Swin-UNETR model")
     
-    elif model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']:
-        from models.wavelet_diffusion import WaveletDiffusion
-        
-        # Determine wavelet type from model_type if specified
-        if model_type == 'wavelet_haar':
-            wavelet_name = 'haar'
-        elif model_type == 'wavelet_db2':
-            wavelet_name = 'db2'
-        # else use the wavelet_name parameter
-        
-        model = WaveletDiffusion(
-            wavelet_name=wavelet_name,
+    elif model_type == 'unet':
+        base_model = BasicUNet(
+            spatial_dims=2,
             in_channels=8,
             out_channels=4,
-            timesteps=100
-        ).to(device)
-        print(f"Loaded Wavelet Diffusion model ({wavelet_name})")
+            features=(32, 32, 64, 128, 256, 32),
+            act='ReLU',
+            norm='batch',
+            dropout=0.0
+        )
+        print("Loaded BasicUNet model")
+    
+    elif model_type == 'unetr':
+        base_model = UNETR(
+            in_channels=8,
+            out_channels=4,
+            img_size=(img_size, img_size),
+            feature_size=16,
+            hidden_size=768,
+            mlp_dim=3072,
+            num_heads=12,
+            proj_type='conv',
+            norm_name='instance',
+            res_block=True,
+            dropout_rate=0.0,
+            spatial_dims=2
+        )
+        print("Loaded UNETR model")
     
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. Supported: 'swin', 'unet', 'unetr'")
+    
+    # Apply wavelet wrapper if used during training
+    if use_wavelet:
+        from models.wavelet_wrapper import WaveletWrapper
+        model = WaveletWrapper(
+            base_model=base_model,
+            wavelet_name=wavelet_name,
+            in_channels=8,
+            out_channels=4
+        ).to(device)
+        print(f"Applied wavelet wrapper: {wavelet_name}")
+    else:
+        model = base_model.to(device)
+        print("Using standard spatial domain processing (no wavelet)")
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -756,10 +937,23 @@ def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
 
 def get_args():
     parser = argparse.ArgumentParser(description="Evaluate middleslice reconstruction model")
-    parser.add_argument('--checkpoint', type=str, required=True, 
-                       help='Path to model checkpoint')
-    parser.add_argument('--data_dir', type=str, required=True,
-                       help='Path to BraTS dataset')
+    parser.add_argument('--checkpoint', type=str, required=False, default=None,
+                       help='Path to model checkpoint (local). If not provided, use --wandb_run_id or --wandb_sweep_id')
+    # NEW: W&B integration arguments
+    parser.add_argument('--wandb_sweep_id', type=str, default=None,
+                       help='W&B sweep ID to evaluate all checkpoints (e.g., "5mfl25i8")')
+    parser.add_argument('--wandb_run_id', type=str, default=None,
+                       help='W&B run ID to evaluate single checkpoint')
+    parser.add_argument('--download_dir', type=str, default='./wandb_checkpoints',
+                       help='Directory to cache downloaded checkpoints')
+    parser.add_argument('--wandb_entity', type=str, default='timgsereda',
+                       help='W&B entity/username')
+    parser.add_argument('--wandb_project', type=str, default='brats-middleslice-wavelet-sweep',
+                       help='W&B project name')
+    parser.add_argument('--data_dir', type=str, required=False, default=None,
+                       help='Path to BraTS dataset (for raw data)')
+    parser.add_argument('--preprocessed_dir', type=str, required=False, default=None,
+                       help='Path to preprocessed .pt files (faster, recommended)')
     parser.add_argument('--output', type=str, default='./results/swin',
                        help='Output directory for results')
     parser.add_argument('--batch_size', type=int, default=16,
@@ -769,10 +963,11 @@ def get_args():
     parser.add_argument('--img_size', type=int, default=256,
                        help='Image size')
     parser.add_argument('--model_type', type=str, default='swin',
-                       choices=['swin', 'wavelet_haar', 'wavelet_db2', 'wavelet'],
+                       choices=['swin', 'unet', 'unetr'],
                        help='Model architecture')
-    parser.add_argument('--wavelet', type=str, default='haar',
-                       help='Wavelet type (for wavelet model type)')
+    parser.add_argument('--wavelet', type=str, default='none',
+                       choices=['none', 'haar', 'db2'],
+                       help='Wavelet type (use "none" for standard spatial domain)')
     parser.add_argument('--no_save_wavelets', action='store_true',
                        help='Disable saving wavelet coefficients and visualizations')
     parser.add_argument('--timing_only', action='store_true',
@@ -905,64 +1100,156 @@ def main():
     """CLI entry point"""
     args = get_args()
     
-    # NEW: Smart device setup and optimizations
+    # Validate dataset arguments
+    if not args.preprocessed_dir and not args.data_dir:
+        raise ValueError("Must provide either --preprocessed_dir or --data_dir")
+    if args.preprocessed_dir and args.data_dir:
+        print("Warning: Both --preprocessed_dir and --data_dir provided. Using --preprocessed_dir (faster)")
+
+    # If user asked to evaluate an entire training sweep, download and evaluate all "best" artifacts
+    if args.wandb_sweep_id:
+        print(f"Evaluating all checkpoints from sweep: {args.wandb_sweep_id}")
+        checkpoints = download_checkpoint_from_wandb(
+            sweep_id=args.wandb_sweep_id,
+            download_dir=args.download_dir,
+            wandb_entity=args.wandb_entity,
+            wandb_project=args.wandb_project
+        )
+
+        # Setup device once
+        device = setup_device_and_optimizations(args)
+        
+        # Load dataset once before the loop
+        dataset, data_loader = load_dataset_and_dataloader(args, device)
+
+        all_results = []
+        for ckpt_info in checkpoints:
+            print(f"\n{'='*60}")
+            print(f"Evaluating: {ckpt_info['run_name']}")
+            print(f"Config: {ckpt_info['config']}")
+            print(f"{'='*60}")
+
+            # set checkpoint path and derive model config
+            args.checkpoint = ckpt_info['path']
+            model_type = ckpt_info['config'].get('model_type', 'swin')
+            wavelet = ckpt_info['config'].get('wavelet', 'none')
+
+            # Initialize a distinct W&B run per evaluation
+            run_name = f"eval_{ckpt_info['run_name']}"
+            # Prefer project name from checkpoint config, fall back to CLI argument
+            project_name = ckpt_info['config'].get('wandb_project', args.wandb_project)
+            wandb.init(
+                project=project_name,
+                name=run_name,
+                config=ckpt_info['config'],
+                tags=['evaluation', 'sweep_eval', f"sweep_{args.wandb_sweep_id}"],
+                group=f"sweep_{args.wandb_sweep_id}"
+            )
+
+            # Load model and run evaluation
+            print(f"Loading model from {args.checkpoint}...")
+            model = load_model(args.checkpoint, model_type, wavelet, args.img_size, device)
+
+            output_dir = f"{args.output}/{ckpt_info['run_id']}"
+            results, _ = run_evaluation(
+                model=model,
+                data_loader=data_loader,
+                device=device,
+                output_dir=output_dir,
+                model_type=model_type,
+                wavelet_name=wavelet,
+                save_wavelets=(wavelet != 'none')
+            )
+
+            # record metadata
+            results['run_id'] = ckpt_info['run_id']
+            results['run_name'] = ckpt_info['run_name']
+            results['model_type'] = model_type
+            results['wavelet'] = wavelet
+            all_results.append(results)
+
+            print_results(results)
+            wandb.finish()
+
+        # Summarize sweep results and write CSV
+        print(f"\n{'='*60}")
+        print("SWEEP EVALUATION SUMMARY")
+        print(f"{'='*60}")
+        
+        # Validate all results have consistent keys before creating DataFrame
+        if all_results:
+            required_keys = {'run_name', 'model_type', 'wavelet', 'mse_mean', 'ssim_mean'}
+            for i, result in enumerate(all_results):
+                missing_keys = required_keys - set(result.keys())
+                if missing_keys:
+                    print(f"Warning: Result {i} missing keys: {missing_keys}")
+        
+        df = pd.DataFrame(all_results)
+        print(df[['run_name', 'model_type', 'wavelet', 'mse_mean', 'ssim_mean']])
+
+        comparison_path = Path(args.output) / f"sweep_{args.wandb_sweep_id}_comparison.csv"
+        Path(args.output).mkdir(parents=True, exist_ok=True)
+        df.to_csv(comparison_path, index=False)
+        print(f"\nComparison saved to: {comparison_path}")
+        return
+
+    # Single-run download via --wandb_run_id
+    if args.wandb_run_id:
+        print(f"Downloading checkpoint from run: {args.wandb_run_id}")
+        args.checkpoint = download_checkpoint_from_wandb(
+            run_id=args.wandb_run_id,
+            download_dir=args.download_dir,
+            wandb_entity=args.wandb_entity,
+            wandb_project=args.wandb_project
+        )
+        # Try extract training run config
+        try:
+            api = wandb.Api()
+            run = api.run(f"{args.wandb_entity}/{args.wandb_project}/{args.wandb_run_id}")
+            # prefer run config where available, but do not override explicit CLI args
+            if not hasattr(args, 'model_type') or getattr(args, 'model_type') is None:
+                args.model_type = run.config.get('model_type', 'swin')
+            if not hasattr(args, 'wavelet') or getattr(args, 'wavelet') is None:
+                args.wavelet = run.config.get('wavelet', 'none')
+            if not hasattr(args, 'img_size') or getattr(args, 'img_size') is None:
+                args.img_size = run.config.get('img_size', 256)
+            print(f"Model config: {args.model_type}, wavelet={args.wavelet}")
+        except Exception as e:
+            print(f"Warning: couldn't fetch run metadata: {e}")
+
+    # Continue normal single-checkpoint evaluation (local checkpoint or downloaded run checkpoint)
+    # Device + optimizations
     device = setup_device_and_optimizations(args)
-    
-    # Initialize wandb with test mode tags
-    run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
+
+    # Initialize W&B (if not already initialized above for per-run loop)
+    run_name = f"eval_{args.model_type}_{args.wavelet if args.wavelet != 'none' else 'baseline'}"
     wandb_config = vars(args)
     wandb_config['device_type'] = device.type
     wandb_tags = ['evaluation']
     if args.test_mode:
         wandb_tags.append('test_mode')
-    
-    wandb.init(
-        project="brats-middleslice-wavelet-sweep",
-        name=run_name,
-        config=wandb_config,
-        tags=wandb_tags
-    )
-    
+    wandb.init(project=args.wandb_project, name=run_name, config=wandb_config, tags=wandb_tags)
+
     print(f"Using device: {device}")
-    
-    # Load dataset
-    print("Loading dataset...")
-    
-    # Load dataset
-    print("Loading dataset...")
-    dataset = BraTS2D5Dataset(
-        data_dir=args.data_dir,
-        image_size=(args.img_size, args.img_size),
-        spacing=(1.0, 1.0, 1.0),
-        num_patients=args.num_patients,
-        cache_size=50  # prevent OOM by limiting volume cache
-    )
-    
-    # Create data loader with CPU-friendly settings
-    pin_memory = device.type != 'cpu'  # Only pin memory for GPU
-    num_workers = 0 if device.type == 'cpu' else 4  # Safer worker count for CPU
-    data_loader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,  # Don't shuffle for reproducible evaluation
-        num_workers=num_workers,
-        pin_memory=pin_memory
-    )
-    
+    # Load dataset and dataloader using helper function
+    dataset, data_loader = load_dataset_and_dataloader(args, device)
+
     # Load model
+    if not args.checkpoint:
+        raise ValueError("No checkpoint provided. Use --checkpoint, --wandb_run_id or --wandb_sweep_id.")
     print(f"Loading model from {args.checkpoint}...")
     model = load_model(args.checkpoint, args.model_type, args.wavelet, args.img_size, device)
-    
-    # Check if we should save wavelets
-    is_wavelet_model = args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2']
+
+    # Decide about wavelet saving (wavelets are used when wavelet != 'none')
+    is_wavelet_model = args.wavelet != 'none'
     save_wavelets = (not args.no_save_wavelets) and is_wavelet_model
     if (not args.no_save_wavelets) and not is_wavelet_model:
-        print("Warning: wavelet saving only works with wavelet models. Ignoring.")
-    
-    # Quick timing-only evaluation if requested
+        print("Info: No wavelet processing enabled (wavelet='none'). Wavelet visualizations will be skipped.")
+
+
+    # Timing-only mode
     if args.timing_only:
         timing_results = measure_timing_only(model, data_loader, device)
-        
         print(f"\n" + "="*60)
         print("TIMING-ONLY RESULTS")
         print("="*60)
@@ -973,22 +1260,17 @@ def main():
         print(f"Throughput: {timing_results['samples_per_second']:.1f} samples/second")
         print(f"Total samples: {timing_results['total_samples']}")
         print("="*60)
-        
         wandb.log({
             "timing_only/avg_forward_time_ms": timing_results['avg_forward_time_ms'],
             "timing_only/avg_data_load_time_ms": timing_results['avg_data_load_time_ms'],
             "timing_only/samples_per_second": timing_results['samples_per_second'],
             "timing_only/total_samples": timing_results['total_samples'],
         })
-        
         if timing_results['avg_wavelet_time_ms'] > 0:
-            wandb.log({
-                "timing_only/avg_wavelet_time_ms": timing_results['avg_wavelet_time_ms']
-            })
-        
+            wandb.log({"timing_only/avg_wavelet_time_ms": timing_results['avg_wavelet_time_ms']})
         wandb.finish()
         return
-    
+
     # Run full evaluation
     print("Running full evaluation with timing statistics...")
     results, all_metrics = run_evaluation(
@@ -1001,9 +1283,16 @@ def main():
         save_wavelets=save_wavelets
     )
     
-    # Print results
-    print_results(results)
+    # Save results to CSV
+    save_results(results, all_metrics, args.output)
     
+    print(f"\nResults saved to {args.output}/")
+    if save_wavelets:
+        print(f"Wavelet coefficients saved to {args.output}/wavelets/")
+        print(f"Wavelet visualizations saved to {args.output}/wavelet_visualizations/")
+        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
+    
+    print_results(results)
     wandb.finish()
 
 

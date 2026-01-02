@@ -152,7 +152,7 @@ def main():
     
     all_passed = all(p for _, p in results)
     if all_passed:
-        print("\n🎉 All configurations passed! Ready to train.")
+        print("\nAll configurations passed! Ready to train.")
     else:
         failed_configs = [(m,w) for (m,w), p in results if not p]
         print(f"\n⚠️ {len(failed_configs)} configuration(s) failed. Please check the errors above.")

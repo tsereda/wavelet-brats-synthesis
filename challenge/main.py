@@ -103,8 +103,8 @@ def main():
         sys.exit(1)
    
     print("=" * 60)
-    print("🎉 Fast-CWDM synthesis completed successfully!")
-    print(f"📤 Ready for BraTS Challenge evaluation")
+    print("Fast-CWDM synthesis completed successfully!")
+    print(f"Ready for BraTS Challenge evaluation")
 
 if __name__ == "__main__":
     main()

@@ -179,14 +179,14 @@ def main():
     create_comparison_grid(file_examples, input_dir.name)
     
     print("\n" + "=" * 60)
-    print("🎉 PREVIEW COMPLETE!")
-    print("📸 Check 'label_swap_preview_grid.png' to see the results")
-    print("👀 Compare the top row (original) vs bottom row (swapped)")
-    print("🔍 Look for:")
+    print("PREVIEW COMPLETE!")
+    print("Check 'label_swap_preview_grid.png' to see the results")
+    print("Compare the top row (original) vs bottom row (swapped)")
+    print("Look for:")
     print("   - Are labels 1 & 2 (different colors) swapping positions?")
     print("   - Does the swapped version look more reasonable?")
     print("   - Are labels 3 (core regions) staying the same?")
-    print("💡 NOTE: Floating point precision issues have been automatically fixed!")
+    print("NOTE: Floating point precision issues have been automatically fixed!")
     
     response = input(f"\nIf the preview looks good, run the full batch on all {len(pred_files)} files? (y/n): ")
     
@@ -247,7 +247,7 @@ def main():
                 print(f"❌ Error: {e}")
                 total_files_analyzed += 1
         
-        print(f"\n🎉 Batch processing complete! {successful}/{total_files_analyzed} files processed")
+        print(f"\nBatch processing complete! {successful}/{total_files_analyzed} files processed")
         print(f"📁 All '*-seg.nii.gz' files were modified IN-PLACE.")
         print("💡 All files now have clean integer labels AND 1↔2 swap applied!")
         print(f"🔍 Test with: python app/utils/check_single_seg.py {input_dir}/[...]/<filename>")
