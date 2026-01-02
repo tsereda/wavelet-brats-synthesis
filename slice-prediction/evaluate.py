@@ -1282,6 +1282,16 @@ def main():
         wavelet_name=args.wavelet,
         save_wavelets=save_wavelets
     )
+    
+    # Save results to CSV
+    save_results(results, all_metrics, args.output)
+    
+    print(f"\nResults saved to {args.output}/")
+    if save_wavelets:
+        print(f"Wavelet coefficients saved to {args.output}/wavelets/")
+        print(f"Wavelet visualizations saved to {args.output}/wavelet_visualizations/")
+        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
+    
     print_results(results)
     wandb.finish()
 
