@@ -858,17 +858,6 @@ def load_dataset_and_dataloader(args, device):
     )
     
     return dataset, data_loader
-    
-    # Save results to CSV
-    save_results(results, all_metrics, output_dir)
-    
-    print(f"\nResults saved to {output_dir}/")
-    if save_wavelets:
-        print(f"Wavelet coefficients saved to {output_dir}/wavelets/")
-        print(f"Wavelet visualizations saved to {output_dir}/wavelet_visualizations/")
-        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
-    
-    return results, all_metrics
 
 
 def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
