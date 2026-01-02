@@ -1212,7 +1212,7 @@ def main():
             if not hasattr(args, 'wavelet') or getattr(args, 'wavelet') is None:
                 args.wavelet = run.config.get('wavelet', 'none')
             if not hasattr(args, 'img_size') or getattr(args, 'img_size') is None:
-                args.img_size = run.config.get('img_size', args.img_size)
+                args.img_size = run.config.get('img_size', 256)
             print(f"Model config: {args.model_type}, wavelet={args.wavelet}")
         except Exception as e:
             print(f"Warning: couldn't fetch run metadata: {e}")
@@ -1228,7 +1228,7 @@ def main():
     wandb_tags = ['evaluation']
     if args.test_mode:
         wandb_tags.append('test_mode')
-    wandb.init(project="brats-middleslice-wavelet-sweep", name=run_name, config=wandb_config, tags=wandb_tags)
+    wandb.init(project=args.wandb_project, name=run_name, config=wandb_config, tags=wandb_tags)
 
     print(f"Using device: {device}")
     # Load dataset and dataloader using helper function
