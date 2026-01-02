@@ -11,26 +11,25 @@ import numpy as np
 import argparse
 import os
 import cv2
-import glob
 from pathlib import Path
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 import csv
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
 import wandb
 from time import perf_counter
+import pandas as pd
 
 from train import BraTS2D5Dataset
-from transforms import get_train_transforms
 from preprocessed_dataset import FastTensorSliceDataset
 from monai.networks.nets import SwinUNETR
 from utils import extract_patient_info, get_patient_output_dir, save_slice_outputs
 from logging_utils import create_reconstruction_log_panel
-from typing import Union
+from typing import Optional
 
 
-def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Union[str, None]=None, download_dir: str = './wandb_checkpoints', wandb_entity: str = 'timgsereda', wandb_project: str = 'brats-middleslice-wavelet-sweep'):
+def download_checkpoint_from_wandb(sweep_id: Optional[str] = None, run_id: Optional[str] = None, download_dir: str = './wandb_checkpoints', wandb_entity: str = 'timgsereda', wandb_project: str = 'brats-middleslice-wavelet-sweep'):
     """
     Download checkpoint from W&B sweep or run
     
@@ -70,20 +69,40 @@ def download_checkpoint_from_wandb(sweep_id: Union[str, None]=None, run_id: Unio
         for run in runs:
             try:
                 artifacts = run.logged_artifacts()
+                # Prefer 'best' over 'latest' to avoid downloading all checkpoints
+                best_artifact = None
+                latest_artifact = None
                 for artifact in artifacts:
-                    if artifact.type == 'model' and any(alias in ['best', 'latest'] for alias in artifact.aliases):
-                        print(f"Downloading checkpoint from run {run.name}: {artifact.name}")
-                        artifact_dir = artifact.download(root=f"{download_dir}/{run.id}")
-                        ckpt_files = list(Path(artifact_dir).glob('*.pth'))
-                        if ckpt_files:
-                            checkpoints.append({
-                                'path': str(ckpt_files[0]),
-                                'run_id': run.id,
-                                'run_name': run.name,
-                                'config': run.config
-                            })
+                    if artifact.type == 'model':
+                        if 'best' in artifact.aliases:
+                            best_artifact = artifact
+                            break  # Found best, no need to continue
+                        elif 'latest' in artifact.aliases:
+                            latest_artifact = artifact
+                
+                # Download best if available, otherwise latest
+                artifact_to_download = best_artifact or latest_artifact
+                if artifact_to_download:
+                    print(f"Downloading checkpoint from run {run.name}: {artifact_to_download.name}")
+                    artifact_dir = artifact_to_download.download(root=f"{download_dir}/{run.id}")
+                    ckpt_files = list(Path(artifact_dir).glob('*.pth'))
+                    if ckpt_files:
+                        checkpoints.append({
+                            'path': str(ckpt_files[0]),
+                            'run_id': run.id,
+                            'run_name': run.name,
+                            'config': run.config
+                        })
             except Exception as e:
-                print(f"Warning: Failed to download from run {getattr(run, 'name', str(run))}: {e}")
+                # Safely derive a human-readable run identifier for logging
+                try:
+                    run_name = run.name
+                except Exception:
+                    try:
+                        run_name = str(run)
+                    except Exception:
+                        run_name = "<unknown run>"
+                print(f"Warning: Failed to download from run {run_name}: {e}")
                 continue
         
         if not checkpoints:
@@ -229,7 +248,8 @@ def calculate_ssim_pytorch(img1, img2, window_size=11, data_range=1.0):
     
     # Create Gaussian window (1D then outer product for 2D)
     sigma = 1.5
-    gauss_1d = torch.exp(-torch.arange(window_size, device=device).float() ** 2 / (2 * sigma ** 2))
+    coords = torch.arange(window_size, device=device, dtype=torch.float32) - window_size // 2
+    gauss_1d = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
     gauss_1d = gauss_1d / gauss_1d.sum()
     window_2d = gauss_1d[:, None] * gauss_1d[None, :]
     window = window_2d.expand(C, 1, window_size, window_size).contiguous()
@@ -799,17 +819,45 @@ def run_evaluation(model, data_loader, device, output_dir, model_type, wavelet_n
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
         for img_path in sorted(wavelet_viz_dir.glob('*target_wavelets*.png'))[:6]:
             wandb.log({f"wavelets/{img_path.stem}": wandb.Image(str(img_path))})
+
+
+def load_dataset_and_dataloader(args, device):
+    """Helper function to load dataset and create dataloader.
     
-    # Save results to CSV
-    save_results(results, all_metrics, output_dir)
+    Args:
+        args: Argument namespace with data configuration
+        device: Device to use for pin_memory optimization
+        
+    Returns:
+        tuple: (dataset, data_loader)
+    """
+    print("Loading dataset...")
+    if args.preprocessed_dir:
+        print(f"Using preprocessed dataset: {args.preprocessed_dir}")
+        dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
+        print(f"Loaded {len(dataset)} preprocessed samples")
+    else:
+        print(f"Using raw BraTS dataset: {args.data_dir}")
+        dataset = BraTS2D5Dataset(
+            data_dir=args.data_dir,
+            image_size=(args.img_size, args.img_size),
+            spacing=(1.0, 1.0, 1.0),
+            num_patients=args.num_patients,
+            cache_size=50
+        )
+        print(f"Loaded {len(dataset)} raw BraTS slices")
     
-    print(f"\nResults saved to {output_dir}/")
-    if save_wavelets:
-        print(f"Wavelet coefficients saved to {output_dir}/wavelets/")
-        print(f"Wavelet visualizations saved to {output_dir}/wavelet_visualizations/")
-        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
+    pin_memory = device.type != 'cpu'
+    num_workers = 0 if device.type == 'cpu' else 4
+    data_loader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory
+    )
     
-    return results, all_metrics
+    return dataset, data_loader
 
 
 def load_model(checkpoint_path, model_type, wavelet_name, img_size, device):
@@ -1068,6 +1116,12 @@ def main():
             wandb_project=args.wandb_project
         )
 
+        # Setup device once
+        device = setup_device_and_optimizations(args)
+        
+        # Load dataset once before the loop
+        dataset, data_loader = load_dataset_and_dataloader(args, device)
+
         all_results = []
         for ckpt_info in checkpoints:
             print(f"\n{'='*60}")
@@ -1080,42 +1134,16 @@ def main():
             model_type = ckpt_info['config'].get('model_type', 'swin')
             wavelet = ckpt_info['config'].get('wavelet', 'none')
 
-            # Setup device and dataset per-run
-            device = setup_device_and_optimizations(args)
-
             # Initialize a distinct W&B run per evaluation
             run_name = f"eval_{ckpt_info['run_name']}"
+            # Prefer project name from checkpoint config, fall back to CLI argument
+            project_name = ckpt_info['config'].get('wandb_project', args.wandb_project)
             wandb.init(
-                project="brats-middleslice-wavelet-sweep",
+                project=project_name,
                 name=run_name,
                 config=ckpt_info['config'],
                 tags=['evaluation', 'sweep_eval', f"sweep_{args.wandb_sweep_id}"],
                 group=f"sweep_{args.wandb_sweep_id}"
-            )
-
-            # Load dataset
-            print("Loading dataset...")
-            if args.preprocessed_dir:
-                print(f"Using preprocessed dataset: {args.preprocessed_dir}")
-                dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
-                print(f"Loaded {len(dataset)} preprocessed samples")
-            else:
-                print(f"Using raw BraTS dataset: {args.data_dir}")
-                dataset = BraTS2D5Dataset(
-                    data_dir=args.data_dir,
-                    image_size=(args.img_size, args.img_size),
-                    spacing=(1.0, 1.0, 1.0),
-                    num_patients=args.num_patients,
-                    cache_size=50
-                )
-                print(f"Loaded {len(dataset)} raw BraTS slices")
-
-            data_loader = DataLoader(
-                dataset,
-                batch_size=args.batch_size,
-                shuffle=False,
-                num_workers=0,
-                pin_memory=(device.type != 'cpu')
             )
 
             # Load model and run evaluation
@@ -1147,7 +1175,15 @@ def main():
         print(f"\n{'='*60}")
         print("SWEEP EVALUATION SUMMARY")
         print(f"{'='*60}")
-        import pandas as pd
+        
+        # Validate all results have consistent keys before creating DataFrame
+        if all_results:
+            required_keys = {'run_name', 'model_type', 'wavelet', 'mse_mean', 'ssim_mean'}
+            for i, result in enumerate(all_results):
+                missing_keys = required_keys - set(result.keys())
+                if missing_keys:
+                    print(f"Warning: Result {i} missing keys: {missing_keys}")
+        
         df = pd.DataFrame(all_results)
         print(df[['run_name', 'model_type', 'wavelet', 'mse_mean', 'ssim_mean']])
 
@@ -1170,10 +1206,13 @@ def main():
         try:
             api = wandb.Api()
             run = api.run(f"{args.wandb_entity}/{args.wandb_project}/{args.wandb_run_id}")
-            # prefer run config where available
-            args.model_type = getattr(args, 'model_type', None) or run.config.get('model_type', 'swin')
-            args.wavelet = getattr(args, 'wavelet', None) or run.config.get('wavelet', 'none')
-            args.img_size = getattr(args, 'img_size', None) or run.config.get('img_size', args.img_size)
+            # prefer run config where available, but do not override explicit CLI args
+            if not hasattr(args, 'model_type') or getattr(args, 'model_type') is None:
+                args.model_type = run.config.get('model_type', 'swin')
+            if not hasattr(args, 'wavelet') or getattr(args, 'wavelet') is None:
+                args.wavelet = run.config.get('wavelet', 'none')
+            if not hasattr(args, 'img_size') or getattr(args, 'img_size') is None:
+                args.img_size = run.config.get('img_size', 256)
             print(f"Model config: {args.model_type}, wavelet={args.wavelet}")
         except Exception as e:
             print(f"Warning: couldn't fetch run metadata: {e}")
@@ -1183,35 +1222,17 @@ def main():
     device = setup_device_and_optimizations(args)
 
     # Initialize W&B (if not already initialized above for per-run loop)
-    run_name = f"eval_{args.model_type}_{args.wavelet if args.model_type in ['wavelet', 'wavelet_haar', 'wavelet_db2'] else 'baseline'}"
+    run_name = f"eval_{args.model_type}_{args.wavelet if args.wavelet != 'none' else 'baseline'}"
     wandb_config = vars(args)
     wandb_config['device_type'] = device.type
     wandb_tags = ['evaluation']
     if args.test_mode:
         wandb_tags.append('test_mode')
-    wandb.init(project="brats-middleslice-wavelet-sweep", name=run_name, config=wandb_config, tags=wandb_tags)
+    wandb.init(project=args.wandb_project, name=run_name, config=wandb_config, tags=wandb_tags)
 
     print(f"Using device: {device}")
-    # Load dataset and dataloader
-    print("Loading dataset...")
-    if args.preprocessed_dir:
-        print(f"Using preprocessed dataset: {args.preprocessed_dir}")
-        dataset = FastTensorSliceDataset(preprocessed_dir=args.preprocessed_dir)
-        print(f"Loaded {len(dataset)} preprocessed samples")
-    else:
-        print(f"Using raw BraTS dataset: {args.data_dir}")
-        dataset = BraTS2D5Dataset(
-            data_dir=args.data_dir,
-            image_size=(args.img_size, args.img_size),
-            spacing=(1.0, 1.0, 1.0),
-            num_patients=args.num_patients,
-            cache_size=50  # prevent OOM by limiting volume cache
-        )
-        print(f"Loaded {len(dataset)} raw BraTS slices")
-    
-    pin_memory = device.type != 'cpu'
-    num_workers = 0 if device.type == 'cpu' else 4
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
+    # Load dataset and dataloader using helper function
+    dataset, data_loader = load_dataset_and_dataloader(args, device)
 
     # Load model
     if not args.checkpoint:
@@ -1261,6 +1282,16 @@ def main():
         wavelet_name=args.wavelet,
         save_wavelets=save_wavelets
     )
+    
+    # Save results to CSV
+    save_results(results, all_metrics, args.output)
+    
+    print(f"\nResults saved to {args.output}/")
+    if save_wavelets:
+        print(f"Wavelet coefficients saved to {args.output}/wavelets/")
+        print(f"Wavelet visualizations saved to {args.output}/wavelet_visualizations/")
+        print(f"  -> Now showing ALL 8 input channels (Z-1 and Z+1 slices)")
+    
     print_results(results)
     wandb.finish()
 

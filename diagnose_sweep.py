@@ -63,8 +63,8 @@ def diagnose_sweep(sweep_id, entity='timgsereda', project='wavelet-brats-synthes
                 has_checkpoint = any('.pth' in f.name or '.pt' in f.name for f in files)
                 if has_checkpoint:
                     runs_with_checkpoints += 1
-            except:
-                pass
+            except Exception as e:
+                print(f"  Error listing files for run {run.id} in summary: {e}")
         
         print(f"Runs with model artifacts: {runs_with_artifacts}/{len(runs)}")
         print(f"Runs with checkpoint files: {runs_with_checkpoints}/{len(runs)}")
