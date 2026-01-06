@@ -189,6 +189,9 @@ Examples:
   # Default: Create sweep + deploy 4 pods
   python manage_training.py
   
+  # Use custom sweep configuration
+  python manage_training.py --sweep-file sweep_ablation.yml
+  
   # Create sweep + deploy jobs
   python manage_training.py --job
   
@@ -203,6 +206,8 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
                        help='W&B entity (default: timgsereda)')
     parser.add_argument('--project', type=str, default='wavelet-brats-synthesis',
                        help='W&B project (default: wavelet-brats-synthesis)')
+    parser.add_argument('--sweep-file', type=str, default='sweep.yml',
+                       help='Path to sweep configuration file (default: sweep.yml)')
     parser.add_argument('--num-agents', type=int, default=4,
                        help='Number of sweep agents to deploy (default: 4)')
     parser.add_argument('--job', action='store_true',
@@ -216,7 +221,11 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
     
     # Create sweep
     print("\n[Step 1/3] Creating W&B sweep...")
-    sweep_id = create_sweep(entity=args.entity, project=args.project)
+    sweep_id = create_sweep(
+        config_path=args.sweep_file,
+        entity=args.entity, 
+        project=args.project
+    )
     
     if not sweep_id:
         print("❌ Failed to create sweep. Aborting...")
