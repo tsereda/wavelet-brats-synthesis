@@ -1,0 +1,112 @@
+# Complete Ablation Study: 9 Runs (3 Methods × 3 Wavelets)
+# Research Question: Which components of Fast-cWDM contribute most to performance?
+# 
+# Methods:
+#   - direct: Single forward pass (no diffusion)
+#   - diffusion_fast: T=100, sampled schedule (your BraTS 2025 submission)
+#   - diffusion_standard: T=100, direct schedule
+#
+# Wavelets:
+#   - null: Baseline (no wavelet decomposition)
+#   - haar: Haar wavelet (your submission)
+#   - db2: Daubechies-2 (smoother, longer support)
+
+project: fast-cwdm-ablation-study
+program: app/scripts/train.py
+command:
+  - ${env}
+  - PYTHONPATH=${PYTHONPATH}:./app
+  - python
+  - ${program}
+  - ${args}
+method: grid
+metric:
+  name: eval/dice_wt
+  goal: maximize
+
+parameters:
+  # Fixed optimal hyperparameters from BraTS 2025 submission
+  data_dir:
+    value: ./datasets/BRATS2023/training
+  dataset:
+    value: brats
+  image_size:
+    value: 224
+  batch_size:
+    value: 2
+  lr:
+    value: 1e-4
+  num_channels:
+    value: 64
+  in_channels:
+    value: 32  # 8 wavelet components × 4 modalities
+  out_channels:
+    value: 8   # 8 wavelet components for target
+  channel_mult:
+    value: "1,2,2,4,4"
+  num_workers:
+    value: 12
+  dims:
+    value: 3
+  attention_resolutions:
+    value: ""
+  num_heads:
+    value: 1
+  bottleneck_attention:
+    value: false
+  num_groups:
+    value: 32
+  
+  # Training configuration
+  diffusion_steps:
+    value: 100
+  save_interval:
+    value: 10000
+  log_interval:
+    value: 100
+  special_checkpoint_steps:
+    value: "47500,100000,150000,200000"
+  save_to_wandb:
+    value: true
+  
+  # ABLATION GRID DIMENSIONS (3 × 3 = 9 runs)
+  
+  # Method: Direct regression vs Diffusion approaches
+  model_mode:
+    values: ['direct', 'diffusion_fast', 'diffusion_standard']
+  
+  # Wavelet: None (baseline) vs Haar vs Daubechies-2
+  wavelet:
+    values: [null, 'haar', 'db2']
+  
+  # Sample schedule (controlled by model_mode)
+  sample_schedule:
+    # Auto-set based on model_mode:
+    # direct → 'direct' (unused)
+    # diffusion_fast → 'sampled'
+    # diffusion_standard → 'direct'
+    value: sampled  # Overridden by model_mode
+  
+  # Train all 4 modalities in sequence (or specify one)
+  contr:
+    values: ['t1n', 't1c', 't2w', 't2f']
+  
+  # Auto-computed based on wavelet
+  use_freq:
+    # null → false (baseline UNet in image space)
+    # haar/db2 → true (WavUNet in wavelet space)
+    value: true  # Overridden based on wavelet
+
+# Expected results structure:
+# 
+# Run 1: direct + null (baseline regression)
+# Run 2: direct + haar (regression with wavelets)
+# Run 3: direct + db2 (regression with db2)
+# Run 4: diffusion_fast + null (your Fast-DDPM baseline)
+# Run 5: diffusion_fast + haar (YOUR SUBMISSION - 0.872 WT Dice)
+# Run 6: diffusion_fast + db2 (Fast-DDPM with db2)
+# Run 7: diffusion_standard + null (standard DDPM baseline)
+# Run 8: diffusion_standard + haar (standard DDPM with haar)
+# Run 9: diffusion_standard + db2 (standard DDPM with db2)
+#
+# Each run trains all 4 modalities (t1n, t1c, t2w, t2f) for 200k iterations

@@ -1,6 +1,7 @@
 """
 A script for training a diffusion model for paired image-to-image translation.
 FIXED: Proper import handling for app/ directory structure
+ENHANCED: Support for direct regression (no diffusion) mode
 """
 
 import argparse
@@ -30,7 +31,7 @@ from guided_diffusion.script_util import (
     args_to_dict, 
     add_dict_to_argparser
 )
-from guided_diffusion.train_util import TrainLoop
+from guided_diffusion.train_util import TrainLoop, DirectRegressionLoop
 from guided_diffusion.bratsloader import BRATSVolumes
 
 
@@ -57,9 +58,42 @@ def setup_training(args):
     else:
         special_checkpoint_steps = args.special_checkpoint_steps
     
+    # 🆕 Parse model_mode to set sample_schedule
+    model_mode = args.model_mode
+    if model_mode == 'direct':
+        # Direct regression mode - no diffusion
+        use_direct_regression = True
+        sample_schedule = 'direct'  # Unused but set for consistency
+        print("🚀 MODE: Direct Regression (no diffusion)")
+    elif model_mode == 'diffusion_fast':
+        # Fast-cWDM: T=100, sampled schedule
+        use_direct_regression = False
+        sample_schedule = 'sampled'
+        print("🚀 MODE: Fast Diffusion (T=100, sampled schedule)")
+    elif model_mode == 'diffusion_standard':
+        # Standard DDPM: T=100, direct schedule
+        use_direct_regression = False
+        sample_schedule = 'direct'
+        print("🚀 MODE: Standard Diffusion (T=100, direct schedule)")
+    else:
+        raise ValueError(f"Invalid model_mode: {model_mode}. Must be 'direct', 'diffusion_fast', or 'diffusion_standard'")
+    
+    # Override sample_schedule from mode
+    args.sample_schedule = sample_schedule
+    
+    # 🆕 Handle wavelet parameter (null → None for use_freq logic)
+    if args.wavelet == 'null' or args.wavelet is None:
+        args.wavelet = None
+        args.use_freq = False
+        print("🔧 Wavelet: None (baseline, image space)")
+    else:
+        args.use_freq = True
+        print(f"🔧 Wavelet: {args.wavelet} (wavelet space)")
+    
+    print(f"[CONFIG] model_mode={model_mode}")
     print(f"[CONFIG] lr={args.lr}, batch_size={args.batch_size}, contr={args.contr}")
-    print(f"[CONFIG] sample_schedule={args.sample_schedule}, diffusion_steps={args.diffusion_steps}")
-    print(f"[CONFIG] wavelet={args.wavelet}")
+    print(f"[CONFIG] sample_schedule={sample_schedule}, diffusion_steps={args.diffusion_steps}")
+    print(f"[CONFIG] wavelet={args.wavelet}, use_freq={args.use_freq}")
     print(f"[CONFIG] special_checkpoint_steps={special_checkpoint_steps}")
     print(f"[CONFIG] save_to_wandb={args.save_to_wandb}")
     print(f"[CONFIG] resume_checkpoint={args.resume_checkpoint}")
@@ -70,18 +104,31 @@ def setup_training(args):
     model, diffusion = create_model_and_diffusion(**model_args)
     model.to(dist_util.dev())
     
-    schedule_sampler = create_named_schedule_sampler(
-        args.schedule_sampler, diffusion, maxt=diffusion.num_timesteps
-    )
-    
     # Load dataset
     ds = BRATSVolumes(args.data_dir, mode='train', wavelet=args.wavelet)
     dataloader = th.utils.data.DataLoader(
         ds, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True
     )
     
-    print("Starting training...")
-    TrainLoop(
+    # Select training loop based on mode
+    if use_direct_regression:
+        print("Starting Direct Regression training...")
+        TrainLoopClass = DirectRegressionLoop
+        # Direct regression doesn't need schedule_sampler
+        loop_kwargs = dict(
+            schedule_sampler=None
+        )
+    else:
+        print("Starting Diffusion Model training...")
+        TrainLoopClass = TrainLoop
+        schedule_sampler = create_named_schedule_sampler(
+            args.schedule_sampler, diffusion, maxt=diffusion.num_timesteps
+        )
+        loop_kwargs = dict(
+            schedule_sampler=schedule_sampler
+        )
+    
+    TrainLoopClass(
         model=model,
         diffusion=diffusion,
         data=dataloader,
@@ -97,7 +144,6 @@ def setup_training(args):
         resume_step=args.resume_step,
         use_fp16=args.use_fp16,
         fp16_scale_growth=args.fp16_scale_growth,
-        schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
         dataset=args.dataset,
@@ -109,6 +155,7 @@ def setup_training(args):
         wavelet=args.wavelet,
         special_checkpoint_steps=special_checkpoint_steps,
         save_to_wandb=args.save_to_wandb,
+        **loop_kwargs
     ).run_loop()
 
 
@@ -136,6 +183,7 @@ def create_argparser():
         wavelet='haar',
         special_checkpoint_steps="75400,100000,200000",
         save_to_wandb=True,
+        model_mode='diffusion_fast',  # 🆕 NEW: 'direct', 'diffusion_fast', 'diffusion_standard'
     )
     defaults.update(model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

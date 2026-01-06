@@ -74,7 +74,7 @@ parameters:
 """
     with open('sweep.yml', 'w') as f:
         f.write(default_config)
-    print("✅ Created default sweep.yml")
+    print("Created default sweep.yml")
 
 
 def create_sweep(config_path="sweep.yml", entity=None, project=None):
@@ -90,19 +90,19 @@ def create_sweep(config_path="sweep.yml", entity=None, project=None):
     entity = entity or config.get('entity', 'timgsereda')
     project = project or config.get('project', 'fast-cwdm-brats')
     
-    print(f"\n📊 Creating W&B sweep in {entity}/{project}")
+    print(f"\nCreating W&B sweep in {entity}/{project}")
     
     try:
         # Create sweep
         sweep_id = wandb.sweep(config, entity=entity, project=project)
         
-        print(f"✅ Sweep created: {sweep_id}")
-        print(f"🔗 View at: https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}")
+        print(f"Sweep created: {sweep_id}")
+        print(f"View at: https://wandb.ai/{entity}/{project}/sweeps/{sweep_id}")
         
         return sweep_id
         
     except Exception as e:
-        print(f"❌ Error creating sweep: {e}")
+        print(f"Error creating sweep: {e}")
         return None
 
 
@@ -211,7 +211,7 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
     args = parser.parse_args()
     
     print("=" * 60)
-    print("🧠 BraTS Training Management")
+    print("BraTS Training Management")
     print("=" * 60)
     
     # Create sweep

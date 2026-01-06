@@ -88,7 +88,17 @@ class TrainLoop:
             self.grad_scaler = amp.GradScaler()
         else:
             self.grad_scaler = amp.GradScaler(enabled=False)
-        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        
+        # Initialize schedule_sampler (will be None for DirectRegressionLoop)
+        if schedule_sampler is not None:
+            self.schedule_sampler = schedule_sampler
+        elif hasattr(self, '_skip_schedule_sampler'):
+            # DirectRegressionLoop sets this flag before calling super().__init__
+            self.schedule_sampler = None
+        else:
+            # Default: create UniformSampler for regular diffusion training
+            self.schedule_sampler = UniformSampler(diffusion, maxt=diffusion.num_timesteps)
+        
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
         
@@ -104,8 +114,13 @@ class TrainLoop:
         self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
         
         # Initialize wavelet transforms (requires self.wavelet to be set)
-        self.dwt = DWT_3D(self.wavelet)
-        self.idwt = IDWT_3D(self.wavelet)
+        # Only create DWT/IDWT if using wavelets (not None or "null")
+        if self.wavelet and self.wavelet != 'null':
+            self.dwt = DWT_3D(self.wavelet)
+            self.idwt = IDWT_3D(self.wavelet)
+        else:
+            self.dwt = None
+            self.idwt = None
         
         # ✅ FIXED: Proper step counter initialization
         # Start from resume_step if resuming, otherwise start from 0
@@ -700,3 +715,174 @@ def log_loss_dict(diffusion, ts, losses):
         else:
             # Handle scalar values (like hybrid_loss)
             logger.logkv_mean(key, values.item() if hasattr(values, 'item') else values)
+
+
+class DirectRegressionLoop(TrainLoop):
+    """
+    Direct regression training loop (no diffusion).
+    Single forward pass: input_modalities → target_modality
+    
+    Key differences from diffusion:
+    - No timestep sampling
+    - No noise addition
+    - Direct MSE loss in spatial or wavelet domain
+    - Much faster training and inference
+    """
+    
+    def __init__(self, *args, **kwargs):
+        # Set flag to skip default schedule_sampler creation
+        self._skip_schedule_sampler = True
+        
+        # Remove schedule_sampler from kwargs if present (should be None anyway)
+        if 'schedule_sampler' in kwargs:
+            kwargs.pop('schedule_sampler')
+        
+        super().__init__(*args, **kwargs)
+        
+        # Ensure schedule_sampler is None for direct mode
+        self.schedule_sampler = None
+        
+        print("🚀 Initialized DirectRegressionLoop (no diffusion)")
+        print(f"   - Wavelet: {self.wavelet}")
+        print(f"   - Target modality: {self.contr}")
+        print(f"   - Use wavelet space: {self.wavelet is not None and self.wavelet != 'null'}")
+    
+    def forward_backward(self, batch, cond, label=None):
+        """
+        Direct forward pass without diffusion.
+        
+        Args:
+            batch: Dict with modality keys {'t1n', 't1c', 't2w', 't2f'}
+            cond: Same as batch (for compatibility)
+            label: Unused (for compatibility)
+        
+        Returns:
+            mse_loss: Scalar loss value
+            pred_spatial: Predicted image in spatial domain
+            pred_spatial: Same (for compatibility with 3-return format)
+        """
+        for p in self.model.parameters():
+            p.grad = None
+        
+        # Extract input and target modalities
+        modalities = ['t1n', 't1c', 't2w', 't2f']
+        input_modalities = [m for m in modalities if m != self.contr]
+        
+        # Stack input modalities (3 modalities as input)
+        x_inputs = [batch[m] for m in input_modalities]
+        x_input = th.cat(x_inputs, dim=1)  # [B, 3, H, W, D]
+        
+        # Target modality (1 modality as target)
+        x_target = batch[self.contr]  # [B, 1, H, W, D]
+        
+        use_wavelet = self.wavelet is not None and self.wavelet != 'null'
+        
+        if use_wavelet:
+            # Apply DWT to inputs and target
+            # Input: 3 modalities × 8 components = 24 channels
+            input_wavelets = []
+            for x_mod in x_inputs:
+                lfc, *hfcs = self.dwt(x_mod)
+                # Concatenate all 8 components
+                wavelet_components = th.cat([lfc] + list(hfcs), dim=1)
+                input_wavelets.append(wavelet_components)
+            
+            x_input_wavelet = th.cat(input_wavelets, dim=1)  # [B, 24, H/2, W/2, D/2]
+            
+            # Target: 1 modality × 8 components = 8 channels
+            target_lfc, *target_hfcs = self.dwt(x_target)
+            x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)  # [B, 8, H/2, W/2, D/2]
+            
+            # Forward pass in wavelet space
+            # Model expects: (x, timesteps=None, **model_kwargs)
+            # For direct regression, pass dummy timesteps
+            dummy_t = th.zeros(x_input_wavelet.shape[0], dtype=th.long, device=x_input_wavelet.device)
+            pred_wavelet = self.model(x_input_wavelet, dummy_t)  # [B, 8, H/2, W/2, D/2]
+            
+            # MSE loss in wavelet space
+            mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
+            
+            # IDWT for visualization and evaluation
+            # Split predicted wavelets back into 8 components
+            pred_components = th.chunk(pred_wavelet, 8, dim=1)
+            pred_lfc = pred_components[0]
+            pred_hfcs = pred_components[1:]
+            pred_spatial = self.idwt(pred_lfc, *pred_hfcs)
+            
+        else:
+            # Direct prediction in image space (no wavelets)
+            # Model expects: (x, timesteps, **model_kwargs)
+            dummy_t = th.zeros(x_input.shape[0], dtype=th.long, device=x_input.device)
+            pred_spatial = self.model(x_input, dummy_t)  # [B, 1, H, W, D]
+            
+            # MSE loss in image space
+            mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
+        
+        # Backward pass
+        loss = mse_loss
+        
+        if not th.isfinite(loss):
+            logger.log(f"Encountered non-finite loss {loss}")
+            loss = th.tensor(0.0, device=loss.device, requires_grad=True)
+        
+        if self.use_fp16:
+            self.grad_scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        
+        # Log to wandb
+        wandb.log({
+            'train/mse': mse_loss.item(),
+            'train/loss': loss.item(),
+            'step': self.step
+        })
+        
+        # Return same format as diffusion loop (3 values)
+        return mse_loss.item(), pred_spatial, pred_spatial
+    
+    def run_loop(self):
+        """
+        Main training loop for direct regression.
+        Simplified version without diffusion sampling.
+        """
+        print(f"🏃 Starting DirectRegressionLoop for {self.contr}")
+        print(f"   Total steps planned: Based on data iterations")
+        
+        while True:
+            try:
+                batch = next(self.iterdatal)
+            except StopIteration:
+                # Restart the iterator
+                self.iterdatal = iter(self.datal)
+                batch = next(self.iterdatal)
+            
+            # Move batch to device
+            for key in batch:
+                if isinstance(batch[key], th.Tensor):
+                    batch[key] = batch[key].to(dist_util.dev())
+            
+            # Run training step
+            cond = batch  # For compatibility
+            mse_loss, sample, sample_idwt = self.run_step(batch, cond)
+            
+            # Logging
+            if self.step % self.log_interval == 0:
+                logger.dumpkvs()
+                print(f"Step {self.step}: MSE Loss = {mse_loss:.6f}")
+            
+            # Save checkpoints
+            if self.step % self.save_interval == 0:
+                self.save_if_best(mse_loss)
+            
+            # Check for special checkpoints
+            if self.special_checkpoint_steps and self.step in self.special_checkpoint_steps:
+                if self.step not in self.saved_special_checkpoints:
+                    self.save_special_checkpoint(self.step, mse_loss)
+                    self.saved_special_checkpoints.add(self.step)
+            
+            self.step += 1
+            
+            # Optional: Stop after certain number of iterations
+            if self.lr_anneal_steps and self.step >= self.lr_anneal_steps:
+                print(f"✅ Reached {self.lr_anneal_steps} steps, stopping training")
+                break
