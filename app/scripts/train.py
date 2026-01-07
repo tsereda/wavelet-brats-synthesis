@@ -82,10 +82,10 @@ def setup_training(args):
     args.sample_schedule = sample_schedule
     
     # 🆕 Handle wavelet parameter (null → None for use_freq logic)
-    if args.wavelet == 'null' or args.wavelet is None:
+    if args.wavelet == 'nowavelet' or args.wavelet is None:
         args.wavelet = None
         args.use_freq = False
-        print("🔧 Wavelet: None (baseline, image space)")
+        print("🔧 Wavelet: nowavelet (baseline, image space)")
     else:
         args.use_freq = True
         print(f"🔧 Wavelet: {args.wavelet} (wavelet space)")

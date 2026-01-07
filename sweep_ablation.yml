@@ -1,15 +1,20 @@
-# Complete Ablation Study: 9 Runs (3 Methods × 3 Wavelets)
+# Complete Ablation Study: 9 Runs (3 methods × 3 wavelets × 4 modalities)
 # Research Question: Which components of Fast-cWDM contribute most to performance?
 # 
-# Methods:
-#   - direct: Single forward pass (no diffusion)
-#   - diffusion_fast: T=100, sampled schedule (your BraTS 2025 submission)
-#   - diffusion_standard: T=100, direct schedule
+# IMPORTANT: All methods can work with or without wavelets.
+# Direct regression: single-pass synthesis (fast inference)
+# Diffusion methods: iterative denoising (stochastic, ensemble-ready)
 #
-# Wavelets:
-#   - null: Baseline (no wavelet decomposition)
-#   - haar: Haar wavelet (your submission)
-#   - db2: Daubechies-2 (smoother, longer support)
+# Configuration Matrix:
+#   1. direct + nowavelet    (baseline: direct regression, image space)
+#   2. direct + haar         (direct regression with Haar wavelets)
+#   3. direct + db2          (direct regression with Daubechies-2)
+#   4. diffusion_fast + nowavelet  (fast diffusion, image space)
+#   5. diffusion_fast + haar       (your BraTS 2025 submission)
+#   6. diffusion_fast + db2        (fast diffusion with db2)
+#   7. diffusion_standard + nowavelet (standard DDPM, image space)
+#   8. diffusion_standard + haar   (standard DDPM with Haar)
+#   9. diffusion_standard + db2    (standard DDPM with db2)
 
 project: fast-cwdm-ablation-study
 program: app/scripts/train.py
@@ -33,7 +38,7 @@ parameters:
   image_size:
     value: 224
   batch_size:
-    value: 2
+    value: 1  # Reduced from 2 to avoid OOM on direct+null baseline
   lr:
     value: 1e-4
   num_channels:
@@ -75,9 +80,9 @@ parameters:
   model_mode:
     values: ['direct', 'diffusion_fast', 'diffusion_standard']
   
-  # Wavelet: None (baseline) vs Haar vs Daubechies-2
+  # Wavelet: nowavelet (baseline) vs Haar vs Daubechies-2
   wavelet:
-    values: [null, 'haar', 'db2']
+    values: ['nowavelet', 'haar', 'db2']
   
   # Sample schedule (controlled by model_mode)
   sample_schedule:

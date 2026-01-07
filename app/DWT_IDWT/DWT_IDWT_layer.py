@@ -55,12 +55,14 @@ class DWT_1D(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_h = matrix_h[:, (self.band_length_half - 1):end]
         matrix_g = matrix_g[:, (self.band_length_half - 1):end]
@@ -123,12 +125,14 @@ class IDWT_1D(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_h = matrix_h[:, (self.band_length_half - 1):end]
         matrix_g = matrix_g[:, (self.band_length_half - 1):end]
@@ -192,7 +196,8 @@ class DWT_2D_tiny(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         matrix_h_0 = matrix_h[0:(math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -202,7 +207,8 @@ class DWT_2D_tiny(Module):
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_g_0 = matrix_g[0:(self.input_height - math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -282,7 +288,8 @@ class DWT_2D(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         matrix_h_0 = matrix_h[0:(math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -292,7 +299,8 @@ class DWT_2D(Module):
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_g_0 = matrix_g[0:(self.input_height - math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -374,7 +382,8 @@ class IDWT_2D(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         matrix_h_0 = matrix_h[0:(math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -384,7 +393,8 @@ class IDWT_2D(Module):
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_g_0 = matrix_g[0:(self.input_height - math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -472,7 +482,8 @@ class DWT_3D(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         matrix_h_0 = matrix_h[0:(math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -484,7 +495,8 @@ class DWT_3D(Module):
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_g_0 = matrix_g[0:(self.input_height - math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -576,7 +588,8 @@ class IDWT_3D(Module):
         index = 0
         for i in range(L):
             for j in range(self.band_length):
-                matrix_h[i, index + j] = self.band_low[j]
+                if index + j < matrix_h.shape[1]:  # Bounds check
+                    matrix_h[i, index + j] = self.band_low[j]
             index += 2
         matrix_h_0 = matrix_h[0:(math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]
@@ -588,7 +601,8 @@ class IDWT_3D(Module):
         index = 0
         for i in range(L1 - L):
             for j in range(self.band_length):
-                matrix_g[i, index + j] = self.band_high[j]
+                if index + j < matrix_g.shape[1]:  # Bounds check
+                    matrix_g[i, index + j] = self.band_high[j]
             index += 2
         matrix_g_0 = matrix_g[0:(self.input_height - math.floor(
             self.input_height / 2)), 0:(self.input_height + self.band_length - 2)]

@@ -144,7 +144,8 @@ def create_model_and_diffusion(
     mode,
     use_freq,
     dataset,
-    sample_schedule='direct',         # NEW
+    sample_schedule='direct',
+    wavelet=None,
 ):
     model = create_model(
         image_size,
@@ -183,6 +184,8 @@ def create_model_and_diffusion(
         timestep_respacing=timestep_respacing,
         mode=mode,
         sample_schedule=sample_schedule,
+        use_freq=use_freq,
+        wavelet=wavelet,
     )
     return model, diffusion
 
@@ -539,6 +542,8 @@ def create_gaussian_diffusion(
     timestep_respacing="",
     mode='default',
     sample_schedule='direct',
+    use_freq=False,
+    wavelet=None,
     **kwargs
 ):
     # Remove keys not accepted by SpacedDiffusion/GaussianDiffusion
@@ -572,6 +577,8 @@ def create_gaussian_diffusion(
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         mode=mode,
+        use_freq=use_freq,
+        wavelet=wavelet,
         **kwargs
     )
 

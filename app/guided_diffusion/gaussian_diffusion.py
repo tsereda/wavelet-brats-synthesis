@@ -24,9 +24,7 @@ from scipy.interpolate import interp1d
 from DWT_IDWT.DWT_IDWT_layer import DWT_3D, IDWT_3D
 
 # Using MSE loss only
-
-dwt = DWT_3D('haar')
-idwt = IDWT_3D('haar')
+# Note: DWT/IDWT are now initialized per-instance in GaussianDiffusion
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, sample_schedule="direct"):
@@ -154,10 +152,21 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         mode='default',
         loss_level='image',
-        mse_loss_weight=1,   # Weight for MSE loss (default 1.0)
+        mse_loss_weight=1,
+        use_freq=False,
+        wavelet=None,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
+        self.use_freq = use_freq
+        self.wavelet = wavelet
+        # Initialize wavelet transforms if needed
+        if self.use_freq and self.wavelet:
+            self.dwt = DWT_3D(self.wavelet)
+            self.idwt = IDWT_3D(self.wavelet)
+        else:
+            self.dwt = None
+            self.idwt = None
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.mode = mode
@@ -1139,39 +1148,55 @@ class GaussianDiffusion:
             else:
                 print("This contrast can't be synthesized.")
 
-            # Concatenate conditions along the channel dimension
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_1)
-            cond_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_2)
-            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_3)
-            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            # Process conditions based on whether we're using wavelets
+            if self.use_freq and self.dwt:
+                # Wavelet mode: transform conditions to wavelet space
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_1)
+                cond_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_2)
+                cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_3)
+                cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            else:
+                # Image space mode: concatenate conditions directly
+                cond_dwt = th.cat([cond_1, cond_2, cond_3], dim=1)
 
-        # Wavelet transform the input image
-        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(target)
-        x_start_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-
-
-        noise = th.randn_like(target)  # Sample noise - original image resolution.
-        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(noise)
-        noise_dwt = th.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)  # Wavelet transformed noise
-        x_t = self.q_sample(x_start_dwt, t, noise=noise_dwt)  # Sample x_t
+        # Process target based on whether we're using wavelets
+        if self.use_freq and self.dwt:
+            # Wavelet transform the input image
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(target)
+            x_start_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            
+            noise = th.randn_like(target)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(noise)
+            noise_dwt = th.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+        else:
+            # Image space mode: use target directly
+            x_start_dwt = target
+            noise = th.randn_like(target)
+            noise_dwt = noise
+        
+        x_t = self.q_sample(x_start_dwt, t, noise=noise_dwt)
 
         if mode == 'i2i':
-            x_t = th.cat([x_t, cond_dwt], dim=1)  # Concatenate the conditions in the channel dimension
+            x_t = th.cat([x_t, cond_dwt], dim=1)
 
-        model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)  # Model outputs denoised wavelet subbands
+        model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
-        # Inverse wavelet transform the model output for spatial domain visualization
-        B, _, H, W, D = model_output.size()
-        model_output_idwt = idwt(model_output[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
-                                 model_output[:, 1, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 2, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 3, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 4, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 5, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 6, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 7, :, :, :].view(B, 1, H, W, D))
+        # Inverse wavelet transform if in wavelet mode
+        if self.use_freq and self.idwt:
+            B, _, H, W, D = model_output.size()
+            model_output_idwt = self.idwt(model_output[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
+                                     model_output[:, 1, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 2, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 3, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 4, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 5, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 6, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 7, :, :, :].view(B, 1, H, W, D))
+        else:
+            # Image space mode: output is already in spatial domain
+            model_output_idwt = model_output
 
         # ========== MSE LOSS FOR BRATS CHALLENGE ==========
         
