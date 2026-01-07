@@ -42,7 +42,7 @@ parameters:
   lr:
     value: 1e-4
   num_channels:
-    value: 64
+    value: 48  # 🔧 REDUCED from 64 to save memory (48→96→96→192→192 vs 64→128→128→256→256)
   in_channels:
     value: 32  # 8 wavelet components × 4 modalities
   out_channels:
@@ -60,7 +60,7 @@ parameters:
   bottleneck_attention:
     value: false
   num_groups:
-    value: 32
+    value: 16  # 🔧 REDUCED from 32 to match num_channels=48 (must be divisible)
   
   # Training configuration
   diffusion_steps:
@@ -73,6 +73,12 @@ parameters:
     value: "47500,100000,150000,200000"
   save_to_wandb:
     value: true
+  
+  # Memory optimizations (CRITICAL for 80GB A100)
+  use_fp16:
+    value: true  # Mixed precision training - saves ~50% memory
+  use_checkpoint:
+    value: true  # Gradient checkpointing - saves memory at cost of ~20% speed
   
   # ABLATION GRID DIMENSIONS (3 × 3 = 9 runs)
   

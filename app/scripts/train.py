@@ -196,8 +196,9 @@ def create_argparser():
         save_interval=5000,
         resume_checkpoint='',
         resume_step=0,
-        use_fp16=False,
+        use_fp16=True,  # 🔧 CHANGED: Enable mixed precision by default (was False)
         fp16_scale_growth=1e-3,
+        use_checkpoint=True,  # 🔧 NEW: Enable gradient checkpointing to save memory
         dataset='brats',
         num_workers=0,
         contr='t1n',
