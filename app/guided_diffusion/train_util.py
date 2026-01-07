@@ -134,6 +134,9 @@ class TrainLoop:
         self.checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
+        # Accumulator for wandb metrics (logged once per step)
+        self.wandb_log_dict = {}
+        
         # Load existing best losses if resuming
         self._load_best_losses()
         
@@ -236,6 +239,9 @@ class TrainLoop:
             t_total = time.time() - t
             t = time.time()
             
+            # --- Reset wandb accumulator for this step ---
+            self.wandb_log_dict = {'step': self.step}
+            
             # --- Data loading ---
             data_load_start = time.time()
             if self.dataset in ['brats']:
@@ -274,13 +280,13 @@ class TrainLoop:
                 self.summary_writer.add_scalar('time/total', t_total, global_step=self.step)
                 self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
 
-            wandb_log_dict = {
+            # Accumulate metrics (will be logged once at end of step)
+            self.wandb_log_dict.update({
                 'time/load': total_data_time,
                 'time/forward': total_step_time,
                 'time/total': t_total,
-                'metrics/MSE': mse_loss,
-                'step': self.step
-            }
+                'metrics/MSE': mse_loss
+            })
 
             if self.step % 200 == 0:
                 image_size = sample_idwt.size()[2]
@@ -288,7 +294,7 @@ class TrainLoop:
                 if self.summary_writer is not None:
                     self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0), global_step=self.step)
                 img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                wandb_log_dict['sample/x_0'] = wandb.Image(img, caption='sample/x_0')
+                self.wandb_log_dict['sample/x_0'] = wandb.Image(img, caption='sample/x_0')
 
                 image_size = sample.size()[2]
                 for ch in range(8):
@@ -297,7 +303,7 @@ class TrainLoop:
                         self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
                                                     global_step=self.step)
                     img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                    wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
+                    self.wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
 
                 if self.mode == 'i2i':
                     if not self.contr == 't1n':
@@ -306,28 +312,27 @@ class TrainLoop:
                         if self.summary_writer is not None:
                             self.summary_writer.add_image('source/t1n', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t1n'] = wandb.Image(img, caption='source/t1n')
+                        self.wandb_log_dict['source/t1n'] = wandb.Image(img, caption='source/t1n')
                     if not self.contr == 't1c':
                         image_size = batch['t1c'].size()[2]
                         midplane = batch['t1c'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
                             self.summary_writer.add_image('source/t1c', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t1c'] = wandb.Image(img, caption='source/t1c')
+                        self.wandb_log_dict['source/t1c'] = wandb.Image(img, caption='source/t1c')
                     if not self.contr == 't2w':
                         midplane = batch['t2w'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
                             self.summary_writer.add_image('source/t2w', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t2w'] = wandb.Image(img, caption='source/t2w')
+                        self.wandb_log_dict['source/t2w'] = wandb.Image(img, caption='source/t2w')
                     if not self.contr == 't2f':
                         midplane = batch['t2f'][0, 0, :, :, image_size // 2]
                         if self.summary_writer is not None:
                             self.summary_writer.add_image('source/t2f', midplane.unsqueeze(0), global_step=self.step)
                         img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t2f'] = wandb.Image(img, caption='source/t2f')
+                        self.wandb_log_dict['source/t2f'] = wandb.Image(img, caption='source/t2f')
 
-            wandb.log(wandb_log_dict, step=self.step)
             log_end = time.time()
             total_log_time += log_end - log_start
 
@@ -350,6 +355,9 @@ class TrainLoop:
                 save_end = time.time()
                 total_save_time += save_end - save_start
                 self.saved_special_checkpoints.add(self.step)
+            
+            # --- Log all accumulated metrics to wandb (once per step) ---
+            wandb.log(self.wandb_log_dict, step=self.step)
             
             self.step += 1
 
@@ -427,11 +435,10 @@ class TrainLoop:
                     self.save_checkpoint_to_wandb(full_save_path)
                     self.save_checkpoint_to_wandb(opt_save_path)
                 
-                # Log to wandb
-                wandb.log({
+                # Accumulate checkpoint metrics (will be logged at end of step)
+                self.wandb_log_dict.update({
                     f"checkpoints/{modality}/best_loss": current_loss,
-                    f"checkpoints/{modality}/improvement": improvement,
-                    "step": step_to_save
+                    f"checkpoints/{modality}/improvement": improvement
                 })
                 
             except Exception as e:
@@ -477,11 +484,10 @@ class TrainLoop:
                 except Exception as e:
                     print(f"⚠️ Warning: Failed to upload special checkpoint to W&B: {e}")
             
-            # Log special checkpoint metrics to wandb
-            wandb.log({
+            # Accumulate special checkpoint metrics (will be logged at end of step)
+            self.wandb_log_dict.update({
                 f"special_checkpoints/{modality}/iteration_{iteration}/loss": current_loss,
-                f"special_checkpoints/{modality}/saved_at_step": self.step,
-                "step": self.step
+                f"special_checkpoints/{modality}/saved_at_step": self.step
             })
             
         except Exception as e:
@@ -589,11 +595,10 @@ class TrainLoop:
         # Use MSE loss for backpropagation and model saving
         loss = final_loss
         
-        # Add to wandb logging
-        wandb.log({
+        # Accumulate loss metrics (will be logged at end of step)
+        self.wandb_log_dict.update({
             'loss/MSE': mse_loss,
-            'loss/Final': final_loss.item(),
-            'step': self.step
+            'loss/Final': final_loss.item()
         })
 
         # Create weights for MSE loss
@@ -830,11 +835,10 @@ class DirectRegressionLoop(TrainLoop):
         else:
             loss.backward()
         
-        # Log to wandb
-        wandb.log({
+        # Accumulate metrics for wandb (will be logged at end of step)
+        self.wandb_log_dict.update({
             'train/mse': mse_loss.item(),
-            'train/loss': loss.item(),
-            'step': self.step
+            'train/loss': loss.item()
         })
         
         # Return same format as diffusion loop (3 values)
@@ -849,6 +853,9 @@ class DirectRegressionLoop(TrainLoop):
         print(f"   Total steps planned: Based on data iterations")
         
         while True:
+            # Initialize wandb accumulator for this step
+            self.wandb_log_dict = {'step': self.step}
+            
             try:
                 batch = next(self.iterdatal)
             except StopIteration:
@@ -879,6 +886,9 @@ class DirectRegressionLoop(TrainLoop):
                 if self.step not in self.saved_special_checkpoints:
                     self.save_special_checkpoint(self.step, mse_loss)
                     self.saved_special_checkpoints.add(self.step)
+            
+            # Log all accumulated metrics to wandb (once per step)
+            wandb.log(self.wandb_log_dict, step=self.step)
             
             self.step += 1
             
