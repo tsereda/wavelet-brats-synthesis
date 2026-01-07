@@ -99,6 +99,28 @@ def setup_training(args):
     print(f"[CONFIG] resume_checkpoint={args.resume_checkpoint}")
     print(f"[CONFIG] resume_step={args.resume_step}")
     
+    # 🆕 AUTO-CONFIGURE CHANNELS based on mode and wavelet
+    # Direct regression: input = 3 condition modalities
+    # Diffusion: input = noisy target + 3 condition modalities
+    # Wavelet: multiply by 8 subbands
+    if args.use_freq:  # Wavelet space
+        condition_channels = 3 * 8  # 3 modalities × 8 subbands = 24
+        target_channels = 1 * 8      # 1 target modality × 8 subbands = 8
+    else:  # Image space
+        condition_channels = 3       # 3 modalities
+        target_channels = 1          # 1 target modality
+    
+    if use_direct_regression:
+        # Direct: input = condition only
+        args.in_channels = condition_channels
+        args.out_channels = target_channels
+    else:
+        # Diffusion: input = noisy target + condition
+        args.in_channels = target_channels + condition_channels
+        args.out_channels = target_channels
+    
+    print(f"[CONFIG] ✅ Auto-configured channels: in_channels={args.in_channels}, out_channels={args.out_channels}")
+    
     # Create model and diffusion
     model_args = args_to_dict(args, model_and_diffusion_defaults().keys())
     model, diffusion = create_model_and_diffusion(**model_args)

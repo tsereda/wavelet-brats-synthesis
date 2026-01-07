@@ -462,7 +462,7 @@ class DWT_3D(Module):
         generating the matrices: \mathcal{L}, \mathcal{H}
         :return: self.matrix_low = \mathcal{L}, self.matrix_high = \mathcal{H}
         """
-        L1 = np.max((self.input_height, self.input_width))
+        L1 = np.max((self.input_height, self.input_width, self.input_depth))
         L = math.floor(L1 / 2)
         matrix_h = np.zeros((L, L1 + self.band_length - 2))
         matrix_g = np.zeros((L1 - L, L1 + self.band_length - 2))
@@ -566,7 +566,7 @@ class IDWT_3D(Module):
         generating the matrices: \mathcal{L}, \mathcal{H}
         :return: self.matrix_low = \mathcal{L}, self.matrix_high = \mathcal{H}
         """
-        L1 = np.max((self.input_height, self.input_width))
+        L1 = np.max((self.input_height, self.input_width, self.input_depth))
         L = math.floor(L1 / 2)
         matrix_h = np.zeros((L, L1 + self.band_length - 2))
         matrix_g = np.zeros((L1 - L, L1 + self.band_length - 2))
