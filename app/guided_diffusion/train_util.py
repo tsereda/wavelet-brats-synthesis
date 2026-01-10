@@ -289,6 +289,7 @@ class TrainLoop:
         
         # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
             'val/inference_time': avg_inference_time
         })
         
@@ -436,7 +437,8 @@ class TrainLoop:
             step_proc_start = time.time()
             mse_loss, sample, sample_idwt = self.run_step(batch, cond)
             step_proc_end = time.time()
-            total_step_time += step_proc_end - step_proc_start
+            step_time = step_proc_end - step_proc_start
+            total_step_time += step_time
 
             names = ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
 
@@ -448,11 +450,9 @@ class TrainLoop:
                 self.summary_writer.add_scalar('time/total', t_total, global_step=self.step)
                 self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
 
-            # Accumulate metrics (will be logged once at end of step)
-            # Note: total_step_time includes forward+backward, not just inference
+            # Log training step time to WandB
             self.wandb_log_dict.update({
-                'time/forward_only': total_step_time,  # Approximate inference time
-                'train/mse': mse_loss
+                'train/time': step_time
             })
 
             if self.step % 200 == 0:
@@ -774,8 +774,7 @@ class TrainLoop:
         
         # Accumulate loss metrics (will be logged at end of step)
         self.wandb_log_dict.update({
-            'train/mse': mse_loss,
-            'train/loss': final_loss.item()
+            'train/mse': mse_loss
         })
 
         # Create weights for MSE loss
@@ -1014,8 +1013,7 @@ class DirectRegressionLoop(TrainLoop):
         
         # Accumulate metrics for wandb (will be logged at end of step)
         self.wandb_log_dict.update({
-            'train/mse': mse_loss.item(),
-            'train/loss': loss.item()
+            'train/mse': mse_loss.item()
         })
         
         # Return same format as diffusion loop (3 values)
@@ -1137,6 +1135,7 @@ class DirectRegressionLoop(TrainLoop):
         
         # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
             'val/inference_time': avg_inference_time
         })
         
@@ -1236,13 +1235,12 @@ class DirectRegressionLoop(TrainLoop):
             cond = batch  # For compatibility
             mse_loss, sample, sample_idwt = self.run_step(batch, cond)
             step_proc_end = time.time()
-            total_step_time += step_proc_end - step_proc_start
+            step_time = step_proc_end - step_proc_start
+            total_step_time += step_time
             
-            # Accumulate time metrics
+            # Log training step time to WandB
             self.wandb_log_dict.update({
-                'time/load': total_data_time,
-                'time/forward': total_step_time,
-                'time/total': t_total
+                'train/time': step_time
             })
             
             # Logging
