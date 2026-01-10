@@ -131,10 +131,28 @@ def setup_training(args):
     model, diffusion = create_model_and_diffusion(**model_args)
     model.to(dist_util.dev())
     
-    # Load dataset
-    ds = BRATSVolumes(args.data_dir, mode='train', wavelet=args.wavelet)
-    dataloader = th.utils.data.DataLoader(
-        ds, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True
+    # Load dataset and split into train/val (70/30)
+    full_ds = BRATSVolumes(args.data_dir, mode='train', wavelet=args.wavelet)
+    
+    # Calculate split sizes
+    train_size = int(0.7 * len(full_ds))
+    val_size = len(full_ds) - train_size
+    
+    print(f"📊 Dataset split: {len(full_ds)} total → {train_size} train + {val_size} val")
+    
+    # Split with seeded generator for reproducibility
+    train_ds, val_ds = th.utils.data.random_split(
+        full_ds, [train_size, val_size],
+        generator=th.Generator().manual_seed(args.seed)
+    )
+    
+    # Create data loaders
+    train_loader = th.utils.data.DataLoader(
+        train_ds, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=True
+    )
+    
+    val_loader = th.utils.data.DataLoader(
+        val_ds, batch_size=args.batch_size, num_workers=args.num_workers, shuffle=False
     )
     
     # Select training loop based on mode
@@ -158,7 +176,8 @@ def setup_training(args):
     TrainLoopClass(
         model=model,
         diffusion=diffusion,
-        data=dataloader,
+        data=train_loader,
+        val_data=val_loader,
         batch_size=args.batch_size,
         in_channels=args.in_channels,
         image_size=args.image_size,
@@ -182,6 +201,7 @@ def setup_training(args):
         wavelet=args.wavelet,
         special_checkpoint_steps=special_checkpoint_steps,
         save_to_wandb=args.save_to_wandb,
+        val_interval=1000,
         **loop_kwargs
     ).run_loop()
 

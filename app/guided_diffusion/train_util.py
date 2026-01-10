@@ -36,6 +36,7 @@ class TrainLoop:
         model,
         diffusion,
         data,
+        val_data=None,
         batch_size,
         in_channels,
         image_size,
@@ -60,13 +61,16 @@ class TrainLoop:
         diffusion_steps=1000,
         wavelet='haar',
         special_checkpoint_steps=None,
-        save_to_wandb=True
+        save_to_wandb=True,
+        val_interval=1000
     ):
         self.summary_writer = summary_writer
         self.mode = mode
         self.model = model
         self.diffusion = diffusion
         self.datal = data
+        self.val_datal = val_data
+        self.val_interval = val_interval
         self.dataset = dataset
         self.iterdatal = iter(data)
         self.batch_size = batch_size
@@ -131,6 +135,8 @@ class TrainLoop:
         # Track best MSE loss (lower is better)
         self.best_losses = {}
         self.best_checkpoints = {}
+        self.best_val_loss = float('inf')
+        self.best_val_checkpoint = None
         self.checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
@@ -177,6 +183,110 @@ class TrainLoop:
                     f.write(f"{modality}:{loss}\n")
         except Exception as e:
             print(f"Error saving best losses: {e}")
+
+    def run_validation(self):
+        """
+        Run validation loop on val_data.
+        Returns average validation MSE loss.
+        """
+        if self.val_datal is None:
+            print("⚠️ No validation data provided, skipping validation")
+            return None
+        
+        self.model.eval()
+        val_losses = []
+        
+        with th.no_grad():
+            for batch in self.val_datal:
+                # Move batch to device
+                if self.mode == 'i2i':
+                    batch['t1n'] = batch['t1n'].to(dist_util.dev())
+                    batch['t1c'] = batch['t1c'].to(dist_util.dev())
+                    batch['t2w'] = batch['t2w'].to(dist_util.dev())
+                    batch['t2f'] = batch['t2f'].to(dist_util.dev())
+                else:
+                    batch = batch.to(dist_util.dev())
+                
+                # Sample timesteps
+                batch_size = batch['t1n'].shape[0] if self.mode == 'i2i' else batch.shape[0]
+                t, weights = self.schedule_sampler.sample(batch_size, dist_util.dev())
+                
+                # Compute losses
+                losses, _, _ = self.diffusion.training_losses(
+                    self.model, 
+                    x_start=batch, 
+                    t=t, 
+                    model_kwargs={},
+                    mode=self.mode, 
+                    contr=self.contr
+                )
+                
+                # Extract MSE loss
+                mse_loss = losses.get("mse_loss", losses.get("loss", 0.0))
+                if hasattr(mse_loss, 'item'):
+                    mse_loss = mse_loss.item()
+                val_losses.append(mse_loss)
+        
+        # Back to training mode
+        self.model.train()
+        
+        # Compute average validation loss
+        avg_val_loss = np.mean(val_losses)
+        
+        # Log to wandb
+        self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
+            'val/loss': avg_val_loss
+        })
+        
+        # Save best validation checkpoint
+        if avg_val_loss < self.best_val_loss:
+            old_best = self.best_val_loss
+            self.best_val_loss = avg_val_loss
+            improvement = old_best - avg_val_loss if old_best < float('inf') else avg_val_loss
+            print(f"🎯 NEW BEST VAL LOSS: {avg_val_loss:.6f} (prev: {old_best:.6f}, -{improvement:.6f})")
+            
+            # Remove old best val checkpoint if exists
+            if self.best_val_checkpoint and os.path.exists(self.best_val_checkpoint):
+                try:
+                    os.remove(self.best_val_checkpoint)
+                    opt_path = self.best_val_checkpoint.replace('.pt', '_opt.pt')
+                    if os.path.exists(opt_path):
+                        os.remove(opt_path)
+                except Exception as e:
+                    print(f"Error removing old val checkpoint: {e}")
+            
+            # Save new best val checkpoint
+            filename = f"brats_{self.contr}_best_val_{self.sample_schedule}_{self.diffusion_steps}.pt"
+            full_save_path = os.path.join(self.checkpoint_dir, filename)
+            
+            try:
+                with bf.BlobFile(full_save_path, "wb") as f:
+                    th.save(self.model.state_dict(), f)
+                
+                self.best_val_checkpoint = full_save_path
+                print(f"✅ Saved best val checkpoint: {full_save_path}")
+                
+                # Save optimizer state
+                opt_save_path = os.path.join(self.checkpoint_dir, f"brats_{self.contr}_best_val_{self.sample_schedule}_{self.diffusion_steps}_opt.pt")
+                with bf.BlobFile(opt_save_path, "wb") as f:
+                    th.save(self.opt.state_dict(), f)
+                
+                # Upload to W&B if enabled
+                if self.save_to_wandb:
+                    self.save_checkpoint_to_wandb(full_save_path)
+                    self.save_checkpoint_to_wandb(opt_save_path)
+                
+                # Log best val metrics
+                self.wandb_log_dict.update({
+                    f"val/best_loss": avg_val_loss,
+                    f"val/improvement": improvement
+                })
+                
+            except Exception as e:
+                print(f"❌ Error saving best val checkpoint: {e}")
+        
+        return avg_val_loss
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -285,7 +395,7 @@ class TrainLoop:
                 'time/load': total_data_time,
                 'time/forward': total_step_time,
                 'time/total': t_total,
-                'metrics/MSE': mse_loss
+                'train/mse': mse_loss
             })
 
             if self.step % 200 == 0:
@@ -349,6 +459,13 @@ class TrainLoop:
                 total_save_time += save_end - save_start
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
+            
+            # --- Validation ---
+            if self.val_datal is not None and self.step % self.val_interval == 0 and self.step > 0:
+                val_start = time.time()
+                val_loss = self.run_validation()
+                val_end = time.time()
+                print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f} (took {val_end - val_start:.2f}s)")
             
             # --- Special Checkpoint Saving ---
             if self.special_checkpoint_steps is not None and self.step in self.special_checkpoint_steps and self.step not in self.saved_special_checkpoints:
@@ -599,8 +716,8 @@ class TrainLoop:
         
         # Accumulate loss metrics (will be logged at end of step)
         self.wandb_log_dict.update({
-            'loss/MSE': mse_loss,
-            'loss/Final': final_loss.item()
+            'train/mse': mse_loss,
+            'train/loss': final_loss.item()
         })
 
         # Create weights for MSE loss
@@ -846,6 +963,126 @@ class DirectRegressionLoop(TrainLoop):
         # Return same format as diffusion loop (3 values)
         return mse_loss.item(), pred_spatial, pred_spatial
     
+    def run_validation(self):
+        """
+        Run validation loop for direct regression (no diffusion).
+        Returns average validation MSE loss.
+        """
+        if self.val_datal is None:
+            print("⚠️ No validation data provided, skipping validation")
+            return None
+        
+        self.model.eval()
+        val_losses = []
+        
+        with th.no_grad():
+            for batch in self.val_datal:
+                # Move batch to device
+                for key in batch:
+                    if isinstance(batch[key], th.Tensor):
+                        batch[key] = batch[key].to(dist_util.dev())
+                
+                # Extract input and target modalities
+                modalities = ['t1n', 't1c', 't2w', 't2f']
+                input_modalities = [m for m in modalities if m != self.contr]
+                
+                # Stack input modalities
+                x_inputs = [batch[m] for m in input_modalities]
+                x_input = th.cat(x_inputs, dim=1)  # [B, 3, H, W, D]
+                x_target = batch[self.contr]  # [B, 1, H, W, D]
+                
+                use_wavelet = self.wavelet is not None and self.wavelet != 'null'
+                
+                if use_wavelet:
+                    # Apply DWT to inputs and target
+                    input_wavelets = []
+                    for x_mod in x_inputs:
+                        lfc, *hfcs = self.dwt(x_mod)
+                        wavelet_components = th.cat([lfc] + list(hfcs), dim=1)
+                        input_wavelets.append(wavelet_components)
+                    
+                    x_input_wavelet = th.cat(input_wavelets, dim=1)
+                    
+                    target_lfc, *target_hfcs = self.dwt(x_target)
+                    x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)
+                    
+                    # Forward pass
+                    dummy_t = th.zeros(x_input_wavelet.shape[0], dtype=th.long, device=x_input_wavelet.device)
+                    pred_wavelet = self.model(x_input_wavelet, dummy_t)
+                    
+                    # MSE loss in wavelet space
+                    mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
+                else:
+                    # Forward pass in image space
+                    dummy_t = th.zeros(x_input.shape[0], dtype=th.long, device=x_input.device)
+                    pred_spatial = self.model(x_input, dummy_t)
+                    
+                    # MSE loss in image space
+                    mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
+                
+                val_losses.append(mse_loss.item())
+        
+        # Back to training mode
+        self.model.train()
+        
+        # Compute average validation loss
+        avg_val_loss = np.mean(val_losses)
+        
+        # Log to wandb
+        self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
+            'val/loss': avg_val_loss
+        })
+        
+        # Save best validation checkpoint
+        if avg_val_loss < self.best_val_loss:
+            old_best = self.best_val_loss
+            self.best_val_loss = avg_val_loss
+            improvement = old_best - avg_val_loss if old_best < float('inf') else avg_val_loss
+            print(f"🎯 NEW BEST VAL LOSS: {avg_val_loss:.6f} (prev: {old_best:.6f}, -{improvement:.6f})")
+            
+            # Remove old best val checkpoint if exists
+            if self.best_val_checkpoint and os.path.exists(self.best_val_checkpoint):
+                try:
+                    os.remove(self.best_val_checkpoint)
+                    opt_path = self.best_val_checkpoint.replace('.pt', '_opt.pt')
+                    if os.path.exists(opt_path):
+                        os.remove(opt_path)
+                except Exception as e:
+                    print(f"Error removing old val checkpoint: {e}")
+            
+            # Save new best val checkpoint
+            filename = f"brats_{self.contr}_best_val_direct.pt"
+            full_save_path = os.path.join(self.checkpoint_dir, filename)
+            
+            try:
+                with bf.BlobFile(full_save_path, "wb") as f:
+                    th.save(self.model.state_dict(), f)
+                
+                self.best_val_checkpoint = full_save_path
+                print(f"✅ Saved best val checkpoint: {full_save_path}")
+                
+                # Save optimizer state
+                opt_save_path = os.path.join(self.checkpoint_dir, f"brats_{self.contr}_best_val_direct_opt.pt")
+                with bf.BlobFile(opt_save_path, "wb") as f:
+                    th.save(self.opt.state_dict(), f)
+                
+                # Upload to W&B if enabled
+                if self.save_to_wandb:
+                    self.save_checkpoint_to_wandb(full_save_path)
+                    self.save_checkpoint_to_wandb(opt_save_path)
+                
+                # Log best val metrics
+                self.wandb_log_dict.update({
+                    f"val/best_loss": avg_val_loss,
+                    f"val/improvement": improvement
+                })
+                
+            except Exception as e:
+                print(f"❌ Error saving best val checkpoint: {e}")
+        
+        return avg_val_loss
+    
     def run_loop(self):
         """
         Main training loop for direct regression.
@@ -880,8 +1117,13 @@ class DirectRegressionLoop(TrainLoop):
                 print(f"Step {self.step}: MSE Loss = {mse_loss:.6f}")
             
             # Save checkpoints
-            if self.step % self.save_interval == 0:
+            if self.step % self.save_interval == 0 and self.step > 0:
                 self.save_if_best(mse_loss)
+            
+            # Validation
+            if self.val_datal is not None and self.step % self.val_interval == 0 and self.step > 0:
+                val_loss = self.run_validation()
+                print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
             
             # Check for special checkpoints
             if self.special_checkpoint_steps and self.step in self.special_checkpoint_steps:
