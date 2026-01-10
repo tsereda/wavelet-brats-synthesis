@@ -215,6 +215,11 @@ Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
     
     args = parser.parse_args()
     
+    # Show help if no arguments provided
+    if len(sys.argv) == 1:
+        parser.print_help()
+        sys.exit(0)
+    
     print("=" * 60)
     print("BraTS Training Management")
     print("=" * 60)

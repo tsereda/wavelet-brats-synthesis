@@ -529,7 +529,7 @@ class TrainLoop:
             breakpoint()
 
         if self.use_fp16:
-            print("Use fp16 ...")
+            #print("Use fp16 ...")
             self.grad_scaler.step(self.opt)
             self.grad_scaler.update()
             info['scale'] = self.grad_scaler.get_scale()
