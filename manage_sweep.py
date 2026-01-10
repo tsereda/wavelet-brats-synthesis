@@ -198,7 +198,7 @@ Examples:
   # Custom number of pods/jobs
   python manage_training.py --num-agents 5
   
-Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep
+Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep (kubectl delete jobs -l app=wandb-sweep)
         """
     )
     
