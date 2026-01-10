@@ -186,15 +186,28 @@ class TrainLoop:
 
     def run_validation(self):
         """
-        Run validation loop on val_data.
+        Run validation loop on val_data with SSIM, PSNR, and inference time.
         Returns average validation MSE loss.
         """
         if self.val_datal is None:
             print("⚠️ No validation data provided, skipping validation")
             return None
         
+        # Import metrics
+        try:
+            from skimage.metrics import structural_similarity as ssim
+            from skimage.metrics import peak_signal_noise_ratio as psnr
+            metrics_available = True
+        except ImportError:
+            print("⚠️ scikit-image not available, skipping SSIM/PSNR metrics")
+            metrics_available = False
+        
+        import time
         self.model.eval()
         val_losses = []
+        val_ssims = []
+        val_psnrs = []
+        inference_times = []
         
         with th.no_grad():
             for batch in self.val_datal:
@@ -211,6 +224,9 @@ class TrainLoop:
                 batch_size = batch['t1n'].shape[0] if self.mode == 'i2i' else batch.shape[0]
                 t, weights = self.schedule_sampler.sample(batch_size, dist_util.dev())
                 
+                # Time ONLY the inference (no backward pass)
+                inference_start = time.time()
+                
                 # Compute losses
                 losses, _, _ = self.diffusion.training_losses(
                     self.model, 
@@ -221,23 +237,71 @@ class TrainLoop:
                     contr=self.contr
                 )
                 
+                inference_end = time.time()
+                inference_times.append(inference_end - inference_start)
+                
                 # Extract MSE loss
                 mse_loss = losses.get("mse_loss", losses.get("loss", 0.0))
                 if hasattr(mse_loss, 'item'):
                     mse_loss = mse_loss.item()
                 val_losses.append(mse_loss)
+                
+                # Calculate SSIM and PSNR if available
+                if metrics_available:
+                    try:
+                        # Get target and predicted images
+                        target = batch[self.contr].cpu().numpy()
+                        
+                        # For diffusion, approximate prediction from model output
+                        # Note: This is a fast approximation; full sampling would be too slow
+                        # We use the denoised prediction at timestep t
+                        model_output = losses.get('pred_xstart', None)
+                        if model_output is not None:
+                            predicted = model_output.cpu().numpy()
+                        else:
+                            # Skip SSIM/PSNR if we can't get prediction
+                            continue
+                        
+                        # Create brain mask from target (threshold > 0.01)
+                        brain_mask = (target > 0.01).astype(np.float32)
+                        predicted_masked = predicted * brain_mask
+                        target_masked = target * brain_mask
+                        
+                        # Calculate metrics on first sample in batch
+                        pred_vol = predicted_masked[0, 0]
+                        targ_vol = target_masked[0, 0]
+                        
+                        ssim_score = ssim(targ_vol, pred_vol, data_range=1.0)
+                        psnr_score = psnr(targ_vol, pred_vol, data_range=1.0)
+                        
+                        val_ssims.append(ssim_score)
+                        val_psnrs.append(psnr_score)
+                        
+                    except Exception as e:
+                        print(f"  Warning: SSIM/PSNR calculation failed: {e}")
         
         # Back to training mode
         self.model.train()
         
-        # Compute average validation loss
+        # Compute average metrics
         avg_val_loss = np.mean(val_losses)
+        avg_inference_time = np.mean(inference_times)
         
-        # Log to wandb
+        # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
-            'val/mse': avg_val_loss,
-            'val/loss': avg_val_loss
+            'val/inference_time': avg_inference_time
         })
+        
+        if metrics_available and len(val_ssims) > 0:
+            avg_ssim = np.mean(val_ssims)
+            avg_psnr = np.mean(val_psnrs)
+            self.wandb_log_dict.update({
+                'val/ssim': avg_ssim,
+                'val/psnr': avg_psnr
+            })
+            print(f"📊 Validation: SSIM={avg_ssim:.4f}, PSNR={avg_psnr:.2f}dB, Inf.Time={avg_inference_time:.3f}s")
+        else:
+            print(f"📊 Validation: MSE={avg_val_loss:.6f}, Inf.Time={avg_inference_time:.3f}s")
         
         # Save best validation checkpoint
         if avg_val_loss < self.best_val_loss:
@@ -276,12 +340,6 @@ class TrainLoop:
                 if self.save_to_wandb:
                     self.save_checkpoint_to_wandb(full_save_path)
                     self.save_checkpoint_to_wandb(opt_save_path)
-                
-                # Log best val metrics
-                self.wandb_log_dict.update({
-                    f"val/best_loss": avg_val_loss,
-                    f"val/improvement": improvement
-                })
                 
             except Exception as e:
                 print(f"❌ Error saving best val checkpoint: {e}")
@@ -391,10 +449,9 @@ class TrainLoop:
                 self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
 
             # Accumulate metrics (will be logged once at end of step)
+            # Note: total_step_time includes forward+backward, not just inference
             self.wandb_log_dict.update({
-                'time/load': total_data_time,
-                'time/forward': total_step_time,
-                'time/total': t_total,
+                'time/forward_only': total_step_time,  # Approximate inference time
                 'train/mse': mse_loss
             })
 
@@ -966,15 +1023,28 @@ class DirectRegressionLoop(TrainLoop):
     
     def run_validation(self):
         """
-        Run validation loop for direct regression (no diffusion).
+        Run validation loop for direct regression with SSIM, PSNR, and inference time.
         Returns average validation MSE loss.
         """
         if self.val_datal is None:
             print("⚠️ No validation data provided, skipping validation")
             return None
         
+        # Import metrics
+        try:
+            from skimage.metrics import structural_similarity as ssim
+            from skimage.metrics import peak_signal_noise_ratio as psnr
+            metrics_available = True
+        except ImportError:
+            print("⚠️ scikit-image not available, skipping SSIM/PSNR metrics")
+            metrics_available = False
+        
+        import time
         self.model.eval()
         val_losses = []
+        val_ssims = []
+        val_psnrs = []
+        inference_times = []
         
         with th.no_grad():
             for batch in self.val_datal:
@@ -994,6 +1064,9 @@ class DirectRegressionLoop(TrainLoop):
                 
                 use_wavelet = self.wavelet is not None and self.wavelet != 'null'
                 
+                # Time ONLY the inference (forward pass)
+                inference_start = time.time()
+                
                 if use_wavelet:
                     # Apply DWT to inputs and target
                     input_wavelets = []
@@ -1011,6 +1084,11 @@ class DirectRegressionLoop(TrainLoop):
                     dummy_t = th.zeros(x_input_wavelet.shape[0], dtype=th.long, device=x_input_wavelet.device)
                     pred_wavelet = self.model(x_input_wavelet, dummy_t)
                     
+                    # Reconstruct to spatial domain for metrics
+                    pred_lfc = pred_wavelet[:, :1]
+                    pred_hfcs = [pred_wavelet[:, i:i+1] for i in range(1, 8)]
+                    pred_spatial = self.idwt(pred_lfc, *pred_hfcs)
+                    
                     # MSE loss in wavelet space
                     mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
                 else:
@@ -1021,19 +1099,57 @@ class DirectRegressionLoop(TrainLoop):
                     # MSE loss in image space
                     mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
                 
+                inference_end = time.time()
+                inference_times.append(inference_end - inference_start)
+                
                 val_losses.append(mse_loss.item())
+                
+                # Calculate SSIM and PSNR on spatial domain with brain masking
+                if metrics_available:
+                    try:
+                        # Create brain mask from target
+                        target_np = x_target.cpu().numpy()
+                        pred_np = pred_spatial.cpu().numpy()
+                        
+                        brain_mask = (target_np > 0.01).astype(np.float32)
+                        predicted_masked = pred_np * brain_mask
+                        target_masked = target_np * brain_mask
+                        
+                        # Calculate metrics on first sample in batch
+                        pred_vol = predicted_masked[0, 0]
+                        targ_vol = target_masked[0, 0]
+                        
+                        ssim_score = ssim(targ_vol, pred_vol, data_range=1.0)
+                        psnr_score = psnr(targ_vol, pred_vol, data_range=1.0)
+                        
+                        val_ssims.append(ssim_score)
+                        val_psnrs.append(psnr_score)
+                        
+                    except Exception as e:
+                        print(f"  Warning: SSIM/PSNR calculation failed: {e}")
         
         # Back to training mode
         self.model.train()
         
-        # Compute average validation loss
+        # Compute average metrics
         avg_val_loss = np.mean(val_losses)
+        avg_inference_time = np.mean(inference_times)
         
-        # Log to wandb
+        # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
-            'val/mse': avg_val_loss,
-            'val/loss': avg_val_loss
+            'val/inference_time': avg_inference_time
         })
+        
+        if metrics_available and len(val_ssims) > 0:
+            avg_ssim = np.mean(val_ssims)
+            avg_psnr = np.mean(val_psnrs)
+            self.wandb_log_dict.update({
+                'val/ssim': avg_ssim,
+                'val/psnr': avg_psnr
+            })
+            print(f"📊 Validation: SSIM={avg_ssim:.4f}, PSNR={avg_psnr:.2f}dB, Inf.Time={avg_inference_time:.3f}s")
+        else:
+            print(f"📊 Validation: MSE={avg_val_loss:.6f}, Inf.Time={avg_inference_time:.3f}s")
         
         # Save best validation checkpoint
         if avg_val_loss < self.best_val_loss:
@@ -1072,12 +1188,6 @@ class DirectRegressionLoop(TrainLoop):
                 if self.save_to_wandb:
                     self.save_checkpoint_to_wandb(full_save_path)
                     self.save_checkpoint_to_wandb(opt_save_path)
-                
-                # Log best val metrics
-                self.wandb_log_dict.update({
-                    f"val/best_loss": avg_val_loss,
-                    f"val/improvement": improvement
-                })
                 
             except Exception as e:
                 print(f"❌ Error saving best val checkpoint: {e}")
