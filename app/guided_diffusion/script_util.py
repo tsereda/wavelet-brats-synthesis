@@ -98,6 +98,7 @@ def model_and_diffusion_defaults():
         use_freq=False,
         predict_xstart=False,
         sample_schedule='direct',         # NEW: 'direct' or 'sampled'
+        wavelet=None,                     # NEW: wavelet family ('haar', 'db2', etc.) or None for image space
         # use_fast_ddpm and fast_ddpm_strategy are deprecated
     )
     res.update(diffusion_defaults())
@@ -292,6 +293,7 @@ def create_model(
             bottleneck_attention=bottleneck_attention,
             additive_skips=additive_skips,
             use_freq=use_freq,
+            resample_2d=resample_2d,
         )
 
 

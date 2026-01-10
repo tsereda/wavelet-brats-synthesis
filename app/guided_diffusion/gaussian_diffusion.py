@@ -1120,7 +1120,7 @@ class GaussianDiffusion:
         if model_kwargs is None:
             model_kwargs = {}
 
-        elif mode == 'i2i':
+        if mode == 'i2i':
             if contr == 't1n':
                 target = x_start['t1n']  # target
                 cond_1 = x_start['t1c']  # condition
@@ -1216,6 +1216,52 @@ class GaussianDiffusion:
         }
 
         return terms, model_output, model_output_idwt
+
+    def direct_regression_loss(self, model, batch, contr='t2f'):
+        """
+        Direct regression loss (no diffusion) for testing purposes.
+        
+        :param model: the UNet model
+        :param batch: dict with keys 't1n', 't1c', 't2w', 't2f'
+        :param contr: target modality
+        :return: loss terms dict
+        """
+        # Extract modalities based on target
+        if contr == 't2f':
+            cond_1, cond_2, cond_3, target = batch['t1n'], batch['t1c'], batch['t2w'], batch['t2f']
+        elif contr == 't2w':
+            cond_1, cond_2, cond_3, target = batch['t1n'], batch['t1c'], batch['t2f'], batch['t2w']
+        elif contr == 't1c':
+            cond_1, cond_2, cond_3, target = batch['t1n'], batch['t2w'], batch['t2f'], batch['t1c']
+        elif contr == 't1n':
+            cond_1, cond_2, cond_3, target = batch['t1c'], batch['t2w'], batch['t2f'], batch['t1n']
+        else:
+            raise ValueError(f"Invalid contr: {contr}")
+        
+        # Transform conditions and target to wavelet space if needed
+        if self.use_freq and self.dwt:
+            # Wavelet mode: transform to wavelet space
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_1)
+            cond_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_2)
+            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_3)
+            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(target)
+            target_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+        else:
+            # Image space mode
+            cond_dwt = th.cat([cond_1, cond_2, cond_3], dim=1)
+            target_dwt = target
+        
+        # Forward pass (no timestep for direct regression)
+        model_output = model(cond_dwt, th.zeros(cond_dwt.shape[0], device=cond_dwt.device))
+        
+        # Calculate MSE loss
+        mse_loss = th.mean(mean_flat((target_dwt - model_output) ** 2))
+        
+        return {"loss": mse_loss, "mse_loss": mse_loss.item()}
 
 
     def _prior_bpd(self, x_start):

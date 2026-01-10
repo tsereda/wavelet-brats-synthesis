@@ -203,12 +203,16 @@ def create_argparser():
         num_workers=0,
         contr='t1n',
         sample_schedule='direct',
-        wavelet='haar',
         special_checkpoint_steps="75400,100000,200000",
         save_to_wandb=True,
         model_mode='diffusion_fast',  # 🆕 NEW: 'direct', 'diffusion_fast', 'diffusion_standard'
     )
+    # Add model/diffusion defaults first
     defaults.update(model_and_diffusion_defaults())
+    # Then set project-specific defaults (will override model defaults if they overlap)
+    defaults.update({
+        'wavelet': 'haar',  # Project default: haar wavelet
+    })
     parser = argparse.ArgumentParser()
     add_dict_to_argparser(parser, defaults)
     return parser

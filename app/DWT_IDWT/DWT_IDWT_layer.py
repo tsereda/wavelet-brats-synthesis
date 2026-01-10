@@ -466,10 +466,11 @@ class DWT_3D(Module):
         assert self.band_length % 2 == 0
         self.band_length_half = math.floor(self.band_length / 2)
 
-    def get_matrix(self):
+    def get_matrix(self, device=None):
         """
         生成变换矩阵
         generating the matrices: \mathcal{L}, \mathcal{H}
+        :param device: torch device to place matrices on
         :return: self.matrix_low = \mathcal{L}, self.matrix_high = \mathcal{H}
         """
         L1 = np.max((self.input_height, self.input_width, self.input_depth))
@@ -514,20 +515,17 @@ class DWT_3D(Module):
         matrix_g_1 = matrix_g_1[:, (self.band_length_half - 1):end]
         matrix_g_1 = np.transpose(matrix_g_1)
         matrix_g_2 = matrix_g_2[:, (self.band_length_half - 1):end]
-        if torch.cuda.is_available():
-            self.matrix_low_0 = torch.Tensor(matrix_h_0).cuda()
-            self.matrix_low_1 = torch.Tensor(matrix_h_1).cuda()
-            self.matrix_low_2 = torch.Tensor(matrix_h_2).cuda()
-            self.matrix_high_0 = torch.Tensor(matrix_g_0).cuda()
-            self.matrix_high_1 = torch.Tensor(matrix_g_1).cuda()
-            self.matrix_high_2 = torch.Tensor(matrix_g_2).cuda()
-        else:
-            self.matrix_low_0 = torch.Tensor(matrix_h_0)
-            self.matrix_low_1 = torch.Tensor(matrix_h_1)
-            self.matrix_low_2 = torch.Tensor(matrix_h_2)
-            self.matrix_high_0 = torch.Tensor(matrix_g_0)
-            self.matrix_high_1 = torch.Tensor(matrix_g_1)
-            self.matrix_high_2 = torch.Tensor(matrix_g_2)
+        
+        # Create tensors on the specified device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        self.matrix_low_0 = torch.Tensor(matrix_h_0).to(device)
+        self.matrix_low_1 = torch.Tensor(matrix_h_1).to(device)
+        self.matrix_low_2 = torch.Tensor(matrix_h_2).to(device)
+        self.matrix_high_0 = torch.Tensor(matrix_g_0).to(device)
+        self.matrix_high_1 = torch.Tensor(matrix_g_1).to(device)
+        self.matrix_high_2 = torch.Tensor(matrix_g_2).to(device)
 
     def forward(self, input):
         """
@@ -538,7 +536,7 @@ class DWT_3D(Module):
         self.input_depth = input.size()[-3]
         self.input_height = input.size()[-2]
         self.input_width = input.size()[-1]
-        self.get_matrix()
+        self.get_matrix(device=input.device)
         return DWTFunction_3D.apply(input, self.matrix_low_0, self.matrix_low_1, self.matrix_low_2,
                                     self.matrix_high_0, self.matrix_high_1, self.matrix_high_2)
 
@@ -572,10 +570,11 @@ class IDWT_3D(Module):
         assert self.band_length % 2 == 0
         self.band_length_half = math.floor(self.band_length / 2)
 
-    def get_matrix(self):
+    def get_matrix(self, device=None):
         """
         生成变换矩阵
         generating the matrices: \mathcal{L}, \mathcal{H}
+        :param device: torch device to place matrices on
         :return: self.matrix_low = \mathcal{L}, self.matrix_high = \mathcal{H}
         """
         L1 = np.max((self.input_height, self.input_width, self.input_depth))
@@ -620,20 +619,17 @@ class IDWT_3D(Module):
         matrix_g_1 = matrix_g_1[:, (self.band_length_half - 1):end]
         matrix_g_1 = np.transpose(matrix_g_1)
         matrix_g_2 = matrix_g_2[:, (self.band_length_half - 1):end]
-        if torch.cuda.is_available():
-            self.matrix_low_0 = torch.Tensor(matrix_h_0).cuda()
-            self.matrix_low_1 = torch.Tensor(matrix_h_1).cuda()
-            self.matrix_low_2 = torch.Tensor(matrix_h_2).cuda()
-            self.matrix_high_0 = torch.Tensor(matrix_g_0).cuda()
-            self.matrix_high_1 = torch.Tensor(matrix_g_1).cuda()
-            self.matrix_high_2 = torch.Tensor(matrix_g_2).cuda()
-        else:
-            self.matrix_low_0 = torch.Tensor(matrix_h_0)
-            self.matrix_low_1 = torch.Tensor(matrix_h_1)
-            self.matrix_low_2 = torch.Tensor(matrix_h_2)
-            self.matrix_high_0 = torch.Tensor(matrix_g_0)
-            self.matrix_high_1 = torch.Tensor(matrix_g_1)
-            self.matrix_high_2 = torch.Tensor(matrix_g_2)
+        
+        # Create tensors on the specified device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        self.matrix_low_0 = torch.Tensor(matrix_h_0).to(device)
+        self.matrix_low_1 = torch.Tensor(matrix_h_1).to(device)
+        self.matrix_low_2 = torch.Tensor(matrix_h_2).to(device)
+        self.matrix_high_0 = torch.Tensor(matrix_g_0).to(device)
+        self.matrix_high_1 = torch.Tensor(matrix_g_1).to(device)
+        self.matrix_high_2 = torch.Tensor(matrix_g_2).to(device)
 
     def forward(self, LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH):
         """
@@ -654,7 +650,7 @@ class IDWT_3D(Module):
         self.input_depth = LLL.size()[-3] + HHH.size()[-3]
         self.input_height = LLL.size()[-2] + HHH.size()[-2]
         self.input_width = LLL.size()[-1] + HHH.size()[-1]
-        self.get_matrix()
+        self.get_matrix(device=LLL.device)
         return IDWTFunction_3D.apply(LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH,
                                      self.matrix_low_0, self.matrix_low_1, self.matrix_low_2,
                                      self.matrix_high_0, self.matrix_high_1, self.matrix_high_2)

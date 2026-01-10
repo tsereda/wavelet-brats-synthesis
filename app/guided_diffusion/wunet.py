@@ -107,16 +107,20 @@ class Downsample(nn.Module):
 
         stride = (1, 2, 2) if dims == 3 and resample_2d else 2
 
-        if use_conv:
-            self.op = conv_nd(dims, self.channels, self.out_channels, 3, stride=stride, padding=1)
-        elif self.use_freq:
+        # When use_freq=True AND use_conv=True, data is already in wavelet space
+        # so we should use convolution-based downsampling, not additional DWT
+        if self.use_freq and not use_conv:
             self.op = self.dwt
+        elif use_conv:
+            self.op = conv_nd(dims, self.channels, self.out_channels, 3, stride=stride, padding=1)
         else:
             assert self.channels == self.out_channels
             self.op = avg_pool_nd(dims, kernel_size=stride, stride=stride)
 
     def forward(self, x):
-        if self.use_freq:
+        # When use_freq=True and use_conv=True, data is already in wavelet space
+        # Apply convolution/pooling, not DWT
+        if self.use_freq and not self.use_conv:
             LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.op(x)
             x = (LLL / 3., (LLH, LHL, LHH, HLL, HLH, HHL, HHH))
         else:
@@ -553,6 +557,7 @@ class WavUNetModel(nn.Module):
                         dims=dims,
                         out_channels=out_ch,
                         resample_2d=resample_2d,
+                        use_freq=self.use_freq,
                     )
                 )
             self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -615,36 +620,34 @@ class WavUNetModel(nn.Module):
         self.output_blocks = nn.ModuleList([])
         for level, mult in list(enumerate(channel_mult))[::-1]:
             for i in range(num_res_blocks+1):                                          # Adding Residual blocks
-                if not i == num_res_blocks:
-                    mid_ch = model_channels * mult
-
-                    layers = [
-                        ResBlock(
-                            ch,
-                            time_embed_dim,
-                            dropout,
-                            out_channels=mid_ch,
-                            dims=dims,
+                mid_ch = model_channels * mult
+                layers = [
+                    ResBlock(
+                        ch,
+                        time_embed_dim,
+                        dropout,
+                        out_channels=mid_ch,
+                        dims=dims,
+                        use_checkpoint=use_checkpoint,
+                        use_scale_shift_norm=use_scale_shift_norm,
+                        num_groups=self.num_groups,
+                        resample_2d=resample_2d,
+                        use_freq=self.use_freq,
+                    )
+                ]
+                if ds in attention_resolutions:                                         # Adding Attention layers
+                    layers.append(
+                        AttentionBlock(
+                            mid_ch,
                             use_checkpoint=use_checkpoint,
-                            use_scale_shift_norm=use_scale_shift_norm,
+                            num_heads=num_heads_upsample,
+                            num_head_channels=num_head_channels,
+                            use_new_attention_order=use_new_attention_order,
                             num_groups=self.num_groups,
-                            resample_2d=resample_2d,
-                            use_freq=self.use_freq,
                         )
-                    ]
-                    if ds in attention_resolutions:                                         # Adding Attention layers
-                        layers.append(
-                            AttentionBlock(
-                                mid_ch,
-                                use_checkpoint=use_checkpoint,
-                                num_heads=num_heads_upsample,
-                                num_head_channels=num_head_channels,
-                                use_new_attention_order=use_new_attention_order,
-                                num_groups=self.num_groups,
-                            )
-                        )
-                    ch = mid_ch
-                else:                                                                       # Adding upsampling operation
+                    )
+                ch = mid_ch
+                if level and i == num_res_blocks:                                       # Adding upsampling operation
                     out_ch = ch
                     layers.append(
                         ResBlock(
@@ -666,7 +669,8 @@ class WavUNetModel(nn.Module):
                             conv_resample,
                             dims=dims,
                             out_channels=out_ch,
-                            resample_2d=resample_2d
+                            resample_2d=resample_2d,
+                            use_freq=self.use_freq,
                         )
                     )
                     ds //= 2
@@ -764,7 +768,7 @@ class WavUNetModel(nn.Module):
             if isinstance(h, tuple):
                 h, skip = h
 
-        for module in self.output_blocks:
+        for i, module in enumerate(self.output_blocks):
             new_hs = hs.pop()
             if new_hs:
                 skip = new_hs
