@@ -90,8 +90,13 @@ def setup_training(args):
         args.use_freq = True
         print(f"🔧 Wavelet: {args.wavelet} (wavelet space)")
     
+    # Set max iterations from max_iterations parameter
+    if args.max_iterations > 0:
+        args.lr_anneal_steps = args.max_iterations
+    
     print(f"[CONFIG] model_mode={model_mode}")
     print(f"[CONFIG] lr={args.lr}, batch_size={args.batch_size}, contr={args.contr}")
+    print(f"[CONFIG] max_iterations={args.max_iterations}, lr_anneal_steps={args.lr_anneal_steps}")
     print(f"[CONFIG] sample_schedule={sample_schedule}, diffusion_steps={args.diffusion_steps}")
     print(f"[CONFIG] wavelet={args.wavelet}, use_freq={args.use_freq}")
     print(f"[CONFIG] special_checkpoint_steps={special_checkpoint_steps}")
@@ -189,6 +194,7 @@ def create_argparser():
         lr=1e-4,
         weight_decay=0.0,
         lr_anneal_steps=0,
+        max_iterations=200000,
         batch_size=1,
         microbatch=-1,
         ema_rate="0.9999",
@@ -196,16 +202,16 @@ def create_argparser():
         save_interval=5000,
         resume_checkpoint='',
         resume_step=0,
-        use_fp16=True,  # 🔧 CHANGED: Enable mixed precision by default (was False)
+        use_fp16=True,
         fp16_scale_growth=1e-3,
-        use_checkpoint=True,  # 🔧 NEW: Enable gradient checkpointing to save memory
+        use_checkpoint=True,
         dataset='brats',
         num_workers=0,
         contr='t1n',
         sample_schedule='direct',
         special_checkpoint_steps="75400,100000,200000",
         save_to_wandb=True,
-        model_mode='diffusion_fast',  # 🆕 NEW: 'direct', 'diffusion_fast', 'diffusion_standard'
+        model_mode='diffusion_fast',
     )
     # Add model/diffusion defaults first
     defaults.update(model_and_diffusion_defaults())
