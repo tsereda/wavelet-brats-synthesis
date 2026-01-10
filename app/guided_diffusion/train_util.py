@@ -422,7 +422,8 @@ class TrainLoop:
                     batch = next(self.iterdatal)
                     cond = {}
             data_load_end = time.time()
-            total_data_time += data_load_end - data_load_start
+            data_load_time = data_load_end - data_load_start
+            total_data_time += data_load_time
 
             # --- Move to device ---
             if self.mode=='i2i':
@@ -450,9 +451,10 @@ class TrainLoop:
                 self.summary_writer.add_scalar('time/total', t_total, global_step=self.step)
                 self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
 
-            # Log training step time to WandB
+            # Log per-step times to WandB
             self.wandb_log_dict.update({
-                'train/time': step_time
+                'train/step_time': step_time,
+                'train/data_load_time': data_load_time
             })
 
             if self.step % 200 == 0:
@@ -552,6 +554,11 @@ class TrainLoop:
                 total_log_time = 0.0
                 total_save_time = 0.0
 
+        # Training finished - log total time
+        total_training_time = time.time() - start_time
+        wandb.log({'train/total_time': total_training_time}, step=self.step)
+        print(f"✅ Training completed in {total_training_time/3600:.2f} hours")
+        
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save_if_best(mse_loss)
@@ -1223,7 +1230,8 @@ class DirectRegressionLoop(TrainLoop):
                 self.iterdatal = iter(self.datal)
                 batch = next(self.iterdatal)
             data_load_end = time.time()
-            total_data_time += data_load_end - data_load_start
+            data_load_time = data_load_end - data_load_start
+            total_data_time += data_load_time
             
             # Move batch to device
             for key in batch:
@@ -1238,9 +1246,10 @@ class DirectRegressionLoop(TrainLoop):
             step_time = step_proc_end - step_proc_start
             total_step_time += step_time
             
-            # Log training step time to WandB
+            # Log per-step times to WandB
             self.wandb_log_dict.update({
-                'train/time': step_time
+                'train/step_time': step_time,
+                'train/data_load_time': data_load_time
             })
             
             # Logging
@@ -1251,7 +1260,7 @@ class DirectRegressionLoop(TrainLoop):
                 # Print profiling info
                 if self.step > 0:
                     elapsed = time.time() - start_time
-                    print(f"[PROFILE] Step {self.step}: Data {total_data_time:.2f}s, Step {total_step_time:.2f}s, Total {elapsed:.2f}s")
+                    print(f"[PROFILE] Step {self.step}: DataLoad {total_data_time:.2f}s, StepTime {total_step_time:.2f}s, Elapsed {elapsed:.2f}s")
             
             # Save checkpoints
             if self.step % self.save_interval == 0 and self.step > 0:
@@ -1278,3 +1287,8 @@ class DirectRegressionLoop(TrainLoop):
             if self.lr_anneal_steps and self.step > self.lr_anneal_steps:
                 print(f"✅ Reached {self.lr_anneal_steps} steps, stopping training")
                 break
+        
+        # Training finished - log total time
+        total_training_time = time.time() - start_time
+        wandb.log({'train/total_time': total_training_time}, step=self.step)
+        print(f"✅ Training completed in {total_training_time/3600:.2f} hours")
