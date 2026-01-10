@@ -1,20 +1,33 @@
-# Complete Ablation Study: 9 Runs (3 methods × 3 wavelets × 4 modalities)
+# Complete Ablation Study: 12 Runs (2 architectures × methods × wavelets × 4 modalities)
 # Research Question: Which components of Fast-cWDM contribute most to performance?
 # 
-# IMPORTANT: All methods can work with or without wavelets.
-# Direct regression: single-pass synthesis (fast inference)
-# Diffusion methods: iterative denoising (stochastic, ensemble-ready)
+# Architecture + Method combinations:
+#   UNet (all 3 methods): 9 configs
+#   SWIN (direct only): 3 configs
+#   Total: 12 configurations
 #
-# Configuration Matrix:
-#   1. direct + nowavelet    (baseline: direct regression, image space)
-#   2. direct + haar         (direct regression with Haar wavelets)
-#   3. direct + db2          (direct regression with Daubechies-2)
-#   4. diffusion_fast + nowavelet  (fast diffusion, image space)
-#   5. diffusion_fast + haar       (your BraTS 2025 submission)
-#   6. diffusion_fast + db2        (fast diffusion with db2)
-#   7. diffusion_standard + nowavelet (standard DDPM, image space)
-#   8. diffusion_standard + haar   (standard DDPM with Haar)
-#   9. diffusion_standard + db2    (standard DDPM with db2)
+# Configuration Matrix (12 runs):
+#   UNet Direct Regression (3 runs):
+#     1. unet + direct + nowavelet    (baseline: UNet direct regression, image space)
+#     2. unet + direct + haar         (UNet direct regression with Haar wavelets)
+#     3. unet + direct + db2          (UNet direct regression with Daubechies-2)
+#   
+#   SWIN Direct Regression (3 runs):
+#     4. swin + direct + nowavelet    (SWIN direct regression, image space)
+#     5. swin + direct + haar         (SWIN direct regression with Haar wavelets)
+#     6. swin + direct + db2          (SWIN direct regression with Daubechies-2)
+#   
+#   UNet Fast Diffusion (3 runs):
+#     7. unet + diffusion_fast + nowavelet  (fast diffusion UNet, image space)
+#     8. unet + diffusion_fast + haar       (YOUR BraTS 2025 SUBMISSION - 0.872 WT Dice)
+#     9. unet + diffusion_fast + db2        (fast diffusion UNet with db2)
+#   
+#   UNet Standard Diffusion (3 runs):
+#     10. unet + diffusion_standard + nowavelet (standard DDPM UNet, image space)
+#     11. unet + diffusion_standard + haar   (standard DDPM UNet with Haar)
+#     12. unet + diffusion_standard + db2    (standard DDPM UNet with db2)
+#
+# Note: Each run trains all 4 modalities sequentially (t1n, t1c, t2w, t2f)
 
 project: fast-cwdm-ablation-study
 program: app/scripts/train.py
@@ -80,7 +93,11 @@ parameters:
   use_checkpoint:
     value: true  # Gradient checkpointing - saves memory at cost of ~20% speed
   
-  # ABLATION GRID DIMENSIONS (3 × 3 = 9 runs)
+  # ABLATION GRID DIMENSIONS (12 configurations)
+  
+  # Architecture: UNet (all methods) vs SWIN (direct only)
+  architecture:
+    values: ['unet', 'swin']
   
   # Method: Direct regression vs Diffusion approaches
   model_mode:
@@ -110,14 +127,28 @@ parameters:
 
 # Expected results structure:
 # 
-# Run 1: direct + null (baseline regression)
-# Run 2: direct + haar (regression with wavelets)
-# Run 3: direct + db2 (regression with db2)
-# Run 4: diffusion_fast + null (your Fast-DDPM baseline)
-# Run 5: diffusion_fast + haar (YOUR SUBMISSION - 0.872 WT Dice)
-# Run 6: diffusion_fast + db2 (Fast-DDPM with db2)
-# Run 7: diffusion_standard + null (standard DDPM baseline)
-# Run 8: diffusion_standard + haar (standard DDPM with haar)
-# Run 9: diffusion_standard + db2 (standard DDPM with db2)
+# UNet Direct Regression (fast inference, single-pass):
+#   Run 1: unet + direct + nowavelet (baseline UNet regression, image space)
+#   Run 2: unet + direct + haar (UNet regression with Haar wavelets)
+#   Run 3: unet + direct + db2 (UNet regression with Daubechies-2)
+# 
+# SWIN Direct Regression (fast inference, single-pass):
+#   Run 4: swin + direct + nowavelet (SWIN regression, image space)
+#   Run 5: swin + direct + haar (SWIN regression with Haar wavelets)
+#   Run 6: swin + direct + db2 (SWIN regression with Daubechies-2)
+# 
+# UNet Fast Diffusion (importance sampled, T=100):
+#   Run 7: unet + diffusion_fast + nowavelet (Fast-DDPM UNet baseline, image space)
+#   Run 8: unet + diffusion_fast + haar (YOUR SUBMISSION - 0.872 WT Dice)
+#   Run 9: unet + diffusion_fast + db2 (Fast-DDPM UNet with db2)
+# 
+# UNet Standard Diffusion (uniform schedule, T=100):
+#   Run 10: unet + diffusion_standard + nowavelet (Standard DDPM UNet, image space)
+#   Run 11: unet + diffusion_standard + haar (Standard DDPM UNet with Haar)
+#   Run 12: unet + diffusion_standard + db2 (Standard DDPM UNet with db2)
 #
-# Each run trains all 4 modalities (t1n, t1c, t2w, t2f) for 200k iterations
+# Each run trains all 4 modalities (t1n, t1c, t2w, t2f) for 200k iterations.
+# Total: 12 model configurations × 4 modalities = 48 checkpoints.
+#
+# NOTE: SWIN only supports direct regression (no diffusion). The sweep will
+# automatically skip invalid combinations (swin + diffusion_*) via train.py logic.

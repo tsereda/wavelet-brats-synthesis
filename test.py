@@ -2,6 +2,11 @@
 """
 Unified test suite for Fast-cWDM BraTS Synthesis project.
 
+Tests all 9 ablation study configurations:
+  - UNet Direct Regression: 3 runs (nowavelet, haar, db2)
+  - UNet Fast Diffusion: 3 runs (nowavelet, haar, db2)
+  - UNet Standard Diffusion: 3 runs (nowavelet, haar, db2)
+
 Usage:
     python test.py          # Show available tests
     python test.py shapes   # Channel configuration math (~5s)
