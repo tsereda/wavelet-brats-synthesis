@@ -220,52 +220,82 @@ class TrainLoop:
                 else:
                     batch = batch.to(dist_util.dev())
                 
-                # Sample timesteps
-                batch_size = batch['t1n'].shape[0] if self.mode == 'i2i' else batch.shape[0]
-                t, weights = self.schedule_sampler.sample(batch_size, dist_util.dev())
+                # Extract input and target modalities
+                modalities = ['t1n', 't1c', 't2w', 't2f']
+                input_modalities = [m for m in modalities if m != self.contr]
                 
-                # Time ONLY the inference (no backward pass)
+                # Stack input modalities (3 modalities as input)
+                x_inputs = [batch[m] for m in input_modalities]
+                x_input = th.cat(x_inputs, dim=1)  # [B, 3, H, W, D]
+                x_target = batch[self.contr]  # [B, 1, H, W, D]
+                
+                use_wavelet = self.wavelet is not None and self.wavelet != 'null'
+                
+                # Time ONLY the inference (full sampling)
                 inference_start = time.time()
                 
-                # Compute losses
-                losses, _, _ = self.diffusion.training_losses(
-                    self.model, 
-                    x_start=batch, 
-                    t=t, 
-                    model_kwargs={},
-                    mode=self.mode, 
-                    contr=self.contr
-                )
+                if use_wavelet:
+                    # Apply DWT to inputs
+                    input_wavelets = []
+                    for x_mod in x_inputs:
+                        lfc, *hfcs = self.dwt(x_mod)
+                        wavelet_components = th.cat([lfc] + list(hfcs), dim=1)
+                        input_wavelets.append(wavelet_components)
+                    
+                    x_input_wavelet = th.cat(input_wavelets, dim=1)  # [B, 24, H/2, W/2, D/2]
+                    
+                    # Apply DWT to target for loss calculation
+                    target_lfc, *target_hfcs = self.dwt(x_target)
+                    x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)  # [B, 8, H/2, W/2, D/2]
+                    
+                    # FULL SAMPLING in wavelet space with conditioning
+                    # Shape is for the target only (8 channels), conditioning is passed via cond parameter
+                    sample_fn = self.diffusion.p_sample_loop
+                    pred_wavelet = sample_fn(
+                        self.model,
+                        (x_input_wavelet.shape[0], 8, *x_input_wavelet.shape[2:]),  # Target shape: [B, 8, H/2, W/2, D/2]
+                        clip_denoised=True,
+                        progress=False,
+                        cond=x_input_wavelet  # Pass conditioning via cond parameter
+                    )
+                    
+                    # Reconstruct to spatial domain
+                    pred_lfc = pred_wavelet[:, :1]
+                    pred_hfcs = [pred_wavelet[:, i:i+1] for i in range(1, 8)]
+                    pred_spatial = self.idwt(pred_lfc, *pred_hfcs)
+                    
+                    # MSE loss in wavelet space
+                    mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
+                    
+                else:
+                    # FULL SAMPLING in image space with conditioning
+                    sample_fn = self.diffusion.p_sample_loop
+                    pred_spatial = sample_fn(
+                        self.model,
+                        (x_input.shape[0], 1, *x_input.shape[2:]),  # Target shape: [B, 1, H, W, D]
+                        clip_denoised=True,
+                        progress=False,
+                        cond=x_input  # Pass conditioning via cond parameter
+                    )
+                    
+                    # MSE loss in image space
+                    mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
                 
                 inference_end = time.time()
                 inference_times.append(inference_end - inference_start)
                 
-                # Extract MSE loss
-                mse_loss = losses.get("mse_loss", losses.get("loss", 0.0))
-                if hasattr(mse_loss, 'item'):
-                    mse_loss = mse_loss.item()
-                val_losses.append(mse_loss)
+                val_losses.append(mse_loss.item())
                 
-                # Calculate SSIM and PSNR if available
+                # Calculate SSIM and PSNR on spatial domain with brain masking
                 if metrics_available:
                     try:
-                        # Get target and predicted images
-                        target = batch[self.contr].cpu().numpy()
+                        # Create brain mask from target
+                        target_np = x_target.cpu().numpy()
+                        pred_np = pred_spatial.cpu().numpy()
                         
-                        # For diffusion, approximate prediction from model output
-                        # Note: This is a fast approximation; full sampling would be too slow
-                        # We use the denoised prediction at timestep t
-                        model_output = losses.get('pred_xstart', None)
-                        if model_output is not None:
-                            predicted = model_output.cpu().numpy()
-                        else:
-                            # Skip SSIM/PSNR if we can't get prediction
-                            continue
-                        
-                        # Create brain mask from target (threshold > 0.01)
-                        brain_mask = (target > 0.01).astype(np.float32)
-                        predicted_masked = predicted * brain_mask
-                        target_masked = target * brain_mask
+                        brain_mask = (target_np > 0.01).astype(np.float32)
+                        predicted_masked = pred_np * brain_mask
+                        target_masked = target_np * brain_mask
                         
                         # Calculate metrics on first sample in batch
                         pred_vol = predicted_masked[0, 0]
