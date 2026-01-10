@@ -296,14 +296,16 @@ class TrainLoop:
                 img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
                 self.wandb_log_dict['sample/x_0'] = wandb.Image(img, caption='sample/x_0')
 
-                image_size = sample.size()[2]
-                for ch in range(8):
-                    midplane = sample[0, ch, :, :, image_size // 2]
-                    if self.summary_writer is not None:
-                        self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
-                                                    global_step=self.step)
-                    img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                    self.wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
+                # Only visualize wavelet subbands if using wavelet transform
+                if self.diffusion.use_freq and sample.size()[1] == 8:
+                    image_size = sample.size()[2]
+                    for ch in range(8):
+                        midplane = sample[0, ch, :, :, image_size // 2]
+                        if self.summary_writer is not None:
+                            self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
+                                                        global_step=self.step)
+                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
+                        self.wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
 
                 if self.mode == 'i2i':
                     if not self.contr == 't1n':
