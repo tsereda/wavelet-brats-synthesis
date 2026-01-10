@@ -478,6 +478,7 @@ class TrainLoop:
             # --- Log all accumulated metrics to wandb (once per step) ---
             wandb.log(self.wandb_log_dict, step=self.step)
             
+            # --- Increment step AFTER all logging/saving ---
             self.step += 1
 
             # Print profiling info every log_interval
@@ -1089,32 +1090,60 @@ class DirectRegressionLoop(TrainLoop):
         Simplified version without diffusion sampling.
         """
         print(f"🏃 Starting DirectRegressionLoop for {self.contr}")
-        print(f"   Total steps planned: Based on data iterations")
+        print(f"   Total steps planned: {self.lr_anneal_steps if self.lr_anneal_steps else 'Based on data iterations'}")
+        
+        import time
+        total_data_time = 0.0
+        total_step_time = 0.0
+        start_time = time.time()
+        t = time.time()
         
         while True:
+            t_total = time.time() - t
+            t = time.time()
+            
             # Initialize wandb accumulator for this step
             self.wandb_log_dict = {'step': self.step}
             
+            # --- Data loading ---
+            data_load_start = time.time()
             try:
                 batch = next(self.iterdatal)
             except StopIteration:
                 # Restart the iterator
                 self.iterdatal = iter(self.datal)
                 batch = next(self.iterdatal)
+            data_load_end = time.time()
+            total_data_time += data_load_end - data_load_start
             
             # Move batch to device
             for key in batch:
                 if isinstance(batch[key], th.Tensor):
                     batch[key] = batch[key].to(dist_util.dev())
             
-            # Run training step
+            # --- Model forward/backward ---
+            step_proc_start = time.time()
             cond = batch  # For compatibility
             mse_loss, sample, sample_idwt = self.run_step(batch, cond)
+            step_proc_end = time.time()
+            total_step_time += step_proc_end - step_proc_start
+            
+            # Accumulate time metrics
+            self.wandb_log_dict.update({
+                'time/load': total_data_time,
+                'time/forward': total_step_time,
+                'time/total': t_total
+            })
             
             # Logging
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
                 print(f"Step {self.step}: MSE Loss = {mse_loss:.6f}")
+                
+                # Print profiling info
+                if self.step > 0:
+                    elapsed = time.time() - start_time
+                    print(f"[PROFILE] Step {self.step}: Data {total_data_time:.2f}s, Step {total_step_time:.2f}s, Total {elapsed:.2f}s")
             
             # Save checkpoints
             if self.step % self.save_interval == 0 and self.step > 0:
@@ -1134,9 +1163,10 @@ class DirectRegressionLoop(TrainLoop):
             # Log all accumulated metrics to wandb (once per step)
             wandb.log(self.wandb_log_dict, step=self.step)
             
+            # Increment step AFTER all logging/saving
             self.step += 1
             
             # Optional: Stop after certain number of iterations
-            if self.lr_anneal_steps and self.step >= self.lr_anneal_steps:
+            if self.lr_anneal_steps and self.step > self.lr_anneal_steps:
                 print(f"✅ Reached {self.lr_anneal_steps} steps, stopping training")
                 break
