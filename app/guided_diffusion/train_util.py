@@ -320,6 +320,7 @@ class TrainLoop:
         # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
             'val/mse': avg_val_loss,
+            'val/mse': avg_val_loss,
             'val/inference_time': avg_inference_time
         })
         
@@ -1172,6 +1173,7 @@ class DirectRegressionLoop(TrainLoop):
         
         # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
             'val/mse': avg_val_loss,
             'val/inference_time': avg_inference_time
         })
