@@ -356,9 +356,10 @@ class GaussianDiffusion:
         def process_xstart(x):
             if denoised_fn is not None:
                 x = denoised_fn(x)
-            if clip_denoised:
+            if clip_denoised and self.use_freq and self.dwt and self.idwt:
+                # Only apply wavelet clipping if wavelets are enabled
                 B, _, H, W, D = x.size()
-                x_idwt = idwt(x[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
+                x_idwt = self.idwt(x[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
                               x[:, 1, :, :, :].view(B, 1, H, W, D),
                               x[:, 2, :, :, :].view(B, 1, H, W, D),
                               x[:, 3, :, :, :].view(B, 1, H, W, D),
@@ -369,10 +370,11 @@ class GaussianDiffusion:
 
                 x_idwt_clamp = x_idwt.clamp(0., 1.)
 
-                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(x_idwt_clamp)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(x_idwt_clamp)
                 x = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-
-                return x
+            elif clip_denoised:
+                # Image space clipping (no wavelets)
+                x = x.clamp(0., 1.)
             return x
 
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
