@@ -249,15 +249,24 @@ class TrainLoop:
                     x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)  # [B, 8, H/2, W/2, D/2]
                     
                     # FULL SAMPLING in wavelet space with conditioning
-                    # Shape is for the target only (8 channels), conditioning is passed via cond parameter
-                    sample_fn = self.diffusion.p_sample_loop
-                    pred_wavelet = sample_fn(
-                        self.model,
-                        (x_input_wavelet.shape[0], 8, *x_input_wavelet.shape[2:]),  # Target shape: [B, 8, H/2, W/2, D/2]
+                    # Use p_sample_loop_progressive for proper diffusion sampling
+                    noise_shape = (x_input_wavelet.shape[0], 8, *x_input_wavelet.shape[2:])
+                    noise = th.randn(*noise_shape, device=x_input_wavelet.device)
+                    
+                    final_sample = None
+                    for sample_dict in self.diffusion.p_sample_loop_progressive(
+                        model=self.model,
+                        shape=noise_shape,
+                        time=self.diffusion.num_timesteps,
+                        noise=noise,
+                        cond=x_input_wavelet,
                         clip_denoised=True,
                         progress=False,
-                        cond=x_input_wavelet  # Pass conditioning via cond parameter
-                    )
+                        model_kwargs={}
+                    ):
+                        final_sample = sample_dict
+                    
+                    pred_wavelet = final_sample["sample"]
                     
                     # Reconstruct to spatial domain
                     pred_lfc = pred_wavelet[:, :1]
@@ -269,14 +278,24 @@ class TrainLoop:
                     
                 else:
                     # FULL SAMPLING in image space with conditioning
-                    sample_fn = self.diffusion.p_sample_loop
-                    pred_spatial = sample_fn(
-                        self.model,
-                        (x_input.shape[0], 1, *x_input.shape[2:]),  # Target shape: [B, 1, H, W, D]
+                    # Use p_sample_loop_progressive for proper diffusion sampling
+                    noise_shape = (x_input.shape[0], 1, *x_input.shape[2:])
+                    noise = th.randn(*noise_shape, device=x_input.device)
+                    
+                    final_sample = None
+                    for sample_dict in self.diffusion.p_sample_loop_progressive(
+                        model=self.model,
+                        shape=noise_shape,
+                        time=self.diffusion.num_timesteps,
+                        noise=noise,
+                        cond=x_input,
                         clip_denoised=True,
                         progress=False,
-                        cond=x_input  # Pass conditioning via cond parameter
-                    )
+                        model_kwargs={}
+                    ):
+                        final_sample = sample_dict
+                    
+                    pred_spatial = final_sample["sample"]
                     
                     # MSE loss in image space
                     mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
