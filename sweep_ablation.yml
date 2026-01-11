@@ -69,7 +69,7 @@ parameters:
   use_checkpoint:
     value: true
   
-  # Ablation grid
+  # Ablation grid 
   architecture:
     values: ['unet', 'swin']
   
