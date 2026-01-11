@@ -312,7 +312,9 @@ class GaussianDiffusion:
         
         assert t.shape == (B,)
 
-        if self.mode == 'i2i' and cond is not None:  # Add condition
+        if self.mode == 'i2i':  # i2i mode requires conditioning
+            if cond is None:
+                raise ValueError(f"❌ i2i mode requires 'cond' parameter but got None! x.shape={x.shape}")
             x_cond = th.cat([x, cond], dim=1)
         else:  # Unconditional generation
             x_cond = x
