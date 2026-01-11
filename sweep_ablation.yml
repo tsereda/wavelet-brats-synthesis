@@ -30,10 +30,7 @@ parameters:
     value: 1e-4
   num_channels:
     value: 48  # 🔧 REDUCED from 64 to save memory (48→96→96→192→192 vs 64→128→128→256→256)
-  in_channels:
-    value: 32  # 8 wavelet components × 4 modalities
-  out_channels:
-    value: 8   # 8 wavelet components for target
+  # ❌ REMOVED in_channels/out_channels - auto-configured by train.py based on mode + wavelet
   channel_mult:
     value: "1,2,2,4,4"
   num_workers:

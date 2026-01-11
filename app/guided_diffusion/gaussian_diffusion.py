@@ -394,12 +394,14 @@ class GaussianDiffusion:
                     x_start=pred_xstart, x_t=x, t=t
                 )
             elif self.mode == 'i2i':
+                # In i2i mode, x is the noise-only channels (8 or 1), not concatenated
                 model_mean, _, _ = self.q_posterior_mean_variance(
-                    x_start=pred_xstart, x_t=x[:, :8, ...], t=t
+                    x_start=pred_xstart, x_t=x, t=t
                 )
         else:
             raise NotImplementedError(self.model_mean_type)
 
+        # In i2i mode, all outputs should match the noise-only shape (x), not concatenated shape
         assert (model_mean.shape == model_log_variance.shape == pred_xstart.shape == x.shape)
 
 
