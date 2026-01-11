@@ -315,8 +315,11 @@ class GaussianDiffusion:
         if self.mode == 'i2i':  # i2i mode requires conditioning
             if cond is None:
                 raise ValueError(f"❌ i2i mode requires 'cond' parameter but got None! x.shape={x.shape}")
+            print(f"[DEBUG p_mean_variance] i2i mode: x.shape={x.shape}, cond.shape={cond.shape}")
             x_cond = th.cat([x, cond], dim=1)
+            print(f"[DEBUG p_mean_variance] After concat: x_cond.shape={x_cond.shape}")
         else:  # Unconditional generation
+            print(f"[DEBUG p_mean_variance] default mode: x.shape={x.shape}, NO concatenation")
             x_cond = x
 
         model_output = model(x_cond, self._scale_timesteps(t), **model_kwargs)
