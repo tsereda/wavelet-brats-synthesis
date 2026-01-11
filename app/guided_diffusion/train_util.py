@@ -259,9 +259,9 @@ class TrainLoop:
                         shape=noise_shape,
                         time=self.diffusion.num_timesteps,
                         noise=noise,
-                        cond=x_input_wavelet,
                         clip_denoised=True,
                         progress=False,
+                        cond=x_input_wavelet,  # Pass as cond param for i2i concatenation
                         model_kwargs={}
                     ):
                         final_sample = sample_dict
@@ -288,9 +288,9 @@ class TrainLoop:
                         shape=noise_shape,
                         time=self.diffusion.num_timesteps,
                         noise=noise,
-                        cond=x_input,
                         clip_denoised=True,
                         progress=False,
+                        cond=x_input,  # Pass as cond param for i2i concatenation
                         model_kwargs={}
                     ):
                         final_sample = sample_dict
