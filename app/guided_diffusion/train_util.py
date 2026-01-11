@@ -256,8 +256,7 @@ class TrainLoop:
                         (x_input_wavelet.shape[0], 8, *x_input_wavelet.shape[2:]),  # Target shape: [B, 8, H/2, W/2, D/2]
                         clip_denoised=True,
                         progress=False,
-                        cond=x_input_wavelet,  # Pass conditioning via cond parameter
-                        time=self.diffusion.num_timesteps  # Use correct number of timesteps from schedule
+                        cond=x_input_wavelet  # Pass conditioning via cond parameter
                     )
                     
                     # Reconstruct to spatial domain
@@ -276,8 +275,7 @@ class TrainLoop:
                         (x_input.shape[0], 1, *x_input.shape[2:]),  # Target shape: [B, 1, H, W, D]
                         clip_denoised=True,
                         progress=False,
-                        cond=x_input,  # Pass conditioning via cond parameter
-                        time=self.diffusion.num_timesteps  # Use correct number of timesteps from schedule
+                        cond=x_input  # Pass conditioning via cond parameter
                     )
                     
                     # MSE loss in image space
