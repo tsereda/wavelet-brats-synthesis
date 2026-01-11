@@ -126,6 +126,10 @@ def setup_training(args):
     
     print(f"[CONFIG] ✅ Auto-configured channels: in_channels={args.in_channels}, out_channels={args.out_channels}")
     
+    # 🆕 CRITICAL: Set mode='i2i' for conditional image-to-image synthesis
+    args.mode = 'i2i'
+    print(f"[CONFIG] mode={args.mode} (conditional synthesis)")
+    
     # Create model and diffusion
     model_args = args_to_dict(args, model_and_diffusion_defaults().keys())
     model, diffusion = create_model_and_diffusion(**model_args)
