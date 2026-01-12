@@ -591,14 +591,6 @@ class TrainLoop:
 
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-            
-            # --- Hot-reload check for debug code updates ---
-            if self.step % 100 == 0 and self.step > 0:
-                from .hot_reload import check_and_reload_if_changed
-                check_and_reload_if_changed(
-                    ['guided_diffusion.logger'],  # Safe to reload: logging utilities only
-                    self.reload_mtimes
-                )
 
             # --- Saving ---
             if self.step % self.save_interval == 0 and self.step > 0:
