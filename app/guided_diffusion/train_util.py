@@ -119,6 +119,7 @@ class TrainLoop:
         
         # Fast validation: use 10 steps instead of full diffusion_steps
         self.val_diffusion_steps = 10
+        self.max_val_batches = 50  # Sample 50 batches (~11% of 447 dataset) for fast validation
         
         # Initialize wavelet transforms (requires self.wavelet to be set)
         # Only create DWT/IDWT if using wavelets (not None or "null")
@@ -216,9 +217,12 @@ class TrainLoop:
         val_psnrs = []
         inference_times = []
         
-        print(f"🔍 Running validation with {self.val_diffusion_steps}-step sampling...")
+        print(f"🔍 Running validation on {self.max_val_batches} batches with {self.val_diffusion_steps}-step sampling...")
         with th.no_grad():
-            for batch_idx, batch in enumerate(tqdm(self.val_datal, desc="Val batches", leave=False)):
+            for batch_idx, batch in enumerate(tqdm(self.val_datal, desc="Val batches", total=self.max_val_batches, leave=False)):
+                if batch_idx >= self.max_val_batches:
+                    break
+                
                 # Move batch to device
                 if self.mode == 'i2i':
                     batch['t1n'] = batch['t1n'].to(dist_util.dev())
