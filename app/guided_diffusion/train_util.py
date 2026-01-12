@@ -119,7 +119,7 @@ class TrainLoop:
         
         # Fast validation: use 10 steps instead of full diffusion_steps
         self.val_diffusion_steps = 10
-        self.max_val_batches = 50  # Sample 50 batches (~11% of 447 dataset) for fast validation
+        self.max_val_batches = 5  # Sample 50 batches (~11% of 447 dataset) for fast validation
         
         # Initialize wavelet transforms (requires self.wavelet to be set)
         # Only create DWT/IDWT if using wavelets (not None or "null")
