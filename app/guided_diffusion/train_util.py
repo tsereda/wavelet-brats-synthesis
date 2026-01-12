@@ -270,6 +270,7 @@ class TrainLoop:
                         model_var_type=self.diffusion.model_var_type,
                         loss_type=self.diffusion.loss_type,
                         rescale_timesteps=self.diffusion.rescale_timesteps,
+                        mode=self.diffusion.mode,
                     )
                     
                     final_sample = None
@@ -311,6 +312,7 @@ class TrainLoop:
                         model_var_type=self.diffusion.model_var_type,
                         loss_type=self.diffusion.loss_type,
                         rescale_timesteps=self.diffusion.rescale_timesteps,
+                        mode=self.diffusion.mode,
                     )
                     
                     final_sample = None
