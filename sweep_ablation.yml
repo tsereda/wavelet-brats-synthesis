@@ -71,7 +71,7 @@ parameters:
     values: ['unet', 'swin']
   
   model_mode:
-    values: ['diffusion_fast']
+    values: ['direct', 'diffusion_fast']
   
   wavelet:
     values: ['nowavelet', 'haar', 'db2']
