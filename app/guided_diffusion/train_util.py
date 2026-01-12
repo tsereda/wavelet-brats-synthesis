@@ -117,6 +117,9 @@ class TrainLoop:
         self.save_to_wandb = save_to_wandb
         self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
         
+        # Fast validation: use 10 steps instead of full diffusion_steps
+        self.val_diffusion_steps = 10
+        
         # Initialize wavelet transforms (requires self.wavelet to be set)
         # Only create DWT/IDWT if using wavelets (not None or "null")
         if self.wavelet and self.wavelet != 'null':
@@ -142,6 +145,9 @@ class TrainLoop:
         
         # Accumulator for wandb metrics (logged once per step)
         self.wandb_log_dict = {}
+        
+        # Hot-reload tracking for debug code updates
+        self.reload_mtimes = {}
         
         # Load existing best losses if resuming
         self._load_best_losses()
@@ -203,14 +209,16 @@ class TrainLoop:
             metrics_available = False
         
         import time
+        from tqdm import tqdm
         self.model.eval()
         val_losses = []
         val_ssims = []
         val_psnrs = []
         inference_times = []
         
+        print(f"🔍 Running validation with {self.val_diffusion_steps}-step sampling...")
         with th.no_grad():
-            for batch in self.val_datal:
+            for batch_idx, batch in enumerate(tqdm(self.val_datal, desc="Val batches", leave=False)):
                 # Move batch to device
                 if self.mode == 'i2i':
                     batch['t1n'] = batch['t1n'].to(dist_util.dev())
@@ -248,22 +256,34 @@ class TrainLoop:
                     target_lfc, *target_hfcs = self.dwt(x_target)
                     x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)  # [B, 8, H/2, W/2, D/2]
                     
-                    # FULL SAMPLING in wavelet space with conditioning
+                    # FAST VALIDATION: Use 10-step sampling instead of full 100 steps
                     # Use p_sample_loop_progressive for proper diffusion sampling
                     noise_shape = (x_input_wavelet.shape[0], 8, *x_input_wavelet.shape[2:])
                     noise = th.randn(*noise_shape, device=x_input_wavelet.device)
                     
+                    # Create respaced diffusion with 10 steps for fast validation
+                    from .respace import SpacedDiffusion, space_timesteps
+                    val_diffusion = SpacedDiffusion(
+                        use_timesteps=space_timesteps(self.diffusion.num_timesteps, f"ddim{self.val_diffusion_steps}"),
+                        betas=self.diffusion.betas,
+                        model_mean_type=self.diffusion.model_mean_type,
+                        model_var_type=self.diffusion.model_var_type,
+                        loss_type=self.diffusion.loss_type,
+                        rescale_timesteps=self.diffusion.rescale_timesteps,
+                    )
+                    
                     final_sample = None
-                    for sample_dict in self.diffusion.p_sample_loop_progressive(
+                    step_iter = val_diffusion.p_sample_loop_progressive(
                         model=self.model,
                         shape=noise_shape,
-                        time=self.diffusion.num_timesteps,
+                        time=val_diffusion.num_timesteps,
                         noise=noise,
                         clip_denoised=True,
                         progress=False,
                         cond=x_input_wavelet,  # Pass as cond param for i2i concatenation
                         model_kwargs={}
-                    ):
+                    )
+                    for sample_dict in tqdm(step_iter, total=self.val_diffusion_steps, desc=f"  Diffusion steps (batch {batch_idx+1})", leave=False):
                         final_sample = sample_dict
                     
                     pred_wavelet = final_sample["sample"]
@@ -277,22 +297,34 @@ class TrainLoop:
                     mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
                     
                 else:
-                    # FULL SAMPLING in image space with conditioning
+                    # FAST VALIDATION: Use 10-step sampling instead of full 100 steps
                     # Use p_sample_loop_progressive for proper diffusion sampling
                     noise_shape = (x_input.shape[0], 1, *x_input.shape[2:])
                     noise = th.randn(*noise_shape, device=x_input.device)
                     
+                    # Create respaced diffusion with 10 steps for fast validation
+                    from .respace import SpacedDiffusion, space_timesteps
+                    val_diffusion = SpacedDiffusion(
+                        use_timesteps=space_timesteps(self.diffusion.num_timesteps, f"ddim{self.val_diffusion_steps}"),
+                        betas=self.diffusion.betas,
+                        model_mean_type=self.diffusion.model_mean_type,
+                        model_var_type=self.diffusion.model_var_type,
+                        loss_type=self.diffusion.loss_type,
+                        rescale_timesteps=self.diffusion.rescale_timesteps,
+                    )
+                    
                     final_sample = None
-                    for sample_dict in self.diffusion.p_sample_loop_progressive(
+                    step_iter = val_diffusion.p_sample_loop_progressive(
                         model=self.model,
                         shape=noise_shape,
-                        time=self.diffusion.num_timesteps,
+                        time=val_diffusion.num_timesteps,
                         noise=noise,
                         clip_denoised=True,
                         progress=False,
                         cond=x_input,  # Pass as cond param for i2i concatenation
                         model_kwargs={}
-                    ):
+                    )
+                    for sample_dict in tqdm(step_iter, total=self.val_diffusion_steps, desc=f"  Diffusion steps (batch {batch_idx+1})", leave=False):
                         final_sample = sample_dict
                     
                     pred_spatial = final_sample["sample"]
@@ -559,6 +591,14 @@ class TrainLoop:
 
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
+            
+            # --- Hot-reload check for debug code updates ---
+            if self.step % 100 == 0 and self.step > 0:
+                from .hot_reload import check_and_reload_if_changed
+                check_and_reload_if_changed(
+                    ['guided_diffusion.logger'],  # Safe to reload: logging utilities only
+                    self.reload_mtimes
+                )
 
             # --- Saving ---
             if self.step % self.save_interval == 0 and self.step > 0:
