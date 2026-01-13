@@ -48,7 +48,7 @@ parameters:
   
   # Training configuration
   max_iterations:
-    value: 1001
+    value: 400000
   diffusion_steps:
     value: 100
   save_interval:

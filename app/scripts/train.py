@@ -205,7 +205,7 @@ def setup_training(args):
         wavelet=args.wavelet,
         special_checkpoint_steps=special_checkpoint_steps,
         save_to_wandb=args.save_to_wandb,
-        val_interval=100,  # Run validation every 100 steps for faster testing
+        val_interval=1000,
         **loop_kwargs
     ).run_loop()
 
