@@ -7,7 +7,7 @@ echo "========================================="
 
 # Parse command line arguments
 RESUME_RUN=""
-CHECKPOINT_DIR="./checkpoints"
+CHECKPOINT_DIR="/checkpoints"
 
 while [[ $# -gt 0 ]]; do
   case $1 in

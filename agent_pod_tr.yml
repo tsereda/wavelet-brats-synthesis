@@ -79,7 +79,19 @@ spec:
     - name: data-volume
       mountPath: /data
  
+    - name: checkpoints
+      mountPath: /checkpoints
+    - name: shm
+      mountPath: /dev/shm
+ 
   volumes:
   - name: data-volume
     persistentVolumeClaim:
       claimName: brats2025-{POD_NUM}
+  - name: checkpoints
+    persistentVolumeClaim:
+      claimName: brats-checkpoints
+  - name: shm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 16Gi

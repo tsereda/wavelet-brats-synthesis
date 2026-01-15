@@ -234,7 +234,7 @@ def create_argparser():
         contr='t1n',
         sample_schedule='direct',
         special_checkpoint_steps="75400,100000,200000",
-        save_to_wandb=True,
+        save_to_wandb=False,
         model_mode='diffusion_fast',
     )
     # Add model/diffusion defaults first

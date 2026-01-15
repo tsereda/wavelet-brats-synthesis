@@ -58,7 +58,7 @@ parameters:
   special_checkpoint_steps:
     value: "47500,100000,150000,200000"
   save_to_wandb:
-    value: true
+    value: false
   
   # Memory optimizations
   use_fp16:
