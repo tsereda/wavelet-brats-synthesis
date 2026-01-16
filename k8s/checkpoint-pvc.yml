@@ -4,9 +4,9 @@ metadata:
   name: brats-checkpoints
   namespace: gai-lina-group
 spec:
-  storageClassName: rook-ceph-block
+  storageClassName: rook-cephfs-central
   accessModes:
-    - ReadWriteMany  # Multiple agents can write simultaneously
+    - ReadWriteMany
   resources:
     requests:
-      storage: 500Gi  # Each checkpoint ~500MB, 4 modalities × 9 configs × special saves = ~100GB + buffer
+      storage: 500Gi 
