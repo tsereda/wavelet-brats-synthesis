@@ -49,8 +49,21 @@ def setup_training(args):
     # Initialize distributed training (REQUIRED - even for single GPU)
     dist_util.setup_dist()
     
-    # Configure logger
-    logger.configure()
+    # Configure logger with checkpoint directory
+    logger.configure(dir=args.checkpoint_dir)
+    
+    # Validate checkpoint directory is writable
+    if args.checkpoint_dir:
+        os.makedirs(args.checkpoint_dir, exist_ok=True)
+        test_file = os.path.join(args.checkpoint_dir, '.write_test')
+        try:
+            with open(test_file, 'w') as f:
+                f.write('test')
+            os.remove(test_file)
+            print(f"[CHECK] ✅ Checkpoint directory writable: {args.checkpoint_dir}")
+        except Exception as e:
+            print(f"[ERROR] ❌ Cannot write to {args.checkpoint_dir}: {e}")
+            raise
     
     # Process special checkpoint steps
     if isinstance(args.special_checkpoint_steps, str):
@@ -99,6 +112,8 @@ def setup_training(args):
     print(f"[CONFIG] max_iterations={args.max_iterations}, lr_anneal_steps={args.lr_anneal_steps}")
     print(f"[CONFIG] sample_schedule={sample_schedule}, diffusion_steps={args.diffusion_steps}")
     print(f"[CONFIG] wavelet={args.wavelet}, use_freq={args.use_freq}")
+    print(f"[CONFIG] checkpoint_dir={args.checkpoint_dir}")
+    print(f"[CONFIG] val_interval={args.val_interval}")
     print(f"[CONFIG] special_checkpoint_steps={special_checkpoint_steps}")
     print(f"[CONFIG] save_to_wandb={args.save_to_wandb}")
     print(f"[CONFIG] resume_checkpoint={args.resume_checkpoint}")
@@ -205,7 +220,7 @@ def setup_training(args):
         wavelet=args.wavelet,
         special_checkpoint_steps=special_checkpoint_steps,
         save_to_wandb=args.save_to_wandb,
-        val_interval=1000,
+        val_interval=args.val_interval,  # CHANGED: Use configurable val_interval (10k instead of 1k = 10× faster)
         **loop_kwargs
     ).run_loop()
 
@@ -236,6 +251,8 @@ def create_argparser():
         special_checkpoint_steps="75400,100000,200000",
         save_to_wandb=False,
         model_mode='diffusion_fast',
+        checkpoint_dir='/checkpoints',  # NEW: Default checkpoint directory for K8s pods
+        val_interval=10000,              # NEW: Configurable validation interval (10k = 10× faster than 1k)
     )
     # Add model/diffusion defaults first
     defaults.update(model_and_diffusion_defaults())

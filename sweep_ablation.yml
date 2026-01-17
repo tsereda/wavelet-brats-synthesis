@@ -60,6 +60,14 @@ parameters:
   save_to_wandb:
     value: false
   
+  # Checkpoint configuration (CRITICAL FIX)
+  checkpoint_dir:
+    value: /checkpoints
+  
+  # Validation interval (CRITICAL FIX: 10k instead of 1k = 10× faster training)
+  val_interval:
+    value: 10000
+  
   # Memory optimizations
   use_fp16:
     value: true
