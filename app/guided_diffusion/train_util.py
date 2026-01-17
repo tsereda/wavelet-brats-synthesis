@@ -62,7 +62,8 @@ class TrainLoop:
         wavelet='haar',
         special_checkpoint_steps=None,
         save_to_wandb=True,
-        val_interval=1000
+        val_interval=1000,
+        checkpoint_dir=None  # <--- add this argument
     ):
         self.summary_writer = summary_writer
         self.mode = mode
@@ -141,7 +142,7 @@ class TrainLoop:
         self.best_checkpoints = {}
         self.best_val_loss = float('inf')
         self.best_val_checkpoint = None
-        self.checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
+        self.checkpoint_dir = checkpoint_dir or os.path.join(get_blob_logdir(), 'checkpoints')
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
         # Accumulator for wandb metrics (logged once per step)
@@ -410,7 +411,7 @@ class TrainLoop:
                     print(f"Error removing old val checkpoint: {e}")
             
             # Save new best val checkpoint
-            filename = f"brats_{self.contr}_best_val_{self.sample_schedule}_{self.diffusion_steps}.pt"
+            filename = f"brats_{self.contr}_best_val_direct.pt"
             full_save_path = os.path.join(self.checkpoint_dir, filename)
             
             try:
@@ -421,7 +422,7 @@ class TrainLoop:
                 print(f"✅ Saved best val checkpoint: {full_save_path}")
                 
                 # Save optimizer state
-                opt_save_path = os.path.join(self.checkpoint_dir, f"brats_{self.contr}_best_val_{self.sample_schedule}_{self.diffusion_steps}_opt.pt")
+                opt_save_path = os.path.join(self.checkpoint_dir, f"brats_{self.contr}_best_val_direct_opt.pt")
                 with bf.BlobFile(opt_save_path, "wb") as f:
                     th.save(self.opt.state_dict(), f)
                 
@@ -483,165 +484,93 @@ class TrainLoop:
             print(f'no optimizer checkpoint found for step {self.step} at path {bf.dirname(main_checkpoint)}')
 
     def run_loop(self):
+        """
+        Main training loop for direct regression.
+        Simplified version without diffusion sampling.
+        """
+        print(f"🏃 Starting DirectRegressionLoop for {self.contr}")
+        print(f"   Total steps planned: {self.lr_anneal_steps if self.lr_anneal_steps else 'Based on data iterations'}")
+        
         import time
         total_data_time = 0.0
         total_step_time = 0.0
-        total_log_time = 0.0
-        total_save_time = 0.0
         start_time = time.time()
         t = time.time()
         
-        # ✅ FIXED: Loop condition now correctly uses self.step (which includes resume_step)
-        while not self.lr_anneal_steps or self.step < self.lr_anneal_steps:
+        while True:
             t_total = time.time() - t
             t = time.time()
             
-            # --- Reset wandb accumulator for this step ---
+            # Initialize wandb accumulator for this step
             self.wandb_log_dict = {'step': self.step}
             
             # --- Data loading ---
             data_load_start = time.time()
-            if self.dataset in ['brats']:
-                try:
-                    batch = next(self.iterdatal)
-                    cond = {}
-                except StopIteration:
-                    self.iterdatal = iter(self.datal)
-                    batch = next(self.iterdatal)
-                    cond = {}
+            try:
+                batch = next(self.iterdatal)
+            except StopIteration:
+                # Restart the iterator
+                self.iterdatal = iter(self.datal)
+                batch = next(self.iterdatal)
             data_load_end = time.time()
             data_load_time = data_load_end - data_load_start
             total_data_time += data_load_time
-
-            # --- Move to device ---
-            if self.mode=='i2i':
-                batch['t1n'] = batch['t1n'].to(dist_util.dev())
-                batch['t1c'] = batch['t1c'].to(dist_util.dev())
-                batch['t2w'] = batch['t2w'].to(dist_util.dev())
-                batch['t2f'] = batch['t2f'].to(dist_util.dev())
-            else:
-                batch = batch.to(dist_util.dev())
-
+            
+            # Move batch to device
+            for key in batch:
+                if isinstance(batch[key], th.Tensor):
+                    batch[key] = batch[key].to(dist_util.dev())
+            
             # --- Model forward/backward ---
             step_proc_start = time.time()
+            cond = batch  # For compatibility
             mse_loss, sample, sample_idwt = self.run_step(batch, cond)
             step_proc_end = time.time()
             step_time = step_proc_end - step_proc_start
             total_step_time += step_time
-
-            names = ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
-
-            # --- Logging ---
-            log_start = time.time()
-            if self.summary_writer is not None:
-                self.summary_writer.add_scalar('time/load', total_data_time, global_step=self.step)
-                self.summary_writer.add_scalar('time/forward', total_step_time, global_step=self.step)
-                self.summary_writer.add_scalar('time/total', t_total, global_step=self.step)
-                self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
-
+            
             # Log per-step times to WandB
             self.wandb_log_dict.update({
                 'train/step_time': step_time,
                 'train/data_load_time': data_load_time
             })
-
-            if self.step % 200 == 0:
-                image_size = sample_idwt.size()[2]
-                midplane = sample_idwt[0, 0, :, :, image_size // 2]
-                if self.summary_writer is not None:
-                    self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0), global_step=self.step)
-                img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                self.wandb_log_dict['sample/x_0'] = wandb.Image(img, caption='sample/x_0')
-
-                # Only visualize wavelet subbands if using wavelet transform
-                if self.diffusion.use_freq and sample.size()[1] == 8:
-                    image_size = sample.size()[2]
-                    for ch in range(8):
-                        midplane = sample[0, ch, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
-                                                        global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        self.wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
-
-                if self.mode == 'i2i':
-                    if not self.contr == 't1n':
-                        image_size = batch['t1n'].size()[2]
-                        midplane = batch['t1n'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t1n', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        self.wandb_log_dict['source/t1n'] = wandb.Image(img, caption='source/t1n')
-                    if not self.contr == 't1c':
-                        image_size = batch['t1c'].size()[2]
-                        midplane = batch['t1c'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t1c', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        self.wandb_log_dict['source/t1c'] = wandb.Image(img, caption='source/t1c')
-                    if not self.contr == 't2w':
-                        midplane = batch['t2w'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t2w', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        self.wandb_log_dict['source/t2w'] = wandb.Image(img, caption='source/t2w')
-                    if not self.contr == 't2f':
-                        midplane = batch['t2f'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t2f', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        self.wandb_log_dict['source/t2f'] = wandb.Image(img, caption='source/t2f')
-
-            log_end = time.time()
-            total_log_time += log_end - log_start
-
+            
+            # Logging
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-
-            # --- Saving ---
+                print(f"Step {self.step}: MSE Loss = {mse_loss:.6f}")
+                
+                # Print profiling info
+                if self.step > 0:
+                    elapsed = time.time() - start_time
+                    print(f"[PROFILE] Step {self.step}: DataLoad {total_data_time:.2f}s, StepTime {total_step_time:.2f}s, Elapsed {elapsed:.2f}s")
+            
+            # Save checkpoints
             if self.step % self.save_interval == 0 and self.step > 0:
-                save_start = time.time()
                 self.save_if_best(mse_loss)
-                save_end = time.time()
-                total_save_time += save_end - save_start
-                if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                    return
             
-            # --- Validation ---
+            # Validation
             if self.val_datal is not None and self.step % self.val_interval == 0 and self.step > 0:
-                val_start = time.time()
                 val_loss = self.run_validation()
-                val_end = time.time()
-                print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f} (took {val_end - val_start:.2f}s)")
+                print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
             
-            # --- Special Checkpoint Saving ---
-            if self.special_checkpoint_steps is not None and self.step in self.special_checkpoint_steps and self.step not in self.saved_special_checkpoints:
-                save_start = time.time()
-                self.save_special_checkpoint(self.step, mse_loss)
-                save_end = time.time()
-                total_save_time += save_end - save_start
-                self.saved_special_checkpoints.add(self.step)
+            # Check for special checkpoints
+            if self.special_checkpoint_steps and self.step in self.special_checkpoint_steps:
+                if self.step not in self.saved_special_checkpoints:
+                    self.save_special_checkpoint(self.step, mse_loss)
+                    self.saved_special_checkpoints.add(self.step)
             
-            # --- Log all accumulated metrics to wandb (once per step) ---
+            # Log all accumulated metrics to wandb (once per step)
             wandb.log(self.wandb_log_dict, step=self.step)
             
-            # --- Increment step AFTER all logging/saving ---
+            # Increment step AFTER all logging/saving
             self.step += 1
-
-            # Print profiling info every log_interval
-            if (self.step - 1) % self.log_interval == 0:
-                elapsed = time.time() - start_time
-                print(f"[PROFILE] Step {self.step-1}: Data {total_data_time:.2f}s, Step {total_step_time:.2f}s, Log {total_log_time:.2f}s, Save {total_save_time:.2f}s, Total {elapsed:.2f}s")
-                # Debug print for MSE loss tracking
-                if (self.step - 1) % 500 == 0:
-                    best_loss = self.best_losses.get(self.contr, float('inf'))
-                    print(f"[MSE] Step {self.step-1}: Current={mse_loss:.4f}, Best={best_loss:.4f} ({self.contr})")
-                # Reset counters for next interval
-                total_data_time = 0.0
-                total_step_time = 0.0
-                total_log_time = 0.0
-                total_save_time = 0.0
-
+            
+            # Optional: Stop after certain number of iterations
+            if self.lr_anneal_steps and self.step > self.lr_anneal_steps:
+                print(f"✅ Reached {self.lr_anneal_steps} steps, stopping training")
+                break
+        
         # Training finished - log total time
         total_training_time = time.time() - start_time
         wandb.log({'train/total_time': total_training_time}, step=self.step)

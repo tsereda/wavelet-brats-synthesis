@@ -45,6 +45,9 @@ spec:
         git clone -b 9sweep https://github.com/tsereda/wavelet-brats-synthesis.git
         cd wavelet-brats-synthesis
        
+        chmod -R 777 /checkpoints
+        chown -R 1000:100 /checkpoints
+       
         chmod +x run.sh
        
         ./run.sh
