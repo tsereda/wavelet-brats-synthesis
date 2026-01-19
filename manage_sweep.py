@@ -4,8 +4,8 @@ BraTS Training Management - Unified Script
 Default: Creates wandb sweep + deploys 4 K8s training pods
 
 Usage:
-    python manage_training.py              # Create sweep + deploy 4 pods (DEFAULT)
-    python manage_training.py --job        # Create sweep + deploy 4 jobs
+    python manage_sweep.py              # Create sweep + deploy 4 pods (DEFAULT)
+    python manage_sweep.py --job        # Create sweep + deploy 4 jobs
 """
 
 import os
@@ -187,16 +187,16 @@ def main():
         epilog="""
 Examples:
   # Default: Create sweep + deploy 4 pods
-  python manage_training.py
+  python manage_sweep.py
   
   # Use custom sweep configuration
-  python manage_training.py --sweep-file sweep_ablation.yml
+  python manage_sweep.py --sweep-file sweep_ablation.yml
   
   # Create sweep + deploy jobs
-  python manage_training.py --job
+  python manage_sweep.py --job
   
   # Custom number of pods/jobs
-  python manage_training.py --num-agents 5
+  python manage_sweep.py --num-agents 5
   
 Tip: Use 'wandb sweep --stop <sweep-id>' to cancel a sweep (kubectl delete jobs -l app=wandb-sweep)
         """
