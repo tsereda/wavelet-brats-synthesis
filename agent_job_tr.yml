@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: modality-synthesis-agent-{POD_NUM}
+  name: mod-synth-{POD_NUM}
   namespace: gai-lina-group
   labels:
-    app: modality-synthesis-agent
+    app: mod-synth
 spec:
   backoffLimit: 0
   template:
     metadata:
       labels:
-        app: modality-synthesis-agent
+        app: mod-synth
     spec:
       nodeSelector:
         nautilus.io/linstor: "true"

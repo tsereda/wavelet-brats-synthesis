@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: wandb-sweep-agent-{POD_NUM}
+  name: mod-synth-{POD_NUM}
   namespace: gai-lina-group
   labels:
-    app: wandb-sweep
+    app: mod-synth
 spec:
   nodeSelector:
     nautilus.io/linstor: "true"
