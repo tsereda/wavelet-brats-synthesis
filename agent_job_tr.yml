@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: wandb-sweep-agent-{POD_NUM}
+  name: modality-synthesis-agent-{POD_NUM}
   namespace: gai-lina-group
   labels:
-    app: wandb-sweep
+    app: modality-synthesis-agent
 spec:
   backoffLimit: 0
   template:
     metadata:
       labels:
-        app: wandb-sweep
+        app: modality-synthesis-agent
     spec:
       nodeSelector:
         nautilus.io/linstor: "true"
