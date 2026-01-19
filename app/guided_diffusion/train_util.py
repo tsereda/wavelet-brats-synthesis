@@ -114,9 +114,9 @@ class TrainLoop:
         self.diffusion_steps = diffusion_steps
         
         # Special checkpoint configuration
-        self.special_checkpoint_steps = special_checkpoint_steps
+        self.special_checkpoint_steps = None  # Disabled
         self.save_to_wandb = save_to_wandb
-        self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
+        self.saved_special_checkpoints = set()  # No-op
         
         # Fast validation: use 10 steps instead of full diffusion_steps
         self.val_diffusion_steps = 10
@@ -142,7 +142,12 @@ class TrainLoop:
         self.best_checkpoints = {}
         self.best_val_loss = float('inf')
         self.best_val_checkpoint = None
-        self.checkpoint_dir = checkpoint_dir or os.path.join(get_blob_logdir(), 'checkpoints')
+        # New checkpoint directory structure: sweep_<sweepid>/<runfolder>_<runid>
+        sweep_id = os.getenv('SWEEP_ID', 'manual')
+        run_id = os.getenv('WANDB_RUN_ID', 'local')
+        sweep_folder = f"sweep_{sweep_id}"
+        run_folder = f"{self.mode}_{self.wavelet}_{self.contr}_{run_id}"
+        self.checkpoint_dir = os.path.join(checkpoint_dir or get_blob_logdir(), sweep_folder, run_folder)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         
         # Accumulator for wandb metrics (logged once per step)
@@ -399,7 +404,7 @@ class TrainLoop:
             self.best_val_loss = avg_val_loss
             improvement = old_best - avg_val_loss if old_best < float('inf') else avg_val_loss
             print(f"🎯 NEW BEST VAL LOSS: {avg_val_loss:.6f} (prev: {old_best:.6f}, -{improvement:.6f})")
-            
+
             # Remove old best val checkpoint if exists
             if self.best_val_checkpoint and os.path.exists(self.best_val_checkpoint):
                 try:
@@ -409,31 +414,36 @@ class TrainLoop:
                         os.remove(opt_path)
                 except Exception as e:
                     print(f"Error removing old val checkpoint: {e}")
-            
-            # Save new best val checkpoint
-            filename = f"brats_{self.contr}_best_val_direct.pt"
+
+            # New filename: <modality>_<timesteps>.pt, use 1k/2k/10k notation
+            def kfmt(n):
+                if n % 1000 == 0:
+                    return f"{n//1000}k"
+                return str(n)
+            steps_str = kfmt(self.diffusion_steps)
+            filename = f"{self.contr}_{steps_str}.pt"
             full_save_path = os.path.join(self.checkpoint_dir, filename)
-            
+
             try:
                 with bf.BlobFile(full_save_path, "wb") as f:
                     th.save(self.model.state_dict(), f)
-                
+
                 self.best_val_checkpoint = full_save_path
                 print(f"✅ Saved best val checkpoint: {full_save_path}")
-                
+
                 # Save optimizer state
-                opt_save_path = os.path.join(self.checkpoint_dir, f"brats_{self.contr}_best_val_direct_opt.pt")
+                opt_save_path = os.path.join(self.checkpoint_dir, f"{self.contr}_{steps_str}_opt.pt")
                 with bf.BlobFile(opt_save_path, "wb") as f:
                     th.save(self.opt.state_dict(), f)
-                
+
                 # Upload to W&B if enabled
                 if self.save_to_wandb:
                     self.save_checkpoint_to_wandb(full_save_path)
                     self.save_checkpoint_to_wandb(opt_save_path)
-                
+
             except Exception as e:
                 print(f"❌ Error saving best val checkpoint: {e}")
-        
+
         return avg_val_loss
 
     def _load_and_sync_parameters(self):
@@ -548,17 +558,11 @@ class TrainLoop:
             # Save checkpoints
             if self.step % self.save_interval == 0 and self.step > 0:
                 self.save_if_best(mse_loss)
-            
-            # Validation
-            if self.val_datal is not None and self.step % self.val_interval == 0 and self.step > 0:
+
+            # Validation: always run at step 100, and otherwise at val_interval
+            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 0)):
                 val_loss = self.run_validation()
                 print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
-            
-            # Check for special checkpoints
-            if self.special_checkpoint_steps and self.step in self.special_checkpoint_steps:
-                if self.step not in self.saved_special_checkpoints:
-                    self.save_special_checkpoint(self.step, mse_loss)
-                    self.saved_special_checkpoints.add(self.step)
             
             # Log all accumulated metrics to wandb (once per step)
             wandb.log(self.wandb_log_dict, step=self.step)

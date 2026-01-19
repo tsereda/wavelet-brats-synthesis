@@ -206,33 +206,29 @@ def load_available_modalities(case_dir, missing_modality, evaluation_mode=False)
 
 
 def find_checkpoint(missing_modality, checkpoint_dir):
-    """Find the best checkpoint for the missing modality."""
-    # Look for BEST checkpoints first
-    pattern = f"brats_{missing_modality}_*.pt"
-    best_files = glob.glob(os.path.join(checkpoint_dir, pattern))
-    
-    if best_files:
-        checkpoint = best_files[0]
-        print(f"Found checkpoint: {checkpoint}")
-        return checkpoint
-    
-    # Fallback to regular checkpoints
-    pattern = f"brats_{missing_modality}_*.pt"
-    regular_files = glob.glob(os.path.join(checkpoint_dir, pattern))
-    
-    if not regular_files:
-        raise FileNotFoundError(f"No checkpoint found for {missing_modality}")
-    
-    # Sort by iteration number
-    def get_iteration(filename):
-        parts = os.path.basename(filename).split('_')
+    """Find the best checkpoint for the missing modality in new folder structure."""
+    # Search all subfolders (single-level) for <modality>_*.pt in new run folder naming
+    pattern = os.path.join(checkpoint_dir, f"*_{missing_modality}", f"{missing_modality}_*.pt")
+    files = glob.glob(pattern)
+    if not files:
+        raise FileNotFoundError(f"No checkpoint found for {missing_modality} in {checkpoint_dir}")
+    # Sort by timesteps (parse 1k/2k/10k as 1000/2000/10000)
+    def parse_steps(s):
+        s = s.split('.')[0]
+        if s.endswith('k'):
+            try:
+                return int(s[:-1]) * 1000
+            except ValueError:
+                return 0
         try:
-            return int(parts[2])
-        except (IndexError, ValueError):
+            return int(s)
+        except ValueError:
             return 0
-    
-    regular_files.sort(key=get_iteration, reverse=True)
-    checkpoint = regular_files[0]
+    def get_timesteps(filename):
+        parts = os.path.basename(filename).split('_')
+        return parse_steps(parts[1])
+    files.sort(key=get_timesteps, reverse=True)
+    checkpoint = files[0]
     print(f"Found checkpoint: {checkpoint}")
     return checkpoint
 
@@ -249,36 +245,21 @@ def parse_checkpoint_info(checkpoint_path):
     
     # Handle different checkpoint naming patterns
     
-    # Pattern 1: brats_t1n_BEST100epoch_sampled_10.pt
-    if "_BEST100epoch_" in basename:
-        parts = basename.split('_')
-        if len(parts) >= 4:
-            sample_schedule = parts[3]
-        if len(parts) >= 5:
+    # New pattern: <modality>_<timesteps>.pt (timesteps can be 1k/2k/10k)
+    parts = basename.split('_')
+    if len(parts) == 2 and parts[1].endswith('.pt'):
+        s = parts[1].split('.')[0]
+        if s.endswith('k'):
             try:
-                diffusion_steps = int(parts[4].split('.')[0])
+                diffusion_steps = int(s[:-1]) * 1000
             except ValueError:
-                pass
-    
-    # Pattern 2: brats_t1c_074500_sampled_100.pt (YOUR FORMAT)
-    elif "_sampled_" in basename:
-        parts = basename.split('_')
-        for i, part in enumerate(parts):
-            if part == "sampled" and i + 1 < len(parts):
-                try:
-                    diffusion_steps = int(parts[i + 1].split('.')[0])
-                    sample_schedule = "direct"  # Assume direct sampling
-                    break
-                except ValueError:
-                    pass
-    
-    # Pattern 3: Look for any number after "sampled" using regex
-    else:
-        match = re.search(r'sampled[_-](\d+)', basename)
-        if match:
-            diffusion_steps = int(match.group(1))
-            sample_schedule = "direct"
-    
+                diffusion_steps = 1000
+        else:
+            try:
+                diffusion_steps = int(s)
+            except ValueError:
+                diffusion_steps = 1000
+        sample_schedule = "direct"
     print(f"✅ Checkpoint config: schedule={sample_schedule}, steps={diffusion_steps}")
     return sample_schedule, diffusion_steps
 

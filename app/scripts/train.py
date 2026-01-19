@@ -49,9 +49,14 @@ def setup_training(args):
     # Initialize distributed training (REQUIRED - even for single GPU)
     dist_util.setup_dist()
     
-    # Ensure checkpoint directory exists
+    # New checkpoint directory structure: sweep_<sweepid>/<runfolder>_<runid>
+    sweep_id = os.getenv('SWEEP_ID', 'manual')
+    run_id = os.getenv('WANDB_RUN_ID', 'local')
+    sweep_folder = f"sweep_{sweep_id}"
+    run_folder = f"{args.model_mode}_{args.wavelet}_{args.contr}_{run_id}"
+    args.checkpoint_dir = os.path.join(args.checkpoint_dir, sweep_folder, run_folder)
     os.makedirs(args.checkpoint_dir, exist_ok=True)
-    
+
     # Configure logger with checkpoint directory
     logger.configure(dir=args.checkpoint_dir)
     
@@ -66,11 +71,8 @@ def setup_training(args):
         print(f"[ERROR] ❌ Cannot write to {args.checkpoint_dir}: {e}")
         raise
     
-    # Process special checkpoint steps
-    if isinstance(args.special_checkpoint_steps, str):
-        special_checkpoint_steps = [int(x.strip()) for x in args.special_checkpoint_steps.split(',') if x.strip()]
-    else:
-        special_checkpoint_steps = args.special_checkpoint_steps
+    # Remove special checkpoint steps
+    special_checkpoint_steps = None
     
     # 🆕 Parse model_mode to set sample_schedule
     model_mode = args.model_mode
@@ -115,7 +117,7 @@ def setup_training(args):
     print(f"[CONFIG] wavelet={args.wavelet}, use_freq={args.use_freq}")
     print(f"[CONFIG] checkpoint_dir={args.checkpoint_dir}")
     print(f"[CONFIG] val_interval={args.val_interval}")
-    print(f"[CONFIG] special_checkpoint_steps={special_checkpoint_steps}")
+    print(f"[CONFIG] special_checkpoint_steps=None (disabled)")
     print(f"[CONFIG] save_to_wandb={args.save_to_wandb}")
     print(f"[CONFIG] resume_checkpoint={args.resume_checkpoint}")
     print(f"[CONFIG] resume_step={args.resume_step}")
@@ -240,7 +242,7 @@ def create_argparser():
         microbatch=-1,
         ema_rate="0.9999",
         log_interval=100,
-        save_interval=5000,
+        save_interval=100000,
         resume_checkpoint='',
         resume_step=0,
         use_fp16=True,
@@ -250,7 +252,7 @@ def create_argparser():
         num_workers=0,
         contr='t1n',
         sample_schedule='direct',
-        special_checkpoint_steps="75400,100000,200000",
+        special_checkpoint_steps=None,
         save_to_wandb=False,
         model_mode='diffusion_fast',
         checkpoint_dir='/checkpoints', 
