@@ -43,6 +43,8 @@ parameters:
     value: 32
   out_channels:
     value: 8
+  max_iterations:
+    value: 200000
   save_interval:
     value: 5000
   log_interval:

@@ -24,9 +24,7 @@ from scipy.interpolate import interp1d
 from DWT_IDWT.DWT_IDWT_layer import DWT_3D, IDWT_3D
 
 # Using MSE loss only
-
-dwt = DWT_3D('haar')
-idwt = IDWT_3D('haar')
+# Note: DWT/IDWT are now initialized per-instance in GaussianDiffusion
 
 
 def get_named_beta_schedule(schedule_name, num_diffusion_timesteps, sample_schedule="direct"):
@@ -154,10 +152,21 @@ class GaussianDiffusion:
         rescale_timesteps=False,
         mode='default',
         loss_level='image',
-        mse_loss_weight=1,   # Weight for MSE loss (default 1.0)
+        mse_loss_weight=1,
+        use_freq=False,
+        wavelet=None,
     ):
         self.model_mean_type = model_mean_type
         self.model_var_type = model_var_type
+        self.use_freq = use_freq
+        self.wavelet = wavelet
+        # Initialize wavelet transforms if needed
+        if self.use_freq and self.wavelet:
+            self.dwt = DWT_3D(self.wavelet)
+            self.idwt = IDWT_3D(self.wavelet)
+        else:
+            self.dwt = None
+            self.idwt = None
         self.loss_type = loss_type
         self.rescale_timesteps = rescale_timesteps
         self.mode = mode
@@ -303,9 +312,17 @@ class GaussianDiffusion:
         
         assert t.shape == (B,)
 
-        if self.mode == 'i2i':  # Add condition
+        if self.mode == 'i2i':  # i2i mode requires conditioning
+            if cond is None:
+                raise ValueError(f"❌ i2i mode requires 'cond' parameter but got None! x.shape={x.shape}")
+            if getattr(self, "debug", False):
+                print(f"[DEBUG p_mean_variance] i2i mode: x.shape={x.shape}, cond.shape={cond.shape}")
             x_cond = th.cat([x, cond], dim=1)
+            if getattr(self, "debug", False):
+                print(f"[DEBUG p_mean_variance] After concat: x_cond.shape={x_cond.shape}")
         else:  # Unconditional generation
+            if getattr(self, "debug", False):
+                print(f"[DEBUG p_mean_variance] default mode: x.shape={x.shape}, NO concatenation")
             x_cond = x
 
         model_output = model(x_cond, self._scale_timesteps(t), **model_kwargs)
@@ -345,9 +362,10 @@ class GaussianDiffusion:
         def process_xstart(x):
             if denoised_fn is not None:
                 x = denoised_fn(x)
-            if clip_denoised:
+            if clip_denoised and self.use_freq and self.dwt and self.idwt:
+                # Only apply wavelet clipping if wavelets are enabled
                 B, _, H, W, D = x.size()
-                x_idwt = idwt(x[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
+                x_idwt = self.idwt(x[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
                               x[:, 1, :, :, :].view(B, 1, H, W, D),
                               x[:, 2, :, :, :].view(B, 1, H, W, D),
                               x[:, 3, :, :, :].view(B, 1, H, W, D),
@@ -358,10 +376,11 @@ class GaussianDiffusion:
 
                 x_idwt_clamp = x_idwt.clamp(0., 1.)
 
-                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(x_idwt_clamp)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(x_idwt_clamp)
                 x = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-
-                return x
+            elif clip_denoised:
+                # Image space clipping (no wavelets)
+                x = x.clamp(0., 1.)
             return x
 
         if self.model_mean_type == ModelMeanType.PREVIOUS_X:
@@ -381,12 +400,14 @@ class GaussianDiffusion:
                     x_start=pred_xstart, x_t=x, t=t
                 )
             elif self.mode == 'i2i':
+                # In i2i mode, x is the noise-only channels (8 or 1), not concatenated
                 model_mean, _, _ = self.q_posterior_mean_variance(
-                    x_start=pred_xstart, x_t=x[:, :8, ...], t=t
+                    x_start=pred_xstart, x_t=x, t=t
                 )
         else:
             raise NotImplementedError(self.model_mean_type)
 
+        # In i2i mode, all outputs should match the noise-only shape (x), not concatenated shape
         assert (model_mean.shape == model_log_variance.shape == pred_xstart.shape == x.shape)
 
 
@@ -1111,7 +1132,7 @@ class GaussianDiffusion:
         if model_kwargs is None:
             model_kwargs = {}
 
-        elif mode == 'i2i':
+        if mode == 'i2i':
             if contr == 't1n':
                 target = x_start['t1n']  # target
                 cond_1 = x_start['t1c']  # condition
@@ -1139,39 +1160,55 @@ class GaussianDiffusion:
             else:
                 print("This contrast can't be synthesized.")
 
-            # Concatenate conditions along the channel dimension
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_1)
-            cond_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_2)
-            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(cond_3)
-            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            # Process conditions based on whether we're using wavelets
+            if self.use_freq and self.dwt:
+                # Wavelet mode: transform conditions to wavelet space
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_1)
+                cond_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_2)
+                cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+                LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_3)
+                cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            else:
+                # Image space mode: concatenate conditions directly
+                cond_dwt = th.cat([cond_1, cond_2, cond_3], dim=1)
 
-        # Wavelet transform the input image
-        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(target)
-        x_start_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
-
-
-        noise = th.randn_like(target)  # Sample noise - original image resolution.
-        LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = dwt(noise)
-        noise_dwt = th.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)  # Wavelet transformed noise
-        x_t = self.q_sample(x_start_dwt, t, noise=noise_dwt)  # Sample x_t
+        # Process target based on whether we're using wavelets
+        if self.use_freq and self.dwt:
+            # Wavelet transform the input image
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(target)
+            x_start_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            
+            noise = th.randn_like(target)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(noise)
+            noise_dwt = th.cat([LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+        else:
+            # Image space mode: use target directly
+            x_start_dwt = target
+            noise = th.randn_like(target)
+            noise_dwt = noise
+        
+        x_t = self.q_sample(x_start_dwt, t, noise=noise_dwt)
 
         if mode == 'i2i':
-            x_t = th.cat([x_t, cond_dwt], dim=1)  # Concatenate the conditions in the channel dimension
+            x_t = th.cat([x_t, cond_dwt], dim=1)
 
-        model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)  # Model outputs denoised wavelet subbands
+        model_output = model(x_t, self._scale_timesteps(t), **model_kwargs)
 
-        # Inverse wavelet transform the model output for spatial domain visualization
-        B, _, H, W, D = model_output.size()
-        model_output_idwt = idwt(model_output[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
-                                 model_output[:, 1, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 2, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 3, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 4, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 5, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 6, :, :, :].view(B, 1, H, W, D),
-                                 model_output[:, 7, :, :, :].view(B, 1, H, W, D))
+        # Inverse wavelet transform if in wavelet mode
+        if self.use_freq and self.idwt:
+            B, _, H, W, D = model_output.size()
+            model_output_idwt = self.idwt(model_output[:, 0, :, :, :].view(B, 1, H, W, D) * 3.,
+                                     model_output[:, 1, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 2, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 3, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 4, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 5, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 6, :, :, :].view(B, 1, H, W, D),
+                                     model_output[:, 7, :, :, :].view(B, 1, H, W, D))
+        else:
+            # Image space mode: output is already in spatial domain
+            model_output_idwt = model_output
 
         # ========== MSE LOSS FOR BRATS CHALLENGE ==========
         
@@ -1191,6 +1228,52 @@ class GaussianDiffusion:
         }
 
         return terms, model_output, model_output_idwt
+
+    def direct_regression_loss(self, model, batch, contr='t2f'):
+        """
+        Direct regression loss (no diffusion) for testing purposes.
+        
+        :param model: the UNet model
+        :param batch: dict with keys 't1n', 't1c', 't2w', 't2f'
+        :param contr: target modality
+        :return: loss terms dict
+        """
+        # Extract modalities based on target
+        if contr == 't2f':
+            cond_1, cond_2, cond_3, target = batch['t1n'], batch['t1c'], batch['t2w'], batch['t2f']
+        elif contr == 't2w':
+            cond_1, cond_2, cond_3, target = batch['t1n'], batch['t1c'], batch['t2f'], batch['t2w']
+        elif contr == 't1c':
+            cond_1, cond_2, cond_3, target = batch['t1n'], batch['t2w'], batch['t2f'], batch['t1c']
+        elif contr == 't1n':
+            cond_1, cond_2, cond_3, target = batch['t1c'], batch['t2w'], batch['t2f'], batch['t1n']
+        else:
+            raise ValueError(f"Invalid contr: {contr}")
+        
+        # Transform conditions and target to wavelet space if needed
+        if self.use_freq and self.dwt:
+            # Wavelet mode: transform to wavelet space
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_1)
+            cond_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_2)
+            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(cond_3)
+            cond_dwt = th.cat([cond_dwt, LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+            
+            LLL, LLH, LHL, LHH, HLL, HLH, HHL, HHH = self.dwt(target)
+            target_dwt = th.cat([LLL / 3., LLH, LHL, LHH, HLL, HLH, HHL, HHH], dim=1)
+        else:
+            # Image space mode
+            cond_dwt = th.cat([cond_1, cond_2, cond_3], dim=1)
+            target_dwt = target
+        
+        # Forward pass (no timestep for direct regression)
+        model_output = model(cond_dwt, th.zeros(cond_dwt.shape[0], device=cond_dwt.device))
+        
+        # Calculate MSE loss
+        mse_loss = th.mean(mean_flat((target_dwt - model_output) ** 2))
+        
+        return {"loss": mse_loss, "mse_loss": mse_loss.item()}
 
 
     def _prior_bpd(self, x_start):

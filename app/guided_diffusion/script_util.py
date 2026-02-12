@@ -98,6 +98,7 @@ def model_and_diffusion_defaults():
         use_freq=False,
         predict_xstart=False,
         sample_schedule='direct',         # NEW: 'direct' or 'sampled'
+        wavelet=None,                     # NEW: wavelet family ('haar', 'db2', etc.) or None for image space
         # use_fast_ddpm and fast_ddpm_strategy are deprecated
     )
     res.update(diffusion_defaults())
@@ -144,7 +145,8 @@ def create_model_and_diffusion(
     mode,
     use_freq,
     dataset,
-    sample_schedule='direct',         # NEW
+    sample_schedule='direct',
+    wavelet=None,
 ):
     model = create_model(
         image_size,
@@ -183,6 +185,8 @@ def create_model_and_diffusion(
         timestep_respacing=timestep_respacing,
         mode=mode,
         sample_schedule=sample_schedule,
+        use_freq=use_freq,
+        wavelet=wavelet,
     )
     return model, diffusion
 
@@ -240,56 +244,32 @@ def create_model(
     if out_channels == 0:
         out_channels = (2*in_channels if learn_sigma else in_channels)
 
-    if not use_freq:
-        return UNetModel(
-            image_size=image_size,
-            in_channels=in_channels,
-            model_channels=num_channels,
-            out_channels=out_channels * (1 if not learn_sigma else 2),
-            num_res_blocks=num_res_blocks,
-            attention_resolutions=tuple(attention_ds),
-            dropout=dropout,
-            channel_mult=channel_mult,
-            num_classes=(NUM_CLASSES if class_cond else None),
-            use_checkpoint=use_checkpoint,
-            use_fp16=use_fp16,
-            num_heads=num_heads,
-            num_head_channels=num_head_channels,
-            num_heads_upsample=num_heads_upsample,
-            use_scale_shift_norm=use_scale_shift_norm,
-            resblock_updown=resblock_updown,
-            use_new_attention_order=use_new_attention_order,
-            dims=dims,
-            num_groups=num_groups,
-            bottleneck_attention=bottleneck_attention,
-            additive_skips=additive_skips,
-            resample_2d=resample_2d,
-        )
-    else:
-        return WavUNetModel(
-            image_size=image_size,
-            in_channels=in_channels,
-            model_channels=num_channels,
-            out_channels=out_channels * (1 if not learn_sigma else 2),
-            num_res_blocks=num_res_blocks,
-            attention_resolutions=tuple(attention_ds),
-            dropout=dropout,
-            channel_mult=channel_mult,
-            num_classes=(NUM_CLASSES if class_cond else None),
-            use_checkpoint=use_checkpoint,
-            use_fp16=use_fp16,
-            num_heads=num_heads,
-            num_head_channels=num_head_channels,
-            num_heads_upsample=num_heads_upsample,
-            use_scale_shift_norm=use_scale_shift_norm,
-            resblock_updown=resblock_updown,
-            use_new_attention_order=use_new_attention_order,
-            dims=dims,
-            num_groups=num_groups,
-            bottleneck_attention=bottleneck_attention,
-            additive_skips=additive_skips,
-            use_freq=use_freq,
-        )
+    # Always use regular UNet (not WavUNet) because wavelet transforms
+    # are handled by gaussian_diffusion.py. WavUNet would cause double transformation.
+    return UNetModel(
+        image_size=image_size,
+        in_channels=in_channels,
+        model_channels=num_channels,
+        out_channels=out_channels * (1 if not learn_sigma else 2),
+        num_res_blocks=num_res_blocks,
+        attention_resolutions=tuple(attention_ds),
+        dropout=dropout,
+        channel_mult=channel_mult,
+        num_classes=(NUM_CLASSES if class_cond else None),
+        use_checkpoint=use_checkpoint,
+        use_fp16=use_fp16,
+        num_heads=num_heads,
+        num_head_channels=num_head_channels,
+        num_heads_upsample=num_heads_upsample,
+        use_scale_shift_norm=use_scale_shift_norm,
+        resblock_updown=resblock_updown,
+        use_new_attention_order=use_new_attention_order,
+        dims=dims,
+        num_groups=num_groups,
+        bottleneck_attention=bottleneck_attention,
+        additive_skips=additive_skips,
+        resample_2d=resample_2d,
+    )
 
 
 def create_classifier_and_diffusion(
@@ -539,6 +519,8 @@ def create_gaussian_diffusion(
     timestep_respacing="",
     mode='default',
     sample_schedule='direct',
+    use_freq=False,
+    wavelet=None,
     **kwargs
 ):
     # Remove keys not accepted by SpacedDiffusion/GaussianDiffusion
@@ -572,6 +554,8 @@ def create_gaussian_diffusion(
         loss_type=loss_type,
         rescale_timesteps=rescale_timesteps,
         mode=mode,
+        use_freq=use_freq,
+        wavelet=wavelet,
         **kwargs
     )
 

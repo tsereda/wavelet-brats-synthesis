@@ -36,6 +36,7 @@ class TrainLoop:
         model,
         diffusion,
         data,
+        val_data=None,
         batch_size,
         in_channels,
         image_size,
@@ -60,13 +61,17 @@ class TrainLoop:
         diffusion_steps=1000,
         wavelet='haar',
         special_checkpoint_steps=None,
-        save_to_wandb=True
+        save_to_wandb=True,
+        val_interval=1000,
+        checkpoint_dir=None  # <--- add this argument
     ):
         self.summary_writer = summary_writer
         self.mode = mode
         self.model = model
         self.diffusion = diffusion
         self.datal = data
+        self.val_datal = val_data
+        self.val_interval = val_interval
         self.dataset = dataset
         self.iterdatal = iter(data)
         self.batch_size = batch_size
@@ -88,7 +93,17 @@ class TrainLoop:
             self.grad_scaler = amp.GradScaler()
         else:
             self.grad_scaler = amp.GradScaler(enabled=False)
-        self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
+        
+        # Initialize schedule_sampler (will be None for DirectRegressionLoop)
+        if schedule_sampler is not None:
+            self.schedule_sampler = schedule_sampler
+        elif hasattr(self, '_skip_schedule_sampler'):
+            # DirectRegressionLoop sets this flag before calling super().__init__
+            self.schedule_sampler = None
+        else:
+            # Default: create UniformSampler for regular diffusion training
+            self.schedule_sampler = UniformSampler(diffusion, maxt=diffusion.num_timesteps)
+        
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
         
@@ -99,13 +114,22 @@ class TrainLoop:
         self.diffusion_steps = diffusion_steps
         
         # Special checkpoint configuration
-        self.special_checkpoint_steps = special_checkpoint_steps
+        self.special_checkpoint_steps = None  # Disabled
         self.save_to_wandb = save_to_wandb
-        self.saved_special_checkpoints = set()  # Track which special checkpoints we've saved
+        self.saved_special_checkpoints = set()  # No-op
+        
+        # Fast validation: use 10 steps instead of full diffusion_steps
+        self.val_diffusion_steps = 10
+        self.max_val_batches = 5  # Sample 5 batches (~1.1% of 447 dataset) for fast validation
         
         # Initialize wavelet transforms (requires self.wavelet to be set)
-        self.dwt = DWT_3D(self.wavelet)
-        self.idwt = IDWT_3D(self.wavelet)
+        # Only create DWT/IDWT if using wavelets (not None or "null")
+        if self.wavelet and self.wavelet != 'null':
+            self.dwt = DWT_3D(self.wavelet)
+            self.idwt = IDWT_3D(self.wavelet)
+        else:
+            self.dwt = None
+            self.idwt = None
         
         # ✅ FIXED: Proper step counter initialization
         # Start from resume_step if resuming, otherwise start from 0
@@ -116,8 +140,17 @@ class TrainLoop:
         # Track best MSE loss (lower is better)
         self.best_losses = {}
         self.best_checkpoints = {}
-        self.checkpoint_dir = os.path.join(get_blob_logdir(), 'checkpoints')
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self.best_val_loss = float('inf')
+        self.best_val_checkpoint = None
+        # Use the checkpoint directory provided by the caller, or fall back to a default.
+        # The construction and creation of any sweep/run-specific subdirectories is handled upstream.
+        self.checkpoint_dir = checkpoint_dir or get_blob_logdir()
+        
+        # Accumulator for wandb metrics (logged once per step)
+        self.wandb_log_dict = {}
+        
+        # Hot-reload tracking for debug code updates
+        self.reload_mtimes = {}
         
         # Load existing best losses if resuming
         self._load_best_losses()
@@ -159,6 +192,254 @@ class TrainLoop:
                     f.write(f"{modality}:{loss}\n")
         except Exception as e:
             print(f"Error saving best losses: {e}")
+
+    def run_validation(self):
+        """
+        Run validation loop on val_data with SSIM, PSNR, and inference time.
+        Returns average validation MSE loss.
+        """
+        if self.val_datal is None:
+            print("⚠️ No validation data provided, skipping validation")
+            return None
+        
+        # Import metrics
+        try:
+            from skimage.metrics import structural_similarity as ssim
+            from skimage.metrics import peak_signal_noise_ratio as psnr
+            metrics_available = True
+        except ImportError:
+            print("⚠️ scikit-image not available, skipping SSIM/PSNR metrics")
+            metrics_available = False
+        
+        import time
+        from tqdm import tqdm
+        self.model.eval()
+        val_losses = []
+        val_ssims = []
+        val_psnrs = []
+        inference_times = []
+        
+        print(f"🔍 Running validation on {self.max_val_batches} batches with {self.val_diffusion_steps}-step sampling...")
+        with th.no_grad():
+            for batch_idx, batch in enumerate(tqdm(self.val_datal, desc="Val batches", total=self.max_val_batches, leave=False)):
+                if batch_idx >= self.max_val_batches:
+                    break
+                
+                # Move batch to device
+                if self.mode == 'i2i':
+                    batch['t1n'] = batch['t1n'].to(dist_util.dev())
+                    batch['t1c'] = batch['t1c'].to(dist_util.dev())
+                    batch['t2w'] = batch['t2w'].to(dist_util.dev())
+                    batch['t2f'] = batch['t2f'].to(dist_util.dev())
+                else:
+                    batch = batch.to(dist_util.dev())
+                
+                # Extract input and target modalities
+                modalities = ['t1n', 't1c', 't2w', 't2f']
+                input_modalities = [m for m in modalities if m != self.contr]
+                
+                # Stack input modalities (3 modalities as input)
+                x_inputs = [batch[m] for m in input_modalities]
+                x_input = th.cat(x_inputs, dim=1)  # [B, 3, H, W, D]
+                x_target = batch[self.contr]  # [B, 1, H, W, D]
+                
+                use_wavelet = self.wavelet is not None and self.wavelet != 'null'
+                
+                # Time ONLY the inference (full sampling)
+                inference_start = time.time()
+                
+                if use_wavelet:
+                    # Apply DWT to inputs
+                    input_wavelets = []
+                    for x_mod in x_inputs:
+                        lfc, *hfcs = self.dwt(x_mod)
+                        wavelet_components = th.cat([lfc] + list(hfcs), dim=1)
+                        input_wavelets.append(wavelet_components)
+                    
+                    x_input_wavelet = th.cat(input_wavelets, dim=1)  # [B, 24, H/2, W/2, D/2]
+                    
+                    # Apply DWT to target for loss calculation
+                    target_lfc, *target_hfcs = self.dwt(x_target)
+                    x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)  # [B, 8, H/2, W/2, D/2]
+                    
+                    # FAST VALIDATION: Use 10-step sampling instead of full 100 steps
+                    # Use p_sample_loop_progressive for proper diffusion sampling
+                    noise_shape = (x_input_wavelet.shape[0], 8, *x_input_wavelet.shape[2:])
+                    noise = th.randn(*noise_shape, device=x_input_wavelet.device)
+                    
+                    # Create respaced diffusion with 10 steps for fast validation
+                    from .respace import SpacedDiffusion, space_timesteps
+                    val_diffusion = SpacedDiffusion(
+                        use_timesteps=space_timesteps(self.diffusion.num_timesteps, f"ddim{self.val_diffusion_steps}"),
+                        betas=self.diffusion.betas,
+                        model_mean_type=self.diffusion.model_mean_type,
+                        model_var_type=self.diffusion.model_var_type,
+                        loss_type=self.diffusion.loss_type,
+                        rescale_timesteps=self.diffusion.rescale_timesteps,
+                        mode=self.diffusion.mode,
+                    )
+                    
+                    final_sample = None
+                    step_iter = val_diffusion.p_sample_loop_progressive(
+                        model=self.model,
+                        shape=noise_shape,
+                        time=val_diffusion.num_timesteps,
+                        noise=noise,
+                        clip_denoised=True,
+                        progress=False,
+                        cond=x_input_wavelet,  # Pass as cond param for i2i concatenation
+                        model_kwargs={}
+                    )
+                    for sample_dict in tqdm(step_iter, total=self.val_diffusion_steps, desc=f"  Diffusion steps (batch {batch_idx+1})", leave=False):
+                        final_sample = sample_dict
+                    
+                    pred_wavelet = final_sample["sample"]
+                    
+                    # Reconstruct to spatial domain
+                    pred_lfc = pred_wavelet[:, :1]
+                    pred_hfcs = [pred_wavelet[:, i:i+1] for i in range(1, 8)]
+                    pred_spatial = self.idwt(pred_lfc, *pred_hfcs)
+                    
+                    # MSE loss in wavelet space
+                    mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
+                    
+                else:
+                    # FAST VALIDATION: Use 10-step sampling instead of full 100 steps
+                    # Use p_sample_loop_progressive for proper diffusion sampling
+                    noise_shape = (x_input.shape[0], 1, *x_input.shape[2:])
+                    noise = th.randn(*noise_shape, device=x_input.device)
+                    
+                    # Create respaced diffusion with 10 steps for fast validation
+                    from .respace import SpacedDiffusion, space_timesteps
+                    val_diffusion = SpacedDiffusion(
+                        use_timesteps=space_timesteps(self.diffusion.num_timesteps, f"ddim{self.val_diffusion_steps}"),
+                        betas=self.diffusion.betas,
+                        model_mean_type=self.diffusion.model_mean_type,
+                        model_var_type=self.diffusion.model_var_type,
+                        loss_type=self.diffusion.loss_type,
+                        rescale_timesteps=self.diffusion.rescale_timesteps,
+                        mode=self.diffusion.mode,
+                    )
+                    
+                    final_sample = None
+                    step_iter = val_diffusion.p_sample_loop_progressive(
+                        model=self.model,
+                        shape=noise_shape,
+                        time=val_diffusion.num_timesteps,
+                        noise=noise,
+                        clip_denoised=True,
+                        progress=False,
+                        cond=x_input,  # Pass as cond param for i2i concatenation
+                        model_kwargs={}
+                    )
+                    for sample_dict in tqdm(step_iter, total=self.val_diffusion_steps, desc=f"  Diffusion steps (batch {batch_idx+1})", leave=False):
+                        final_sample = sample_dict
+                    
+                    pred_spatial = final_sample["sample"]
+                    
+                    # MSE loss in image space
+                    mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
+                
+                inference_end = time.time()
+                inference_times.append(inference_end - inference_start)
+                
+                val_losses.append(mse_loss.item())
+                
+                # Calculate SSIM and PSNR on spatial domain with brain masking
+                if metrics_available:
+                    try:
+                        # Create brain mask from target
+                        target_np = x_target.cpu().numpy()
+                        pred_np = pred_spatial.cpu().numpy()
+                        
+                        brain_mask = (target_np > 0.01).astype(np.float32)
+                        predicted_masked = pred_np * brain_mask
+                        target_masked = target_np * brain_mask
+                        
+                        # Calculate metrics on first sample in batch
+                        pred_vol = predicted_masked[0, 0]
+                        targ_vol = target_masked[0, 0]
+                        
+                        ssim_score = ssim(targ_vol, pred_vol, data_range=1.0)
+                        psnr_score = psnr(targ_vol, pred_vol, data_range=1.0)
+                        
+                        val_ssims.append(ssim_score)
+                        val_psnrs.append(psnr_score)
+                        
+                    except Exception as e:
+                        print(f"  Warning: SSIM/PSNR calculation failed: {e}")
+        
+        # Back to training mode
+        self.model.train()
+        
+        # Compute average metrics
+        avg_val_loss = np.mean(val_losses)
+        avg_inference_time = np.mean(inference_times)
+        
+        # Log ONLY essential metrics to wandb
+        self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
+            'val/inference_time': avg_inference_time
+        })
+        
+        if metrics_available and len(val_ssims) > 0:
+            avg_ssim = np.mean(val_ssims)
+            avg_psnr = np.mean(val_psnrs)
+            self.wandb_log_dict.update({
+                'val/ssim': avg_ssim,
+                'val/psnr': avg_psnr
+            })
+            print(f"📊 Validation: SSIM={avg_ssim:.4f}, PSNR={avg_psnr:.2f}dB, Inf.Time={avg_inference_time:.3f}s")
+        else:
+            print(f"📊 Validation: MSE={avg_val_loss:.6f}, Inf.Time={avg_inference_time:.3f}s")
+        
+        # Save best validation checkpoint
+        if avg_val_loss < self.best_val_loss:
+            old_best = self.best_val_loss
+            self.best_val_loss = avg_val_loss
+            improvement = old_best - avg_val_loss if old_best < float('inf') else avg_val_loss
+            print(f"🎯 NEW BEST VAL LOSS: {avg_val_loss:.6f} (prev: {old_best:.6f}, -{improvement:.6f})")
+
+            # Remove old best val checkpoint if exists
+            if self.best_val_checkpoint and os.path.exists(self.best_val_checkpoint):
+                try:
+                    os.remove(self.best_val_checkpoint)
+                    opt_path = self.best_val_checkpoint.replace('.pt', '_opt.pt')
+                    if os.path.exists(opt_path):
+                        os.remove(opt_path)
+                except Exception as e:
+                    print(f"Error removing old val checkpoint: {e}")
+
+            # New filename: <modality>_<timesteps>.pt, use 1k/2k/10k notation
+            def kfmt(n):
+                if n % 1000 == 0:
+                    return f"{n//1000}k"
+                return str(n)
+            steps_str = kfmt(self.diffusion_steps)
+            filename = f"{self.contr}_{steps_str}.pt"
+            full_save_path = os.path.join(self.checkpoint_dir, filename)
+
+            try:
+                with bf.BlobFile(full_save_path, "wb") as f:
+                    th.save(self.model.state_dict(), f)
+
+                self.best_val_checkpoint = full_save_path
+                print(f"✅ Saved best val checkpoint: {full_save_path}")
+
+                # Save optimizer state
+                opt_save_path = os.path.join(self.checkpoint_dir, f"{self.contr}_{steps_str}_opt.pt")
+                with bf.BlobFile(opt_save_path, "wb") as f:
+                    th.save(self.opt.state_dict(), f)
+
+                # Upload to W&B if enabled
+                if self.save_to_wandb:
+                    self.save_checkpoint_to_wandb(full_save_path)
+                    self.save_checkpoint_to_wandb(opt_save_path)
+
+            except Exception as e:
+                print(f"❌ Error saving best val checkpoint: {e}")
+
+        return avg_val_loss
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -208,150 +489,94 @@ class TrainLoop:
             print(f'no optimizer checkpoint found for step {self.step} at path {bf.dirname(main_checkpoint)}')
 
     def run_loop(self):
+        """
+        Main training loop for diffusion model training.
+
+        Handles data iteration, optimization, logging, checkpointing, and
+        learning-rate scheduling for the standard TrainLoop.
+        """
+        print(f"🏃 Starting TrainLoop (diffusion training) for {self.contr}")
+        print(f"   Total steps planned: {self.lr_anneal_steps if self.lr_anneal_steps else 'Based on data iterations'}")
+        
         import time
         total_data_time = 0.0
         total_step_time = 0.0
-        total_log_time = 0.0
-        total_save_time = 0.0
         start_time = time.time()
         t = time.time()
         
-        # ✅ FIXED: Loop condition now correctly uses self.step (which includes resume_step)
-        while not self.lr_anneal_steps or self.step < self.lr_anneal_steps:
+        while True:
             t_total = time.time() - t
             t = time.time()
             
+            # Initialize wandb accumulator for this step
+            self.wandb_log_dict = {'step': self.step}
+            
             # --- Data loading ---
             data_load_start = time.time()
-            if self.dataset in ['brats']:
-                try:
-                    batch = next(self.iterdatal)
-                    cond = {}
-                except StopIteration:
-                    self.iterdatal = iter(self.datal)
-                    batch = next(self.iterdatal)
-                    cond = {}
+            try:
+                batch = next(self.iterdatal)
+            except StopIteration:
+                # Restart the iterator
+                self.iterdatal = iter(self.datal)
+                batch = next(self.iterdatal)
             data_load_end = time.time()
-            total_data_time += data_load_end - data_load_start
-
-            # --- Move to device ---
-            if self.mode=='i2i':
-                batch['t1n'] = batch['t1n'].to(dist_util.dev())
-                batch['t1c'] = batch['t1c'].to(dist_util.dev())
-                batch['t2w'] = batch['t2w'].to(dist_util.dev())
-                batch['t2f'] = batch['t2f'].to(dist_util.dev())
-            else:
-                batch = batch.to(dist_util.dev())
-
+            data_load_time = data_load_end - data_load_start
+            total_data_time += data_load_time
+            
+            # Move batch to device
+            for key in batch:
+                if isinstance(batch[key], th.Tensor):
+                    batch[key] = batch[key].to(dist_util.dev())
+            
             # --- Model forward/backward ---
             step_proc_start = time.time()
+            cond = batch  # For compatibility
             mse_loss, sample, sample_idwt = self.run_step(batch, cond)
             step_proc_end = time.time()
-            total_step_time += step_proc_end - step_proc_start
-
-            names = ["LLL", "LLH", "LHL", "LHH", "HLL", "HLH", "HHL", "HHH"]
-
-            # --- Logging ---
-            log_start = time.time()
-            if self.summary_writer is not None:
-                self.summary_writer.add_scalar('time/load', total_data_time, global_step=self.step)
-                self.summary_writer.add_scalar('time/forward', total_step_time, global_step=self.step)
-                self.summary_writer.add_scalar('time/total', t_total, global_step=self.step)
-                self.summary_writer.add_scalar('metrics/MSE', mse_loss, global_step=self.step)
-
-            wandb_log_dict = {
-                'time/load': total_data_time,
-                'time/forward': total_step_time,
-                'time/total': t_total,
-                'metrics/MSE': mse_loss,
-                'step': self.step
-            }
-
-            if self.step % 200 == 0:
-                image_size = sample_idwt.size()[2]
-                midplane = sample_idwt[0, 0, :, :, image_size // 2]
-                if self.summary_writer is not None:
-                    self.summary_writer.add_image('sample/x_0', midplane.unsqueeze(0), global_step=self.step)
-                img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                wandb_log_dict['sample/x_0'] = wandb.Image(img, caption='sample/x_0')
-
-                image_size = sample.size()[2]
-                for ch in range(8):
-                    midplane = sample[0, ch, :, :, image_size // 2]
-                    if self.summary_writer is not None:
-                        self.summary_writer.add_image('sample/{}'.format(names[ch]), midplane.unsqueeze(0),
-                                                    global_step=self.step)
-                    img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                    wandb_log_dict[f'sample/{names[ch]}'] = wandb.Image(img, caption=f'sample/{names[ch]}')
-
-                if self.mode == 'i2i':
-                    if not self.contr == 't1n':
-                        image_size = batch['t1n'].size()[2]
-                        midplane = batch['t1n'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t1n', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t1n'] = wandb.Image(img, caption='source/t1n')
-                    if not self.contr == 't1c':
-                        image_size = batch['t1c'].size()[2]
-                        midplane = batch['t1c'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t1c', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t1c'] = wandb.Image(img, caption='source/t1c')
-                    if not self.contr == 't2w':
-                        midplane = batch['t2w'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t2w', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t2w'] = wandb.Image(img, caption='source/t2w')
-                    if not self.contr == 't2f':
-                        midplane = batch['t2f'][0, 0, :, :, image_size // 2]
-                        if self.summary_writer is not None:
-                            self.summary_writer.add_image('source/t2f', midplane.unsqueeze(0), global_step=self.step)
-                        img = (visualize(midplane.detach().cpu().numpy()) * 255).astype('uint8')
-                        wandb_log_dict['source/t2f'] = wandb.Image(img, caption='source/t2f')
-
-            wandb.log(wandb_log_dict, step=self.step)
-            log_end = time.time()
-            total_log_time += log_end - log_start
-
+            step_time = step_proc_end - step_proc_start
+            total_step_time += step_time
+            
+            # Log per-step times to WandB
+            self.wandb_log_dict.update({
+                'train/step_time': step_time,
+                'train/data_load_time': data_load_time
+            })
+            
+            # Logging
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
-
-            # --- Saving ---
+                print(f"Step {self.step}: MSE Loss = {mse_loss:.6f}")
+                
+                # Print profiling info
+                if self.step > 0:
+                    elapsed = time.time() - start_time
+                    print(f"[PROFILE] Step {self.step}: DataLoad {total_data_time:.2f}s, StepTime {total_step_time:.2f}s, Elapsed {elapsed:.2f}s")
+            
+            # Save checkpoints
             if self.step % self.save_interval == 0 and self.step > 0:
-                save_start = time.time()
                 self.save_if_best(mse_loss)
-                save_end = time.time()
-                total_save_time += save_end - save_start
-                if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
-                    return
+
+            # Validation: always run at step 100, and otherwise at val_interval
+            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 100)):
+                val_loss = self.run_validation()
+                print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
             
-            # --- Special Checkpoint Saving ---
-            if self.special_checkpoint_steps is not None and self.step in self.special_checkpoint_steps and self.step not in self.saved_special_checkpoints:
-                save_start = time.time()
-                self.save_special_checkpoint(self.step, mse_loss)
-                save_end = time.time()
-                total_save_time += save_end - save_start
-                self.saved_special_checkpoints.add(self.step)
+            # Log all accumulated metrics to wandb (once per step)
+            wandb.log(self.wandb_log_dict, step=self.step)
             
+            # Increment step AFTER all logging/saving
             self.step += 1
-
-            # Print profiling info every log_interval
-            if (self.step - 1) % self.log_interval == 0:
-                elapsed = time.time() - start_time
-                print(f"[PROFILE] Step {self.step-1}: Data {total_data_time:.2f}s, Step {total_step_time:.2f}s, Log {total_log_time:.2f}s, Save {total_save_time:.2f}s, Total {elapsed:.2f}s")
-                # Debug print for MSE loss tracking
-                if (self.step - 1) % 500 == 0:
-                    best_loss = self.best_losses.get(self.contr, float('inf'))
-                    print(f"[MSE] Step {self.step-1}: Current={mse_loss:.4f}, Best={best_loss:.4f} ({self.contr})")
-                # Reset counters for next interval
-                total_data_time = 0.0
-                total_step_time = 0.0
-                total_log_time = 0.0
-                total_save_time = 0.0
-
+            
+            # Optional: Stop after certain number of iterations
+            if self.lr_anneal_steps and self.step > self.lr_anneal_steps:
+                print(f"✅ Reached {self.lr_anneal_steps} steps, stopping training")
+                break
+        
+        # Training finished - log total time
+        total_training_time = time.time() - start_time
+        wandb.log({'train/total_time': total_training_time}, step=self.step)
+        print(f"✅ Training completed in {total_training_time/3600:.2f} hours")
+        
         # Save the last checkpoint if it wasn't already saved.
         if (self.step - 1) % self.save_interval != 0:
             self.save_if_best(mse_loss)
@@ -412,11 +637,10 @@ class TrainLoop:
                     self.save_checkpoint_to_wandb(full_save_path)
                     self.save_checkpoint_to_wandb(opt_save_path)
                 
-                # Log to wandb
-                wandb.log({
+                # Accumulate checkpoint metrics (will be logged at end of step)
+                self.wandb_log_dict.update({
                     f"checkpoints/{modality}/best_loss": current_loss,
-                    f"checkpoints/{modality}/improvement": improvement,
-                    "step": step_to_save
+                    f"checkpoints/{modality}/improvement": improvement
                 })
                 
             except Exception as e:
@@ -462,11 +686,10 @@ class TrainLoop:
                 except Exception as e:
                     print(f"⚠️ Warning: Failed to upload special checkpoint to W&B: {e}")
             
-            # Log special checkpoint metrics to wandb
-            wandb.log({
+            # Accumulate special checkpoint metrics (will be logged at end of step)
+            self.wandb_log_dict.update({
                 f"special_checkpoints/{modality}/iteration_{iteration}/loss": current_loss,
-                f"special_checkpoints/{modality}/saved_at_step": self.step,
-                "step": self.step
+                f"special_checkpoints/{modality}/saved_at_step": self.step
             })
             
         except Exception as e:
@@ -508,7 +731,7 @@ class TrainLoop:
             breakpoint()
 
         if self.use_fp16:
-            print("Use fp16 ...")
+            #print("Use fp16 ...")
             self.grad_scaler.step(self.opt)
             self.grad_scaler.update()
             info['scale'] = self.grad_scaler.get_scale()
@@ -574,11 +797,9 @@ class TrainLoop:
         # Use MSE loss for backpropagation and model saving
         loss = final_loss
         
-        # Add to wandb logging
-        wandb.log({
-            'loss/MSE': mse_loss,
-            'loss/Final': final_loss.item(),
-            'step': self.step
+        # Accumulate loss metrics (will be logged at end of step)
+        self.wandb_log_dict.update({
+            'train/mse': mse_loss
         })
 
         # Create weights for MSE loss
@@ -700,3 +921,394 @@ def log_loss_dict(diffusion, ts, losses):
         else:
             # Handle scalar values (like hybrid_loss)
             logger.logkv_mean(key, values.item() if hasattr(values, 'item') else values)
+
+
+class DirectRegressionLoop(TrainLoop):
+    """
+    Direct regression training loop (no diffusion).
+    Single forward pass: input_modalities → target_modality
+    
+    Key differences from diffusion:
+    - No timestep sampling
+    - No noise addition
+    - Direct MSE loss in spatial or wavelet domain
+    - Much faster training and inference
+    """
+    
+    def __init__(self, *args, **kwargs):
+        # Set flag to skip default schedule_sampler creation
+        self._skip_schedule_sampler = True
+        
+        # Remove schedule_sampler from kwargs if present (should be None anyway)
+        if 'schedule_sampler' in kwargs:
+            kwargs.pop('schedule_sampler')
+        
+        super().__init__(*args, **kwargs)
+        
+        # Ensure schedule_sampler is None for direct mode
+        self.schedule_sampler = None
+        
+        print("🚀 Initialized DirectRegressionLoop (no diffusion)")
+        print(f"   - Wavelet: {self.wavelet}")
+        print(f"   - Target modality: {self.contr}")
+        print(f"   - Use wavelet space: {self.wavelet is not None and self.wavelet != 'null'}")
+    
+    def forward_backward(self, batch, cond, label=None):
+        """
+        Direct forward pass without diffusion.
+        
+        Args:
+            batch: Dict with modality keys {'t1n', 't1c', 't2w', 't2f'}
+            cond: Same as batch (for compatibility)
+            label: Unused (for compatibility)
+        
+        Returns:
+            mse_loss: Scalar loss value
+            pred_spatial: Predicted image in spatial domain
+            pred_spatial: Same (for compatibility with 3-return format)
+        """
+        for p in self.model.parameters():
+            p.grad = None
+        
+        # Extract input and target modalities
+        modalities = ['t1n', 't1c', 't2w', 't2f']
+        input_modalities = [m for m in modalities if m != self.contr]
+        
+        # Stack input modalities (3 modalities as input)
+        x_inputs = [batch[m] for m in input_modalities]
+        x_input = th.cat(x_inputs, dim=1)  # [B, 3, H, W, D]
+        
+        # Target modality (1 modality as target)
+        x_target = batch[self.contr]  # [B, 1, H, W, D]
+        
+        use_wavelet = self.wavelet is not None and self.wavelet != 'null'
+        
+        if use_wavelet:
+            # Apply DWT to inputs and target
+            # Input: 3 modalities × 8 components = 24 channels
+            input_wavelets = []
+            for x_mod in x_inputs:
+                lfc, *hfcs = self.dwt(x_mod)
+                # Concatenate all 8 components
+                wavelet_components = th.cat([lfc] + list(hfcs), dim=1)
+                input_wavelets.append(wavelet_components)
+            
+            x_input_wavelet = th.cat(input_wavelets, dim=1)  # [B, 24, H/2, W/2, D/2]
+            
+            # Target: 1 modality × 8 components = 8 channels
+            target_lfc, *target_hfcs = self.dwt(x_target)
+            x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)  # [B, 8, H/2, W/2, D/2]
+            
+            # Forward pass in wavelet space
+            # Model expects: (x, timesteps=None, **model_kwargs)
+            # For direct regression, pass dummy timesteps
+            dummy_t = th.zeros(x_input_wavelet.shape[0], dtype=th.long, device=x_input_wavelet.device)
+            pred_wavelet = self.model(x_input_wavelet, dummy_t)  # [B, 8, H/2, W/2, D/2]
+            
+            # MSE loss in wavelet space
+            mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
+            
+            # IDWT for visualization and evaluation
+            # Split predicted wavelets back into 8 components
+            pred_components = th.chunk(pred_wavelet, 8, dim=1)
+            pred_lfc = pred_components[0]
+            pred_hfcs = pred_components[1:]
+            pred_spatial = self.idwt(pred_lfc, *pred_hfcs)
+            
+        else:
+            # Direct prediction in image space (no wavelets)
+            # Model expects: (x, timesteps, **model_kwargs)
+            dummy_t = th.zeros(x_input.shape[0], dtype=th.long, device=x_input.device)
+            pred_spatial = self.model(x_input, dummy_t)  # [B, 1, H, W, D]
+            
+            # MSE loss in image space
+            mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
+        
+        # Backward pass
+        loss = mse_loss
+        
+        if not th.isfinite(loss):
+            logger.log(f"Encountered non-finite loss {loss}")
+            loss = th.tensor(0.0, device=loss.device, requires_grad=True)
+        
+        if self.use_fp16:
+            self.grad_scaler.scale(loss).backward()
+        else:
+            loss.backward()
+        
+        # Accumulate metrics for wandb (will be logged at end of step)
+        self.wandb_log_dict.update({
+            'train/mse': mse_loss.item()
+        })
+        
+        # Return same format as diffusion loop (3 values)
+        return mse_loss.item(), pred_spatial, pred_spatial
+    
+    def run_validation(self):
+        """
+        Run validation loop for direct regression with SSIM, PSNR, and inference time.
+        Returns average validation MSE loss.
+        """
+        if self.val_datal is None:
+            print("⚠️ No validation data provided, skipping validation")
+            return None
+        
+        # Import metrics
+        try:
+            from skimage.metrics import structural_similarity as ssim
+            from skimage.metrics import peak_signal_noise_ratio as psnr
+            metrics_available = True
+        except ImportError:
+            print("⚠️ scikit-image not available, skipping SSIM/PSNR metrics")
+            metrics_available = False
+        
+        import time
+        self.model.eval()
+        val_losses = []
+        val_ssims = []
+        val_psnrs = []
+        inference_times = []
+        
+        with th.no_grad():
+            for batch_idx, batch in enumerate(self.val_datal):
+                # Optional limit on number of validation batches, for consistency with TrainLoop.
+                if hasattr(self, "max_val_batches") and self.max_val_batches is not None:
+                    if batch_idx >= self.max_val_batches:
+                        break
+                
+                # Move batch to device
+                for key in batch:
+                    if isinstance(batch[key], th.Tensor):
+                        batch[key] = batch[key].to(dist_util.dev())
+                
+                # Extract input and target modalities
+                modalities = ['t1n', 't1c', 't2w', 't2f']
+                input_modalities = [m for m in modalities if m != self.contr]
+                
+                # Stack input modalities
+                x_inputs = [batch[m] for m in input_modalities]
+                x_input = th.cat(x_inputs, dim=1)  # [B, 3, H, W, D]
+                x_target = batch[self.contr]  # [B, 1, H, W, D]
+                
+                use_wavelet = self.wavelet is not None and self.wavelet != 'null'
+                
+                # Time ONLY the inference (forward pass)
+                inference_start = time.time()
+                
+                if use_wavelet:
+                    # Apply DWT to inputs and target
+                    input_wavelets = []
+                    for x_mod in x_inputs:
+                        lfc, *hfcs = self.dwt(x_mod)
+                        wavelet_components = th.cat([lfc] + list(hfcs), dim=1)
+                        input_wavelets.append(wavelet_components)
+                    
+                    x_input_wavelet = th.cat(input_wavelets, dim=1)
+                    
+                    target_lfc, *target_hfcs = self.dwt(x_target)
+                    x_target_wavelet = th.cat([target_lfc] + list(target_hfcs), dim=1)
+                    
+                    # Forward pass
+                    dummy_t = th.zeros(x_input_wavelet.shape[0], dtype=th.long, device=x_input_wavelet.device)
+                    pred_wavelet = self.model(x_input_wavelet, dummy_t)
+                    
+                    # Reconstruct to spatial domain for metrics
+                    pred_lfc = pred_wavelet[:, :1]
+                    pred_hfcs = [pred_wavelet[:, i:i+1] for i in range(1, 8)]
+                    pred_spatial = self.idwt(pred_lfc, *pred_hfcs)
+                    
+                    # MSE loss in wavelet space
+                    mse_loss = th.nn.functional.mse_loss(pred_wavelet, x_target_wavelet)
+                else:
+                    # Forward pass in image space
+                    dummy_t = th.zeros(x_input.shape[0], dtype=th.long, device=x_input.device)
+                    pred_spatial = self.model(x_input, dummy_t)
+                    
+                    # MSE loss in image space
+                    mse_loss = th.nn.functional.mse_loss(pred_spatial, x_target)
+                
+                inference_end = time.time()
+                inference_times.append(inference_end - inference_start)
+                
+                val_losses.append(mse_loss.item())
+                
+                # Calculate SSIM and PSNR on spatial domain with brain masking
+                if metrics_available:
+                    try:
+                        # Create brain mask from target
+                        target_np = x_target.cpu().numpy()
+                        pred_np = pred_spatial.cpu().numpy()
+                        
+                        brain_mask = (target_np > 0.01).astype(np.float32)
+                        predicted_masked = pred_np * brain_mask
+                        target_masked = target_np * brain_mask
+                        
+                        # Calculate metrics on first sample in batch
+                        pred_vol = predicted_masked[0, 0]
+                        targ_vol = target_masked[0, 0]
+                        
+                        ssim_score = ssim(targ_vol, pred_vol, data_range=1.0)
+                        psnr_score = psnr(targ_vol, pred_vol, data_range=1.0)
+                        
+                        val_ssims.append(ssim_score)
+                        val_psnrs.append(psnr_score)
+                        
+                    except Exception as e:
+                        print(f"  Warning: SSIM/PSNR calculation failed: {e}")
+        
+        # Back to training mode
+        self.model.train()
+        
+        # Compute average metrics
+        avg_val_loss = np.mean(val_losses)
+        avg_inference_time = np.mean(inference_times)
+        
+        # Log ONLY essential metrics to wandb
+        self.wandb_log_dict.update({
+            'val/mse': avg_val_loss,
+            'val/inference_time': avg_inference_time
+        })
+        
+        if metrics_available and len(val_ssims) > 0:
+            avg_ssim = np.mean(val_ssims)
+            avg_psnr = np.mean(val_psnrs)
+            self.wandb_log_dict.update({
+                'val/ssim': avg_ssim,
+                'val/psnr': avg_psnr
+            })
+            print(f"📊 Validation: SSIM={avg_ssim:.4f}, PSNR={avg_psnr:.2f}dB, Inf.Time={avg_inference_time:.3f}s")
+        else:
+            print(f"📊 Validation: MSE={avg_val_loss:.6f}, Inf.Time={avg_inference_time:.3f}s")
+        
+        # Save best validation checkpoint
+        if avg_val_loss < self.best_val_loss:
+            old_best = self.best_val_loss
+            self.best_val_loss = avg_val_loss
+            improvement = old_best - avg_val_loss if old_best < float('inf') else avg_val_loss
+            print(f"🎯 NEW BEST VAL LOSS: {avg_val_loss:.6f} (prev: {old_best:.6f}, -{improvement:.6f})")
+            
+            # Remove old best val checkpoint if exists
+            if self.best_val_checkpoint and os.path.exists(self.best_val_checkpoint):
+                try:
+                    os.remove(self.best_val_checkpoint)
+                    opt_path = self.best_val_checkpoint.replace('.pt', '_opt.pt')
+                    if os.path.exists(opt_path):
+                        os.remove(opt_path)
+                except Exception as e:
+                    print(f"Error removing old val checkpoint: {e}")
+            
+            # Save new best val checkpoint
+            filename = f"brats_{self.contr}_best_val_direct.pt"
+            full_save_path = os.path.join(self.checkpoint_dir, filename)
+            
+            try:
+                with bf.BlobFile(full_save_path, "wb") as f:
+                    th.save(self.model.state_dict(), f)
+                
+                self.best_val_checkpoint = full_save_path
+                print(f"✅ Saved best val checkpoint: {full_save_path}")
+                
+                # Save optimizer state
+                opt_save_path = os.path.join(self.checkpoint_dir, f"brats_{self.contr}_best_val_direct_opt.pt")
+                with bf.BlobFile(opt_save_path, "wb") as f:
+                    th.save(self.opt.state_dict(), f)
+                
+                # Upload to W&B if enabled
+                if self.save_to_wandb:
+                    self.save_checkpoint_to_wandb(full_save_path)
+                    self.save_checkpoint_to_wandb(opt_save_path)
+                
+            except Exception as e:
+                print(f"❌ Error saving best val checkpoint: {e}")
+        
+        return avg_val_loss
+    
+    def run_loop(self):
+        """
+        Main training loop for direct regression.
+        Simplified version without diffusion sampling.
+        """
+        print(f"🏃 Starting DirectRegressionLoop for {self.contr}")
+        print(f"   Total steps planned: {self.lr_anneal_steps if self.lr_anneal_steps else 'Based on data iterations'}")
+        
+        import time
+        total_data_time = 0.0
+        total_step_time = 0.0
+        start_time = time.time()
+        
+        while True:
+            
+            # Initialize wandb accumulator for this step
+            self.wandb_log_dict = {'step': self.step}
+            
+            # --- Data loading ---
+            data_load_start = time.time()
+            try:
+                batch = next(self.iterdatal)
+            except StopIteration:
+                # Restart the iterator
+                self.iterdatal = iter(self.datal)
+                batch = next(self.iterdatal)
+            data_load_end = time.time()
+            data_load_time = data_load_end - data_load_start
+            total_data_time += data_load_time
+            
+            # Move batch to device
+            for key in batch:
+                if isinstance(batch[key], th.Tensor):
+                    batch[key] = batch[key].to(dist_util.dev())
+            
+            # --- Model forward/backward ---
+            step_proc_start = time.time()
+            cond = batch  # For compatibility
+            mse_loss, sample, sample_idwt = self.run_step(batch, cond)
+            step_proc_end = time.time()
+            step_time = step_proc_end - step_proc_start
+            total_step_time += step_time
+            
+            # Log per-step times to WandB
+            self.wandb_log_dict.update({
+                'train/step_time': step_time,
+                'train/data_load_time': data_load_time
+            })
+            
+            # Logging
+            if self.step % self.log_interval == 0:
+                logger.dumpkvs()
+                print(f"Step {self.step}: MSE Loss = {mse_loss:.6f}")
+                
+                # Print profiling info
+                if self.step > 0:
+                    elapsed = time.time() - start_time
+                    print(f"[PROFILE] Step {self.step}: DataLoad {total_data_time:.2f}s, StepTime {total_step_time:.2f}s, Elapsed {elapsed:.2f}s")
+            
+            # Save checkpoints
+            if self.step % self.save_interval == 0 and self.step > 0:
+                self.save_if_best(mse_loss)
+            
+            # Validation: always run at step 100, and otherwise at val_interval
+            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 100)):
+                val_loss = self.run_validation()
+                print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
+            
+            # Check for special checkpoints
+            if self.special_checkpoint_steps and self.step in self.special_checkpoint_steps:
+                if self.step not in self.saved_special_checkpoints:
+                    self.save_special_checkpoint(self.step, mse_loss)
+                    self.saved_special_checkpoints.add(self.step)
+            
+            # Log all accumulated metrics to wandb (once per step)
+            wandb.log(self.wandb_log_dict, step=self.step)
+            
+            # Increment step AFTER all logging/saving
+            self.step += 1
+            
+            # Optional: Stop after certain number of iterations
+            if self.lr_anneal_steps and self.step > self.lr_anneal_steps:
+                print(f"✅ Reached {self.lr_anneal_steps} steps, stopping training")
+                break
+        
+        # Training finished - log total time
+        total_training_time = time.time() - start_time
+        wandb.log({'train/total_time': total_training_time}, step=self.step)
+        print(f"✅ Training completed in {total_training_time/3600:.2f} hours")

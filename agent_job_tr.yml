@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: wandb-sweep-agent-{POD_NUM}
+  name: mod-synth-{POD_NUM}
   namespace: gai-lina-group
   labels:
-    app: wandb-sweep
+    app: mod-synth
 spec:
   backoffLimit: 0
   template:
     metadata:
       labels:
-        app: wandb-sweep
+        app: mod-synth
     spec:
       nodeSelector:
         nautilus.io/linstor: "true"
@@ -29,7 +29,7 @@ spec:
           - |
             sudo apt-get update && sudo apt-get install -y git wget p7zip-full
             
-            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+            git clone -b 9sweep https://github.com/tsereda/wavelet-brats-synthesis.git
             cd wavelet-brats-synthesis
             
             chmod +x run.sh
@@ -69,10 +69,16 @@ spec:
         - name: shm
           mountPath: /dev/shm
       
+        - name: checkpoints
+          mountPath: /checkpoints
+      
       volumes:
       - name: data-volume
         persistentVolumeClaim:
           claimName: brats2025-{POD_NUM}
+      - name: checkpoints
+        persistentVolumeClaim:
+          claimName: brats-checkpoints
       - name: shm
         emptyDir:
           medium: Memory

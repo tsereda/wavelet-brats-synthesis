@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: wandb-sweep-agent-{POD_NUM}
+  name: mod-synth-{POD_NUM}
   namespace: gai-lina-group
   labels:
-    app: wandb-sweep
+    app: mod-synth
 spec:
   nodeSelector:
     nautilus.io/linstor: "true"
@@ -42,8 +42,11 @@ spec:
       - |
         sudo apt-get update && sudo apt-get install -y git wget p7zip-full
        
-        git clone -b wandbcheckpointsavinganditerintervals https://github.com/tsereda/wavelet-brats-synthesis.git
+        git clone -b 9sweep https://github.com/tsereda/wavelet-brats-synthesis.git
         cd wavelet-brats-synthesis
+       
+        chmod -R 777 /checkpoints
+        chown -R 1000:100 /checkpoints
        
         chmod +x run.sh
        
@@ -79,7 +82,19 @@ spec:
     - name: data-volume
       mountPath: /data
  
+    - name: checkpoints
+      mountPath: /checkpoints
+    - name: shm
+      mountPath: /dev/shm
+ 
   volumes:
   - name: data-volume
     persistentVolumeClaim:
       claimName: brats2025-{POD_NUM}
+  - name: checkpoints
+    persistentVolumeClaim:
+      claimName: brats-checkpoints
+  - name: shm
+    emptyDir:
+      medium: Memory
+      sizeLimit: 16Gi

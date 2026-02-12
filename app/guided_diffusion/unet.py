@@ -750,6 +750,8 @@ class UNetModel(nn.Module):
             if self.devices is None:  # if self.devices has not been set yet, read it from params
                 p = next(self.parameters())
                 self.devices = [p.device, p.device]
+        
+        return self  # ✅ CRITICAL FIX: Return self to enable method chaining
 
     def forward(self, x, timesteps, y=None):
         """

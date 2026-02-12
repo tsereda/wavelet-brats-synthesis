@@ -1,0 +1,87 @@
+# Ablation Study: 12 Configurations (Architecture × Method × Wavelet)
+# UNet: direct/diffusion_fast/diffusion_standard × nowavelet/haar/db2 (9 configs)
+# SWIN: direct × nowavelet/haar/db2 (3 configs)
+# Each config trains 4 modalities (t1n, t1c, t2w, t2f) for 400k iterations
+
+project: fast-cwdm-ablation-study
+program: app/scripts/train.py
+command:
+  - ${env}
+  - PYTHONPATH=${PYTHONPATH}:./app
+  - python
+  - ${program}
+  - ${args}
+method: grid
+metric:
+  name: eval/dice_wt
+  goal: maximize
+
+parameters:
+  # Fixed optimal hyperparameters from BraTS 2025 submission
+  data_dir:
+    value: ./datasets/BRATS2023/training
+  dataset:
+    value: brats
+  image_size:
+    value: 224
+  batch_size:
+    value: 1  # Reduced from 2 to avoid OOM on direct+null baseline
+  lr:
+    value: 1e-4
+  num_channels:
+    value: 48  # 🔧 REDUCED from 64 to save memory (48→96→96→192→192 vs 64→128→128→256→256)
+  # ❌ REMOVED in_channels/out_channels - auto-configured by train.py based on mode + wavelet
+  channel_mult:
+    value: "1,2,2,4,4"
+  num_workers:
+    value: 12
+  dims:
+    value: 3
+  attention_resolutions:
+    value: ""
+  num_heads:
+    value: 1
+  bottleneck_attention:
+    value: false
+  num_groups:
+    value: 16  # 🔧 REDUCED from 32 to match num_channels=48 (must be divisible)
+  
+  # Training configuration
+  max_iterations:
+    value: 400000
+  diffusion_steps:
+    value: 100
+  save_interval:
+    value: 10000
+  log_interval:
+    value: 100
+  save_to_wandb:
+    value: false
+  
+  # Validation interval
+  val_interval:
+    value: 10000
+  
+  # Memory optimizations
+  use_fp16:
+    value: true
+  use_checkpoint:
+    value: true
+  
+  # Ablation grid 
+  architecture:
+    values: ['unet', 'swin']
+  
+  model_mode:
+    values: ['direct', 'diffusion_fast']
+  
+  wavelet:
+    values: ['nowavelet', 'haar', 'db2']
+  
+  sample_schedule:
+    value: sampled
+  
+  contr:
+    values: ['t1n', 't1c', 't2w', 't2f']
+
+
