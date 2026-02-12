@@ -120,7 +120,7 @@ class TrainLoop:
         
         # Fast validation: use 10 steps instead of full diffusion_steps
         self.val_diffusion_steps = 10
-        self.max_val_batches = 5  # Sample 50 batches (~11% of 447 dataset) for fast validation
+        self.max_val_batches = 5  # Sample 5 batches (~1.1% of 447 dataset) for fast validation
         
         # Initialize wavelet transforms (requires self.wavelet to be set)
         # Only create DWT/IDWT if using wavelets (not None or "null")
@@ -142,13 +142,9 @@ class TrainLoop:
         self.best_checkpoints = {}
         self.best_val_loss = float('inf')
         self.best_val_checkpoint = None
-        # New checkpoint directory structure: sweep_<sweepid>/<runfolder>_<runid>
-        sweep_id = os.getenv('SWEEP_ID', 'manual')
-        run_id = os.getenv('WANDB_RUN_ID', 'local')
-        sweep_folder = f"sweep_{sweep_id}"
-        run_folder = f"{self.mode}_{self.wavelet}_{self.contr}_{run_id}"
-        self.checkpoint_dir = os.path.join(checkpoint_dir or get_blob_logdir(), sweep_folder, run_folder)
-        os.makedirs(self.checkpoint_dir, exist_ok=True)
+        # Use the checkpoint directory provided by the caller, or fall back to a default.
+        # The construction and creation of any sweep/run-specific subdirectories is handled upstream.
+        self.checkpoint_dir = checkpoint_dir or get_blob_logdir()
         
         # Accumulator for wandb metrics (logged once per step)
         self.wandb_log_dict = {}
@@ -383,7 +379,6 @@ class TrainLoop:
         # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
             'val/mse': avg_val_loss,
-            'val/mse': avg_val_loss,
             'val/inference_time': avg_inference_time
         })
         
@@ -495,10 +490,12 @@ class TrainLoop:
 
     def run_loop(self):
         """
-        Main training loop for direct regression.
-        Simplified version without diffusion sampling.
+        Main training loop for diffusion model training.
+
+        Handles data iteration, optimization, logging, checkpointing, and
+        learning-rate scheduling for the standard TrainLoop.
         """
-        print(f"🏃 Starting DirectRegressionLoop for {self.contr}")
+        print(f"🏃 Starting TrainLoop (diffusion training) for {self.contr}")
         print(f"   Total steps planned: {self.lr_anneal_steps if self.lr_anneal_steps else 'Based on data iterations'}")
         
         import time
@@ -1073,7 +1070,12 @@ class DirectRegressionLoop(TrainLoop):
         inference_times = []
         
         with th.no_grad():
-            for batch in self.val_datal:
+            for batch_idx, batch in enumerate(self.val_datal):
+                # Optional limit on number of validation batches, for consistency with TrainLoop.
+                if hasattr(self, "max_val_batches") and self.max_val_batches is not None:
+                    if batch_idx >= self.max_val_batches:
+                        break
+                
                 # Move batch to device
                 for key in batch:
                     if isinstance(batch[key], th.Tensor):
@@ -1163,7 +1165,6 @@ class DirectRegressionLoop(TrainLoop):
         
         # Log ONLY essential metrics to wandb
         self.wandb_log_dict.update({
-            'val/mse': avg_val_loss,
             'val/mse': avg_val_loss,
             'val/inference_time': avg_inference_time
         })
@@ -1285,8 +1286,8 @@ class DirectRegressionLoop(TrainLoop):
             if self.step % self.save_interval == 0 and self.step > 0:
                 self.save_if_best(mse_loss)
             
-            # Validation
-            if self.val_datal is not None and self.step % self.val_interval == 0 and self.step > 0:
+            # Validation: always run at step 100, and otherwise at val_interval
+            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 0)):
                 val_loss = self.run_validation()
                 print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
             
