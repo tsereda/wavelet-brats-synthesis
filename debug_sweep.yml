@@ -1,0 +1,152 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: debug-sweep-test
+  namespace: gai-lina-group
+  labels:
+    app: debug-sweep
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: debug-sweep
+    spec:
+      nodeSelector:
+        nautilus.io/linstor: "true"
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: PreferNoSchedule
+
+      containers:
+      - name: sweep-test
+        image: gitlab-registry.nrp-nautilus.io/prp/jupyter-stack/prp
+
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+
+            # Install dependencies
+            echo "[1/6] Installing dependencies..."
+            sudo apt-get update && sudo apt-get install -y git wget p7zip-full
+            pip install nibabel==5.1.0 numpy==1.24.3 blobfile==2.0.2 \
+                        matplotlib==3.7.2 tqdm==4.65.0 PyWavelets \
+                        tensorboard==2.13.0 wandb==0.15.8 pyyaml scipy
+
+            # Clone repository
+            echo "[2/6] Cloning repository..."
+            git clone https://github.com/tsereda/wavelet-brats-synthesis.git
+            cd wavelet-brats-synthesis
+
+            # Extract debug dataset
+            echo "[3/6] Extracting debug dataset..."
+            mkdir -p datasets/BRATS2023/training
+            tar -xzf /brats-data-m/BraTS23Debug.tar.gz -C datasets/BRATS2023/training
+            mv datasets/BRATS2023/training/BraTS23Debug/* datasets/BRATS2023/training/
+            rmdir datasets/BRATS2023/training/BraTS23Debug
+
+            echo "Dataset contents:"
+            ls -la datasets/BRATS2023/training/
+            echo "Sample case:"
+            ls -la datasets/BRATS2023/training/BraTS-GLI-00000-000/
+
+            # Setup checkpoints
+            echo "[4/6] Setting up checkpoints..."
+            mkdir -p checkpoints
+            chmod 777 checkpoints
+
+            export PYTHONPATH="$(pwd):$(pwd)/app:${PYTHONPATH}"
+
+            # Test data loading
+            echo "[5/6] Testing data loader..."
+            python -c "
+            import sys
+            sys.path.insert(0, '.')
+            sys.path.insert(0, './app')
+            from guided_diffusion.bratsloader import BRATSVolumes
+
+            dataset = BRATSVolumes(
+                directory='./datasets/BRATS2023/training',
+                mode='train',
+                gen_type='t2f',
+                wavelet='haar'
+            )
+
+            print(f'Dataset loaded: {len(dataset)} samples')
+            if len(dataset) > 0:
+                sample = dataset[0]
+                print(f'  keys: {list(sample.keys())}')
+                print(f'  t1n shape: {sample[\"t1n\"].shape}')
+                print(f'  t2f shape: {sample[\"t2f\"].shape}')
+            else:
+                print('ERROR: Dataset is empty')
+                sys.exit(1)
+            "
+
+            # Run minimal training (2 iterations)
+            echo "[6/6] Testing training pipeline..."
+            python app/scripts/train.py \
+              --data_dir ./datasets/BRATS2023/training \
+              --checkpoint_dir /checkpoints \
+              --contr t2f \
+              --wavelet haar \
+              --model_mode direct \
+              --batch_size 1 \
+              --lr 1e-4 \
+              --log_interval 1 \
+              --save_interval 999999 \
+              --num_workers 2 \
+              --max_iterations 2
+
+            echo "Debug validation complete."
+            echo "  Dataset: 2 cases loaded"
+            echo "  Training pipeline: OK"
+
+        env:
+        - name: WANDB_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: wandb-credentials
+              key: api-key
+        - name: WANDB_ENTITY
+          value: "timgsereda"
+        - name: WANDB_PROJECT
+          value: "wavelet-brats-synthesis-debug"
+        - name: PYTHONUNBUFFERED
+          value: "1"
+
+        resources:
+          requests:
+            memory: "25Gi"
+            cpu: "15"
+            nvidia.com/a100: "1"
+          limits:
+            memory: "30Gi"
+            cpu: "18"
+            nvidia.com/a100: "1"
+
+        volumeMounts:
+        - name: debug-data
+          mountPath: /brats-data-m
+        - name: checkpoints
+          mountPath: /checkpoints
+        - name: shm
+          mountPath: /dev/shm
+
+      volumes:
+      - name: debug-data
+        persistentVolumeClaim:
+          claimName: brats-data-m
+      - name: checkpoints
+        persistentVolumeClaim:
+          claimName: brats-checkpoints
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 16Gi
+
+      restartPolicy: Never

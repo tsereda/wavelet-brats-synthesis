@@ -144,6 +144,9 @@ def setup_training(args):
     
     print(f"[CONFIG] ✅ Auto-configured channels: in_channels={args.in_channels}, out_channels={args.out_channels}")
     
+    # 3D volumes require dims=3
+    args.dims = 3
+    
     # 🆕 CRITICAL: Set mode='i2i' for conditional image-to-image synthesis
     args.mode = 'i2i'
     print(f"[CONFIG] mode={args.mode} (conditional synthesis)")
