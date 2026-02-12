@@ -41,10 +41,8 @@ spec:
           mountPath: /data2
         - name: data3
           mountPath: /data3
-        - name: data5
-          mountPath: /data5
-        - name: data6
-          mountPath: /data6
+        - name: brats-data-m
+          mountPath: /brats-data-m
         - name: shm
           mountPath: /dev/shm
       resources:
@@ -65,12 +63,9 @@ spec:
     - name: data3
       persistentVolumeClaim:
         claimName: brats2025-3
-    - name: data5
+    - name: brats-data-m
       persistentVolumeClaim:
-        claimName: brats2025-5
-    - name: data6
-      persistentVolumeClaim:
-        claimName: brats2025-6
+        claimName: brats-data-m
     - name: shm
       emptyDir:
         medium: Memory
