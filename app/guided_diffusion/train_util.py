@@ -1234,11 +1234,8 @@ class DirectRegressionLoop(TrainLoop):
         total_data_time = 0.0
         total_step_time = 0.0
         start_time = time.time()
-        t = time.time()
         
         while True:
-            t_total = time.time() - t
-            t = time.time()
             
             # Initialize wandb accumulator for this step
             self.wandb_log_dict = {'step': self.step}
