@@ -557,7 +557,7 @@ class TrainLoop:
                 self.save_if_best(mse_loss)
 
             # Validation: always run at step 100, and otherwise at val_interval
-            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 0)):
+            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 100)):
                 val_loss = self.run_validation()
                 print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
             
@@ -1287,7 +1287,7 @@ class DirectRegressionLoop(TrainLoop):
                 self.save_if_best(mse_loss)
             
             # Validation: always run at step 100, and otherwise at val_interval
-            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 0)):
+            if self.val_datal is not None and (self.step == 100 or (self.step % self.val_interval == 0 and self.step > 100)):
                 val_loss = self.run_validation()
                 print(f"✅ Validation at step {self.step}: val_loss={val_loss:.6f}")
             
