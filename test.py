@@ -22,7 +22,6 @@ import argparse
 import torch as th
 from guided_diffusion import gaussian_diffusion as gd
 from guided_diffusion.unet import UNetModel
-from guided_diffusion.wunet import WavUNetModel
 
 
 def calculate_channels(model_mode, wavelet):

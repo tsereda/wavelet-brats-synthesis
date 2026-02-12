@@ -1,7 +1,7 @@
 # Ablation Study: 12 Configurations (Architecture × Method × Wavelet)
 # UNet: direct/diffusion_fast/diffusion_standard × nowavelet/haar/db2 (9 configs)
 # SWIN: direct × nowavelet/haar/db2 (3 configs)
-# Each config trains 4 modalities (t1n, t1c, t2w, t2f) for 200k iterations
+# Each config trains 4 modalities (t1n, t1c, t2w, t2f) for 400k iterations
 
 project: fast-cwdm-ablation-study
 program: app/scripts/train.py
@@ -55,8 +55,6 @@ parameters:
     value: 10000
   log_interval:
     value: 100
-  special_checkpoint_steps:
-    value: "47500,100000,150000,200000"
   save_to_wandb:
     value: false
   
@@ -85,8 +83,5 @@ parameters:
   
   contr:
     values: ['t1n', 't1c', 't2w', 't2f']
-  
-  use_freq:
-    value: true
 
 

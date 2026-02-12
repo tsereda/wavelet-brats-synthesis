@@ -12,7 +12,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app'))
 
 import torch as th
-import numpy as np
 from guided_diffusion.train_util import TrainLoop, DirectRegressionLoop
 from guided_diffusion.script_util import create_model_and_diffusion, model_and_diffusion_defaults
 from guided_diffusion import dist_util

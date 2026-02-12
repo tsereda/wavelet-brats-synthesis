@@ -5,7 +5,6 @@ Analyzes Architecture × Method × Wavelet ablation study results from W&B expor
 """
 
 import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path

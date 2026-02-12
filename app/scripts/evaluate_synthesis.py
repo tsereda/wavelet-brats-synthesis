@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import subprocess
-## No direct checkpoint loading logic found in the main script body; all checkpoint finding is handled by complete_dataset.py or external scripts. No changes needed here for checkpoint path logic.
 import argparse
 import nibabel as nib
 import numpy as np
